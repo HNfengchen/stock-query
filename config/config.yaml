@@ -1,0 +1,55 @@
+# 数据获取配置
+data_fetcher:
+  max_retries: 3
+  retry_delay: 1
+  request_timeout: 30
+
+# xtquant 配置
+xtquant:
+  enabled: true
+  max_retries: 3
+  retry_delay: 1
+  data_dir: ""
+
+# 技术指标参数
+technical_indicators:
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+  rsi:
+    periods: [6, 12, 24]
+  kdj:
+    n: 9
+    m1: 3
+    m2: 3
+  ma:
+    periods: [5, 10, 20, 60]
+  boll:
+    n: 20
+    k: 2
+
+# 分析参数
+analyzer:
+  weights:
+    technical: 0.5
+    fund_flow: 0.3
+    sentiment: 0.2
+  thresholds:
+    strong_buy: 0.7
+    buy: 0.5
+    hold: 0.3
+  price_prediction:
+    atr_multiplier: 1.5
+    boll_multiplier: 1.0
+
+# 报告配置
+report:
+  default_format: html
+  include_charts: true
+  chart_height: 600
+
+# 输出配置
+output:
+  directory: output/reports
+  filename_pattern: "{stock_code}_{date}"
