@@ -7,6 +7,12 @@ import time
 from typing import Dict, Optional
 import pandas as pd
 
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts.logger import fetcher_logger
+
 from scripts.stock_query import (
     parse_stock_code,
     get_stock_info,
@@ -14,6 +20,22 @@ from scripts.stock_query import (
     get_history_data,
     get_minute_data,
 )
+
+try:
+    from scripts.database import get_or_fetch_stock_data
+    import scripts.database as db_module
+
+    # 尝试连接数据库测试
+    conn = db_module.get_connection()
+    conn.close()
+    DATABASE_AVAILABLE = True
+    print(f"[数据库] 连接测试成功!")
+except ImportError as e:
+    DATABASE_AVAILABLE = False
+    print(f"[数据库] 模块导入失败: {e}")
+except Exception as e:
+    DATABASE_AVAILABLE = False
+    print(f"[数据库] 连接失败: {e}")
 
 try:
     from scripts.core.xtquant_adapter import XtQuantAdapter, DataValidator
@@ -177,18 +199,55 @@ class DataFetcher:
         返回:
             dict: 包含所有数据的字典
         """
-        stock_code, stock_name, market = self.resolve_stock_code(stock_input)
+        fetcher_logger.info("=" * 50)
+        fetcher_logger.info(f"[DataFetcher] 开始获取股票数据: {stock_input}")
 
-        info = self.fetch_stock_info(stock_code)
-        fund_flow = self.fetch_fund_flow(stock_code)
-        history_df = self.fetch_history_data(stock_code, 60)
+        stock_code, stock_name, market = self.resolve_stock_code(stock_input)
+        fetcher_logger.info(
+            f"[DataFetcher] 解析股票代码: {stock_code}, 名称: {stock_name}, 市场: {market}"
+        )
+
+        if DATABASE_AVAILABLE:
+            fetcher_logger.info(
+                f"[DataFetcher] 数据库可用，检查并获取股票 {stock_code} 数据..."
+            )
+            db_result = get_or_fetch_stock_data(stock_code, force_refresh=False)
+
+            if db_result.get("source") == "database" and "dataframe" in db_result:
+                fetcher_logger.info(
+                    f"[DataFetcher] 使用数据库中的历史数据 ({len(db_result['dataframe'])} 条)"
+                )
+                history_df = db_result["dataframe"]
+                info = db_result.get("stock_info", {})
+                fund_flow = db_result.get("fund_flow", {})
+            else:
+                fetcher_logger.info(f"[DataFetcher] 从API获取最新数据...")
+                info = self.fetch_stock_info(stock_code)
+                fetcher_logger.debug(
+                    f"[DataFetcher] 股票基本信息获取完成: {info.get('名称')}, 最新价: {info.get('最新价')}"
+                )
+                fund_flow = self.fetch_fund_flow(stock_code)
+                history_df = self.fetch_history_data(stock_code, 60)
+                fetcher_logger.debug(
+                    f"[DataFetcher] 历史数据获取完成: {len(history_df) if history_df is not None else 0} 条"
+                )
+        else:
+            fetcher_logger.warning(f"[DataFetcher] 数据库不可用，从API获取数据...")
+            info = self.fetch_stock_info(stock_code)
+            fund_flow = self.fetch_fund_flow(stock_code)
+            history_df = self.fetch_history_data(stock_code, 60)
+
+        fetcher_logger.info(f"[DataFetcher] 获取分钟级数据...")
         minute_data = self.fetch_minute_data(stock_code)
 
+        fetcher_logger.info(f"[DataFetcher] 获取财务数据和板块信息...")
         financial_data = self.fetch_financial_data(stock_code)
         sector_info = self.fetch_sector_info(stock_code)
 
         if sector_info.get("所属行业") != "N/A" and "所属行业" not in info:
             info["所属行业"] = sector_info["所属行业"]
+
+        fetcher_logger.info(f"[DataFetcher] 数据获取完成，返回结果")
 
         return {
             "stock_code": stock_code,

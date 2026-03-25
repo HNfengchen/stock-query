@@ -1,0 +1,17 @@
+# Worktrees
+.worktrees/
+.opencode/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Output
+output/
+logs/
