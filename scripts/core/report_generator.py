@@ -141,13 +141,26 @@ class ReportGenerator:
 
         return {
             "labels": labels,
-            "opens": [float(o) if o is not None and not pd.isna(o) else 0.0 for o in open_price],
-            "highs": [float(h) if h is not None and not pd.isna(h) else 0.0 for h in high],
-            "lows": [float(l) if l is not None and not pd.isna(l) else 0.0 for l in low],
-            "closes": [float(c) if c is not None and not pd.isna(c) else 0.0 for c in close],
+            "opens": [
+                float(o) if o is not None and not pd.isna(o) else 0.0
+                for o in open_price
+            ],
+            "highs": [
+                float(h) if h is not None and not pd.isna(h) else 0.0 for h in high
+            ],
+            "lows": [
+                float(l) if l is not None and not pd.isna(l) else 0.0 for l in low
+            ],
+            "closes": [
+                float(c) if c is not None and not pd.isna(c) else 0.0 for c in close
+            ],
             "ma5": [float(m) if m is not None and not pd.isna(m) else 0.0 for m in ma5],
-            "ma10": [float(m) if m is not None and not pd.isna(m) else 0.0 for m in ma10],
-            "ma20": [float(m) if m is not None and not pd.isna(m) else 0.0 for m in ma20],
+            "ma10": [
+                float(m) if m is not None and not pd.isna(m) else 0.0 for m in ma10
+            ],
+            "ma20": [
+                float(m) if m is not None and not pd.isna(m) else 0.0 for m in ma20
+            ],
         }
 
     def _prepare_technical_data(self, history_df: pd.DataFrame) -> Dict:
@@ -213,7 +226,9 @@ class ReportGenerator:
                     avg_loss = loss.rolling(window=period, min_periods=period).mean()
                     rs = avg_gain / avg_loss.replace(0, float("inf"))
                     rsi = (100 - (100 / (1 + rs))).fillna(0)
-                    rsi_list[:] = [float(x) if not pd.isna(x) else 0.0 for x in rsi.tolist()]
+                    rsi_list[:] = [
+                        float(x) if not pd.isna(x) else 0.0 for x in rsi.tolist()
+                    ]
 
         if n >= 9:
             low_nine = lows_series.rolling(window=9, min_periods=9).min()
@@ -291,13 +306,15 @@ class ReportGenerator:
                     dt = pd.to_datetime(str(label), format="%Y%m%d")
                 else:
                     dt = pd.to_datetime(str(label)[:10])
-                candle_data.append({
-                    "x": int(dt.timestamp() * 1000),
-                    "o": float(opens[i]) if opens[i] else 0.0,
-                    "h": float(highs[i]) if highs[i] else 0.0,
-                    "l": float(lows[i]) if lows[i] else 0.0,
-                    "c": float(closes[i]) if closes[i] else 0.0,
-                })
+                candle_data.append(
+                    {
+                        "x": int(dt.timestamp() * 1000),
+                        "o": float(opens[i]) if opens[i] else 0.0,
+                        "h": float(highs[i]) if highs[i] else 0.0,
+                        "l": float(lows[i]) if lows[i] else 0.0,
+                        "c": float(closes[i]) if closes[i] else 0.0,
+                    }
+                )
             except Exception:
                 continue
 
@@ -592,11 +609,18 @@ class ReportGenerator:
         kdj = indicators.get("KDJ", {})
         boll = indicators.get("BOLL", {})
 
+        def extract_latest(series):
+            if isinstance(series, pd.Series) and not series.empty:
+                valid = series.dropna()
+                if not valid.empty:
+                    return round(float(valid.iloc[-1]), 4)
+            return "N/A"
+
         context = {
             "stock_name": data.get("stock_name", "N/A"),
             "stock_code": data.get("stock_code", "N/A"),
-            "current_price": current_price,
-            "price_change": price_change,
+            "current_price": round(current_price, 2),
+            "price_change": round(price_change, 2),
             "score": signal.get("score", 0),
             "score_percent": signal.get("score", 0) * 100,
             "signal": signal_name,
@@ -607,19 +631,19 @@ class ReportGenerator:
             "pe": info.get("市盈率-动态", info.get("市盈率(动)", "N/A")),
             "pb": info.get("市净率", "N/A"),
             "macd_signal": macd.get("signal", "N/A"),
-            "macd_dif": macd.get("DIF", "N/A"),
-            "macd_dea": macd.get("DEA", "N/A"),
-            "rsi_6_value": rsi.get("RSI(6)", {}).get("value", "N/A"),
+            "macd_dif": extract_latest(macd.get("DIF")),
+            "macd_dea": extract_latest(macd.get("DEA")),
+            "rsi_6_value": extract_latest(rsi.get("RSI(6)", {}).get("value")),
             "rsi_6_status": rsi.get("RSI(6)", {}).get("status", "N/A"),
-            "rsi_12_value": rsi.get("RSI(12)", {}).get("value", "N/A"),
+            "rsi_12_value": extract_latest(rsi.get("RSI(12)", {}).get("value")),
             "rsi_12_status": rsi.get("RSI(12)", {}).get("status", "N/A"),
-            "kdj_k": kdj.get("K", "N/A"),
-            "kdj_d": kdj.get("D", "N/A"),
-            "kdj_j": kdj.get("J", "N/A"),
+            "kdj_k": extract_latest(kdj.get("K")),
+            "kdj_d": extract_latest(kdj.get("D")),
+            "kdj_j": extract_latest(kdj.get("J")),
             "kdj_signal": kdj.get("signal", "N/A"),
-            "boll_upper": boll.get("upper", "N/A"),
-            "boll_middle": boll.get("middle", "N/A"),
-            "boll_lower": boll.get("lower", "N/A"),
+            "boll_upper": extract_latest(boll.get("upper")),
+            "boll_middle": extract_latest(boll.get("middle")),
+            "boll_lower": extract_latest(boll.get("lower")),
             "main_inflow": f"{fund_flow.get('主力净流入', 0) / 10000:.2f}万",
             "main_inflow_ratio": f"{fund_flow.get('主力净流入占比', 'N/A')}",
             "fund_flow_trend": self._format_trend(
