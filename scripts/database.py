@@ -297,8 +297,7 @@ class StockDataManager:
         return exists
 
     def insert_daily_data(self, data: Dict[str, Any]):
-        """插入日线数据"""
-        db_logger.info(f"[{self.stock_code}] 插入日线数据: {data.get('trade_date')}")
+        """插入单条日线数据"""
         conn = get_connection()
         cur = conn.cursor()
 
@@ -322,6 +321,37 @@ class StockDataManager:
         conn.commit()
         cur.close()
         conn.close()
+
+    def batch_insert_daily_data(self, data_list: List[Dict[str, Any]]):
+        """批量插入日线数据"""
+        if not data_list:
+            return
+
+        db_logger.info(f"[{self.stock_code}] 批量插入 {len(data_list)} 条数据")
+        conn = get_connection()
+        cur = conn.cursor()
+
+        insert_sql = f"""
+        INSERT INTO {self.table_name} (
+            trade_date, trade_time,
+            open, high, low, close, volume, amount,
+            change_pct, change_amount, turnover_rate,
+            pe_dynamic, pb, total_market_cap, circ_market_cap,
+            main_flow, main_flow_ratio
+        ) VALUES (
+            %(trade_date)s, %(trade_time)s,
+            %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, %(amount)s,
+            %(change_pct)s, %(change_amount)s, %(turnover_rate)s,
+            %(pe_dynamic)s, %(pb)s, %(total_market_cap)s, %(circ_market_cap)s,
+            %(main_flow)s, %(main_flow_ratio)s
+        ) ON CONFLICT DO NOTHING
+        """
+
+        cur.executemany(insert_sql, data_list)
+        conn.commit()
+        cur.close()
+        conn.close()
+        db_logger.info(f"[{self.stock_code}] 批量插入完成")
         db_logger.info(f"[{self.stock_code}] 日线数据插入完成")
 
     def update_technical_indicators(
@@ -447,6 +477,8 @@ def get_or_fetch_stock_data(
     1. 首次运行（表为空）：获取所有历史数据并存储
     2. 后续运行：检查最新日期，补充缺失数据
 
+    使用批量操作提高效率
+
     Args:
         stock_code: 股票代码
         force_refresh: 是否强制刷新数据
@@ -474,6 +506,7 @@ def get_or_fetch_stock_data(
         from .stock_query import get_stock_info, get_fund_flow, get_history_data
         from .technical_indicators import calculate_all_indicators
 
+        db_logger.info(f"[{stock_code}] 正在从API获取数据...")
         stock_info = get_stock_info(stock_code)
         fund_flow = get_fund_flow(stock_code)
         history_df = get_history_data(stock_code, days=days)
@@ -482,6 +515,7 @@ def get_or_fetch_stock_data(
             db_logger.warning(f"[{stock_code}] 无法获取历史数据")
             return {"source": "error", "error": "无法获取历史数据"}
 
+        db_logger.info(f"[{stock_code}] 计算技术指标...")
         indicators = calculate_all_indicators(history_df)
 
         db_logger.info(f"[{stock_code}] 获取到 {len(history_df)} 条历史数据")
@@ -500,19 +534,24 @@ def get_or_fetch_stock_data(
         else:
             db_logger.info(f"[{stock_code}] 已有数据，最新日期: {latest_date}")
 
-        inserted_count = 0
-        updated_count = 0
+        if is_first_time or force_refresh:
+            db_logger.info(f"[{stock_code}] 准备批量插入数据...")
 
-        for idx, row in history_df.iterrows():
-            trade_date = pd.to_datetime(row.get("日期", idx))
-            if isinstance(trade_date, pd.Timestamp):
-                trade_date = trade_date.to_pydatetime()
-
-            trade_date_only = (
-                trade_date.date() if hasattr(trade_date, "date") else trade_date
+            data_list = []
+            trade_dates = (
+                history_df.index if hasattr(history_df.index, "__iter__") else []
             )
 
-            if is_first_time or trade_date_only > latest_date or force_refresh:
+            for i, (idx, row) in enumerate(history_df.iterrows()):
+                trade_date = pd.to_datetime(row.get("日期", idx))
+                if isinstance(trade_date, pd.Timestamp):
+                    trade_date = trade_date.to_pydatetime()
+
+                trade_date_only = (
+                    trade_date.date() if hasattr(trade_date, "date") else trade_date
+                )
+                is_today = trade_date_only == today
+
                 daily_data = {
                     "trade_date": trade_date_only,
                     "trade_time": trade_date,
@@ -524,115 +563,52 @@ def get_or_fetch_stock_data(
                     if pd.notna(row.get("成交量"))
                     else 0,
                     "amount": to_python_type(row.get("成交额")),
+                    "change_pct": to_python_type(stock_info.get("涨跌幅"))
+                    if is_today
+                    else None,
+                    "change_amount": to_python_type(stock_info.get("涨跌额"))
+                    if is_today
+                    else None,
+                    "turnover_rate": to_python_type(stock_info.get("换手率"))
+                    if is_today
+                    else None,
+                    "pe_dynamic": to_python_type(stock_info.get("市盈率-动态"))
+                    if is_today
+                    else None,
+                    "pb": to_python_type(stock_info.get("市净率"))
+                    if is_today
+                    else None,
+                    "total_market_cap": to_python_type(stock_info.get("总市值"))
+                    if is_today
+                    else None,
+                    "circ_market_cap": to_python_type(stock_info.get("流通市值"))
+                    if is_today
+                    else None,
+                    "main_flow": to_python_type(fund_flow.get("主力净流入"))
+                    if is_today
+                    else None,
+                    "main_flow_ratio": to_python_type(fund_flow.get("主力净流入占比"))
+                    if is_today
+                    else None,
                 }
+                data_list.append(daily_data)
 
-                change_pct = None
-                change_amount = None
-                turnover_rate = None
-                if trade_date_only == today and stock_info:
-                    change_pct = to_python_type(stock_info.get("涨跌幅"))
-                    change_amount = to_python_type(stock_info.get("涨跌额"))
-                    turnover_rate = to_python_type(stock_info.get("换手率"))
+            if data_list:
+                db_logger.info(f"[{stock_code}] 批量插入 {len(data_list)} 条数据...")
+                manager.batch_insert_daily_data(data_list)
+                db_logger.info(f"[{stock_code}] 批量插入完成")
 
-                daily_data["change_pct"] = change_pct
-                daily_data["change_amount"] = change_amount
-                daily_data["turnover_rate"] = turnover_rate
-                daily_data["pe_dynamic"] = (
-                    to_python_type(stock_info.get("市盈率-动态"))
-                    if trade_date_only == today
-                    else None
-                )
-                daily_data["pb"] = (
-                    to_python_type(stock_info.get("市净率"))
-                    if trade_date_only == today
-                    else None
-                )
-                daily_data["total_market_cap"] = (
-                    to_python_type(stock_info.get("总市值"))
-                    if trade_date_only == today
-                    else None
-                )
-                daily_data["circ_market_cap"] = (
-                    to_python_type(stock_info.get("流通市值"))
-                    if trade_date_only == today
-                    else None
-                )
-                daily_data["main_flow"] = (
-                    to_python_type(fund_flow.get("主力净流入"))
-                    if trade_date_only == today
-                    else 0
-                )
-                daily_data["main_flow_ratio"] = (
-                    to_python_type(fund_flow.get("主力净流入占比"))
-                    if trade_date_only == today
-                    else 0
-                )
+            inserted_count = len(data_list)
+        else:
+            db_logger.info(f"[{stock_code}] 跳过插入，已有最新数据")
+            inserted_count = 0
 
-                try:
-                    manager.insert_daily_data(daily_data)
-                    inserted_count += 1
-                except Exception as e:
-                    db_logger.debug(
-                        f"[{stock_code}] 插入数据失败 {trade_date_only}: {e}"
-                    )
+        db_logger.info(f"[{stock_code}] 数据同步完成: 插入 {inserted_count} 条")
 
-                if "MACD" in indicators:
-                    macd_data = indicators["MACD"]
-                    row_idx = (
-                        history_df.index.get_loc(idx) if idx in history_df.index else -1
-                    )
-
-                    ind_data = {"trade_date": trade_date_only}
-
-                    if row_idx >= 0 and "MACD" in indicators:
-                        macd = indicators["MACD"]
-                        ind_data["macd_dif"] = to_python_type(macd.get("DIF"))
-                        ind_data["macd_dea"] = to_python_type(macd.get("DEA"))
-                        ind_data["macd_hist"] = to_python_type(macd.get("MACD"))
-
-                    if "RSI" in indicators and row_idx >= 0:
-                        rsi = indicators["RSI"]
-                        ind_data["rsi_6"] = to_python_type(
-                            rsi.get("RSI6", {}).get("value")
-                        )
-                        ind_data["rsi_12"] = to_python_type(
-                            rsi.get("RSI12", {}).get("value")
-                        )
-                        ind_data["rsi_24"] = to_python_type(
-                            rsi.get("RSI24", {}).get("value")
-                        )
-
-                    if "KDJ" in indicators and row_idx >= 0:
-                        kdj = indicators["KDJ"]
-                        ind_data["k"] = to_python_type(kdj.get("K"))
-                        ind_data["d"] = to_python_type(kdj.get("D"))
-                        ind_data["j"] = to_python_type(kdj.get("J"))
-
-                    if "MA" in indicators and row_idx >= 0:
-                        ma = indicators["MA"]
-                        ind_data["ma5"] = to_python_type(ma.get("MA5"))
-                        ind_data["ma10"] = to_python_type(ma.get("MA10"))
-                        ind_data["ma20"] = to_python_type(ma.get("MA20"))
-                        ind_data["ma60"] = to_python_type(ma.get("MA60"))
-
-                    if "BOLL" in indicators and row_idx >= 0:
-                        boll = indicators["BOLL"]
-                        ind_data["boll_upper"] = to_python_type(boll.get("upper"))
-                        ind_data["boll_middle"] = to_python_type(boll.get("middle"))
-                        ind_data["boll_lower"] = to_python_type(boll.get("lower"))
-
-                    try:
-                        manager.update_technical_indicators(trade_date_only, ind_data)
-                    except Exception as e:
-                        db_logger.debug(
-                            f"[{stock_code}] 更新技术指标失败 {trade_date_only}: {e}"
-                        )
-
-        db_logger.info(f"[{stock_code}] 数据同步完成: 新增/更新 {inserted_count} 条")
-
-        db_logger.info(f"[{stock_code}] 从API获取数据成功")
-
+        db_logger.info(f"[{stock_code}] 从数据库读取完整数据...")
         df = manager.get_historical_data(days)
+
+        db_logger.info(f"[{stock_code}] 数据获取完成")
 
         return {
             "source": "api",
