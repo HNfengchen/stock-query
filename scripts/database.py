@@ -108,6 +108,10 @@ class StockDataManager:
 
     def create_table(self):
         """为单个股票创建独立的数据表"""
+        if self.table_exists():
+            db_logger.info(f"[{self.stock_code}] 表 {self.table_name} 已存在，跳过创建")
+            return
+
         db_logger.info(f"[{self.stock_code}] 开始创建数据表: {self.table_name}")
 
         conn = get_connection()
@@ -391,6 +395,41 @@ class StockDataManager:
 
         df = pd.read_sql(query_sql, conn)
         conn.close()
+
+        column_mapping = {
+            "trade_date": "日期",
+            "open": "开盘",
+            "high": "最高",
+            "low": "最低",
+            "close": "收盘",
+            "volume": "成交量",
+            "amount": "成交额",
+            "change_pct": "涨跌幅",
+            "turnover_rate": "换手率",
+            "macd_dif": "DIF",
+            "macd_dea": "DEA",
+            "macd_hist": "MACD",
+            "rsi_6": "RSI6",
+            "rsi_12": "RSI12",
+            "rsi_24": "RSI24",
+            "k": "K",
+            "d": "D",
+            "j": "J",
+            "ma5": "MA5",
+            "ma10": "MA10",
+            "ma20": "MA20",
+            "ma60": "MA60",
+            "boll_upper": "上轨",
+            "boll_middle": "中轨",
+            "boll_lower": "下轨",
+            "main_flow": "主力净流入",
+            "main_flow_ratio": "主力净流入占比",
+        }
+
+        df = df.rename(columns=column_mapping)
+        df.index = df["日期"]
+        df.index.name = "日期"
+
         return df
 
 
@@ -401,14 +440,17 @@ def ensure_stock_table(stock_code: str):
 
 
 def get_or_fetch_stock_data(
-    stock_code: str, force_refresh: bool = False
+    stock_code: str, force_refresh: bool = False, days: int = 60
 ) -> Dict[str, Any]:
     """
-    获取股票数据：先检查数据库，若无最新数据则从API获取并存储
+    获取股票数据：
+    1. 首次运行（表为空）：获取所有历史数据并存储
+    2. 后续运行：检查最新日期，补充缺失数据
 
     Args:
         stock_code: 股票代码
         force_refresh: 是否强制刷新数据
+        days: 获取历史数据天数
 
     Returns:
         dict: 包含数据和来源信息
@@ -416,7 +458,9 @@ def get_or_fetch_stock_data(
     from . import stock_query
 
     db_logger.info("=" * 50)
-    db_logger.info(f"[{stock_code}] 开始获取数据 (force_refresh={force_refresh})")
+    db_logger.info(
+        f"[{stock_code}] 开始获取数据 (force_refresh={force_refresh}, days={days})"
+    )
 
     manager = StockDataManager(stock_code)
 
@@ -424,102 +468,129 @@ def get_or_fetch_stock_data(
         manager.create_table()
     except Exception as e:
         db_logger.error(f"[{stock_code}] 创建表失败: {e}")
+        return {"source": "error", "error": str(e)}
 
-    latest_date = manager.get_latest_trade_date()
-    today = datetime.now().date()
+    try:
+        from .stock_query import get_stock_info, get_fund_flow, get_history_data
+        from .technical_indicators import calculate_all_indicators
 
-    should_fetch = force_refresh or latest_date is None or latest_date < today
+        stock_info = get_stock_info(stock_code)
+        fund_flow = get_fund_flow(stock_code)
+        history_df = get_history_data(stock_code, days=days)
 
-    if should_fetch:
-        db_logger.info(
-            f"[{stock_code}] 需要获取最新数据 (最新日期={latest_date}, 今天={today})"
-        )
+        if history_df is None or history_df.empty:
+            db_logger.warning(f"[{stock_code}] 无法获取历史数据")
+            return {"source": "error", "error": "无法获取历史数据"}
 
-        try:
-            from .stock_query import get_stock_info, get_fund_flow, get_history_data
-            from .technical_indicators import calculate_all_indicators
+        indicators = calculate_all_indicators(history_df)
 
-            stock_info = get_stock_info(stock_code)
-            fund_flow = get_fund_flow(stock_code)
-            history_df = get_history_data(stock_code, days=60)
+        db_logger.info(f"[{stock_code}] 获取到 {len(history_df)} 条历史数据")
 
-            if history_df is not None and not history_df.empty:
-                indicators = calculate_all_indicators(history_df)
+        latest_date = manager.get_latest_trade_date()
+        today = datetime.now().date()
 
-                latest = history_df.iloc[-1]
-                trade_date = pd.to_datetime(latest.get("日期", latest.name))
-                if isinstance(trade_date, pd.Timestamp):
-                    trade_date = trade_date.to_pydatetime()
+        db_logger.info(f"[{stock_code}] 数据库最新日期: {latest_date}, 今天: {today}")
 
+        is_first_time = latest_date is None
+
+        if is_first_time:
+            db_logger.info(
+                f"[{stock_code}] 首次运行，将存入所有 {len(history_df)} 条历史数据"
+            )
+        else:
+            db_logger.info(f"[{stock_code}] 已有数据，最新日期: {latest_date}")
+
+        inserted_count = 0
+        updated_count = 0
+
+        for idx, row in history_df.iterrows():
+            trade_date = pd.to_datetime(row.get("日期", idx))
+            if isinstance(trade_date, pd.Timestamp):
+                trade_date = trade_date.to_pydatetime()
+
+            trade_date_only = (
+                trade_date.date() if hasattr(trade_date, "date") else trade_date
+            )
+
+            if is_first_time or trade_date_only > latest_date or force_refresh:
                 daily_data = {
-                    "trade_date": trade_date.date()
-                    if hasattr(trade_date, "date")
-                    else trade_date,
+                    "trade_date": trade_date_only,
                     "trade_time": trade_date,
-                    "open": float(latest.get("开盘", 0))
-                    if pd.notna(latest.get("开盘"))
-                    else None,
-                    "high": float(latest.get("最高", 0))
-                    if pd.notna(latest.get("最高"))
-                    else None,
-                    "low": float(latest.get("最低", 0))
-                    if pd.notna(latest.get("最低"))
-                    else None,
-                    "close": float(latest.get("收盘", 0))
-                    if pd.notna(latest.get("收盘"))
-                    else None,
-                    "volume": int(latest.get("成交量", 0))
-                    if pd.notna(latest.get("成交量"))
+                    "open": to_python_type(row.get("开盘")),
+                    "high": to_python_type(row.get("最高")),
+                    "low": to_python_type(row.get("最低")),
+                    "close": to_python_type(row.get("收盘")),
+                    "volume": int(row.get("成交量", 0))
+                    if pd.notna(row.get("成交量"))
                     else 0,
-                    "amount": float(latest.get("成交额", 0))
-                    if pd.notna(latest.get("成交额"))
-                    else None,
-                    "change_pct": float(stock_info.get("涨跌幅", 0))
-                    if pd.notna(stock_info.get("涨跌幅"))
-                    else None,
-                    "change_amount": float(stock_info.get("涨跌额", 0))
-                    if pd.notna(stock_info.get("涨跌额"))
-                    else None,
-                    "turnover_rate": float(stock_info.get("换手率", 0))
-                    if pd.notna(stock_info.get("换手率"))
-                    else None,
-                    "pe_dynamic": float(stock_info.get("市盈率-动态", 0))
-                    if pd.notna(stock_info.get("市盈率-动态"))
-                    else None,
-                    "pb": float(stock_info.get("市净率", 0))
-                    if pd.notna(stock_info.get("市净率"))
-                    else None,
-                    "total_market_cap": float(stock_info.get("总市值", 0))
-                    if pd.notna(stock_info.get("总市值"))
-                    else None,
-                    "circ_market_cap": float(stock_info.get("流通市值", 0))
-                    if pd.notna(stock_info.get("流通市值"))
-                    else None,
-                    "main_flow": float(fund_flow.get("主力净流入", 0))
-                    if fund_flow.get("主力净流入")
-                    else 0,
-                    "main_flow_ratio": float(fund_flow.get("主力净流入占比", 0))
-                    if fund_flow.get("主力净流入占比")
-                    else 0,
+                    "amount": to_python_type(row.get("成交额")),
                 }
+
+                change_pct = None
+                change_amount = None
+                turnover_rate = None
+                if trade_date_only == today and stock_info:
+                    change_pct = to_python_type(stock_info.get("涨跌幅"))
+                    change_amount = to_python_type(stock_info.get("涨跌额"))
+                    turnover_rate = to_python_type(stock_info.get("换手率"))
+
+                daily_data["change_pct"] = change_pct
+                daily_data["change_amount"] = change_amount
+                daily_data["turnover_rate"] = turnover_rate
+                daily_data["pe_dynamic"] = (
+                    to_python_type(stock_info.get("市盈率-动态"))
+                    if trade_date_only == today
+                    else None
+                )
+                daily_data["pb"] = (
+                    to_python_type(stock_info.get("市净率"))
+                    if trade_date_only == today
+                    else None
+                )
+                daily_data["total_market_cap"] = (
+                    to_python_type(stock_info.get("总市值"))
+                    if trade_date_only == today
+                    else None
+                )
+                daily_data["circ_market_cap"] = (
+                    to_python_type(stock_info.get("流通市值"))
+                    if trade_date_only == today
+                    else None
+                )
+                daily_data["main_flow"] = (
+                    to_python_type(fund_flow.get("主力净流入"))
+                    if trade_date_only == today
+                    else 0
+                )
+                daily_data["main_flow_ratio"] = (
+                    to_python_type(fund_flow.get("主力净流入占比"))
+                    if trade_date_only == today
+                    else 0
+                )
 
                 try:
                     manager.insert_daily_data(daily_data)
+                    inserted_count += 1
                 except Exception as e:
-                    db_logger.error(f"[{stock_code}] 存储日线数据失败: {e}")
+                    db_logger.debug(
+                        f"[{stock_code}] 插入数据失败 {trade_date_only}: {e}"
+                    )
 
                 if "MACD" in indicators:
-                    macd = indicators["MACD"]
-                    ind_data = {
-                        "trade_date": trade_date.date()
-                        if hasattr(trade_date, "date")
-                        else trade_date,
-                        "macd_dif": to_python_type(macd.get("DIF")),
-                        "macd_dea": to_python_type(macd.get("DEA")),
-                        "macd_hist": to_python_type(macd.get("MACD")),
-                    }
+                    macd_data = indicators["MACD"]
+                    row_idx = (
+                        history_df.index.get_loc(idx) if idx in history_df.index else -1
+                    )
 
-                    if "RSI" in indicators:
+                    ind_data = {"trade_date": trade_date_only}
+
+                    if row_idx >= 0 and "MACD" in indicators:
+                        macd = indicators["MACD"]
+                        ind_data["macd_dif"] = to_python_type(macd.get("DIF"))
+                        ind_data["macd_dea"] = to_python_type(macd.get("DEA"))
+                        ind_data["macd_hist"] = to_python_type(macd.get("MACD"))
+
+                    if "RSI" in indicators and row_idx >= 0:
                         rsi = indicators["RSI"]
                         ind_data["rsi_6"] = to_python_type(
                             rsi.get("RSI6", {}).get("value")
@@ -531,49 +602,57 @@ def get_or_fetch_stock_data(
                             rsi.get("RSI24", {}).get("value")
                         )
 
-                    if "KDJ" in indicators:
+                    if "KDJ" in indicators and row_idx >= 0:
                         kdj = indicators["KDJ"]
                         ind_data["k"] = to_python_type(kdj.get("K"))
                         ind_data["d"] = to_python_type(kdj.get("D"))
                         ind_data["j"] = to_python_type(kdj.get("J"))
 
-                    if "MA" in indicators:
+                    if "MA" in indicators and row_idx >= 0:
                         ma = indicators["MA"]
                         ind_data["ma5"] = to_python_type(ma.get("MA5"))
                         ind_data["ma10"] = to_python_type(ma.get("MA10"))
                         ind_data["ma20"] = to_python_type(ma.get("MA20"))
                         ind_data["ma60"] = to_python_type(ma.get("MA60"))
 
-                    if "BOLL" in indicators:
+                    if "BOLL" in indicators and row_idx >= 0:
                         boll = indicators["BOLL"]
                         ind_data["boll_upper"] = to_python_type(boll.get("upper"))
                         ind_data["boll_middle"] = to_python_type(boll.get("middle"))
                         ind_data["boll_lower"] = to_python_type(boll.get("lower"))
 
                     try:
-                        manager.update_technical_indicators(trade_date.date(), ind_data)
+                        manager.update_technical_indicators(trade_date_only, ind_data)
                     except Exception as e:
-                        db_logger.error(f"[{stock_code}] 更新技术指标失败: {e}")
+                        db_logger.debug(
+                            f"[{stock_code}] 更新技术指标失败 {trade_date_only}: {e}"
+                        )
 
-            db_logger.info(f"[{stock_code}] 从API获取数据成功")
+        db_logger.info(f"[{stock_code}] 数据同步完成: 新增/更新 {inserted_count} 条")
 
-            return {
-                "source": "api",
-                "stock_info": stock_info,
-                "fund_flow": fund_flow,
-                "history_df": history_df,
-                "indicators": indicators,
-            }
+        db_logger.info(f"[{stock_code}] 从API获取数据成功")
 
-        except Exception as e:
-            db_logger.error(f"[{stock_code}] 从API获取数据失败: {e}")
-            return {"source": "error", "error": str(e)}
-    else:
-        db_logger.info(f"[{stock_code}] 使用数据库中现有数据，最新日期: {latest_date}")
+        df = manager.get_historical_data(days)
+
+        return {
+            "source": "api",
+            "stock_info": stock_info,
+            "fund_flow": fund_flow,
+            "history_df": df,
+            "indicators": indicators,
+        }
+
+    except Exception as e:
+        db_logger.error(f"[{stock_code}] 从API获取数据失败: {e}")
+        import traceback
+
+        db_logger.error(traceback.format_exc())
 
         try:
-            df = manager.get_historical_data(60)
-            return {"source": "database", "dataframe": df, "latest_date": latest_date}
-        except Exception as e:
-            db_logger.error(f"[{stock_code}] 从数据库获取数据失败: {e}")
-            return {"source": "error", "error": str(e)}
+            df = manager.get_historical_data(days)
+            if df is not None and not df.empty:
+                return {"source": "database", "dataframe": df}
+        except:
+            pass
+
+        return {"source": "error", "error": str(e)}
