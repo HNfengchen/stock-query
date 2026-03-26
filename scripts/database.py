@@ -334,14 +334,18 @@ class StockDataManager:
         cur.close()
         conn.close()
 
-    def batch_insert_daily_data(self, data_list: List[Dict[str, Any]]):
-        """批量插入日线数据"""
+    def batch_insert_daily_data(self, data_list: List[Dict[str, Any]]) -> tuple:
+        """批量插入日线数据，返回 (新增数, 更新数)"""
         if not data_list:
-            return
+            return (0, 0)
 
-        db_logger.info(f"[{self.stock_code}] 批量插入 {len(data_list)} 条数据")
         conn = get_connection()
         cur = conn.cursor()
+
+        cur.execute(f"SELECT COUNT(*) FROM {self.table_name}")
+        before_count = cur.fetchone()[0]
+
+        db_logger.info(f"[{self.stock_code}] 批量插入 {len(data_list)} 条数据")
 
         insert_sql = f"""
         INSERT INTO {self.table_name} (
@@ -367,9 +371,21 @@ class StockDataManager:
 
         cur.executemany(insert_sql, data_list)
         conn.commit()
+
+        cur.execute(f"SELECT COUNT(*) FROM {self.table_name}")
+        after_count = cur.fetchone()[0]
+
         cur.close()
         conn.close()
-        db_logger.info(f"[{self.stock_code}] 批量插入完成")
+
+        inserted = after_count - before_count
+        updated = len(data_list) - inserted
+
+        db_logger.info(
+            f"[{self.stock_code}] 批量插入完成: 新增 {inserted} 条, 更新 {updated} 条"
+        )
+
+        return (inserted, updated)
 
     def batch_update_technical_indicators(
         self, history_df: pd.DataFrame, indicators: Dict
@@ -673,91 +689,161 @@ def get_or_fetch_stock_data(
         latest_date = manager.get_latest_trade_date()
         today = datetime.now().date()
 
+        api_latest_date = None
+        if not history_df.empty:
+            date_col = history_df.get("日期")
+            if date_col is not None and len(date_col) > 0:
+                last_date = date_col.iloc[-1]
+                if isinstance(last_date, str):
+                    api_latest_date = pd.to_datetime(last_date).date()
+                else:
+                    api_latest_date = last_date
+                db_logger.info(f"[{stock_code}] API最新日期: {api_latest_date}")
+
         db_logger.info(f"[{stock_code}] 数据库最新日期: {latest_date}, 今天: {today}")
 
         is_first_time = latest_date is None
 
-        if is_first_time:
-            db_logger.info(
-                f"[{stock_code}] 首次运行，将存入所有 {len(history_df)} 条历史数据"
+        need_insert = is_first_time or force_refresh
+
+        if not need_insert and api_latest_date and latest_date:
+            latest_date_only = (
+                latest_date.date() if hasattr(latest_date, "date") else latest_date
             )
-        else:
-            db_logger.info(f"[{stock_code}] 已有数据，最新日期: {latest_date}")
-
-        if is_first_time or force_refresh:
-            db_logger.info(f"[{stock_code}] 准备批量插入数据...")
-
-            data_list = []
-            trade_dates = (
-                history_df.index if hasattr(history_df.index, "__iter__") else []
-            )
-
-            for i, (idx, row) in enumerate(history_df.iterrows()):
-                trade_date = pd.to_datetime(row.get("日期", idx))
-                if isinstance(trade_date, pd.Timestamp):
-                    trade_date = trade_date.to_pydatetime()
-
-                trade_date_only = (
-                    trade_date.date() if hasattr(trade_date, "date") else trade_date
-                )
-                is_today = trade_date_only == today
-
-                daily_data = {
-                    "trade_date": trade_date_only,
-                    "trade_time": trade_date,
-                    "open": to_python_type(row.get("开盘")),
-                    "high": to_python_type(row.get("最高")),
-                    "low": to_python_type(row.get("最低")),
-                    "close": to_python_type(row.get("收盘")),
-                    "volume": int(row.get("成交量", 0))
-                    if pd.notna(row.get("成交量"))
-                    else 0,
-                    "amount": to_python_type(row.get("成交额")),
-                    "change_pct": to_python_type(stock_info.get("涨跌幅"))
-                    if is_today
-                    else None,
-                    "change_amount": to_python_type(stock_info.get("涨跌额"))
-                    if is_today
-                    else None,
-                    "turnover_rate": to_python_type(stock_info.get("换手率"))
-                    if is_today
-                    else None,
-                    "pe_dynamic": to_python_type(stock_info.get("市盈率-动态"))
-                    if is_today
-                    else None,
-                    "pb": to_python_type(stock_info.get("市净率"))
-                    if is_today
-                    else None,
-                    "total_market_cap": to_python_type(stock_info.get("总市值"))
-                    if is_today
-                    else None,
-                    "circ_market_cap": to_python_type(stock_info.get("流通市值"))
-                    if is_today
-                    else None,
-                    "main_flow": to_python_type(fund_flow.get("主力净流入"))
-                    if is_today
-                    else None,
-                    "main_flow_ratio": to_python_type(fund_flow.get("主力净流入占比"))
-                    if is_today
-                    else None,
+            if api_latest_date > latest_date_only:
+                db_logger.info(f"[{stock_code}] API有新增数据，需要更新")
+                need_insert = True
+            else:
+                db_logger.info(f"[{stock_code}] API数据不新于数据库，跳过")
+                df = manager.get_historical_data(days)
+                indicators = None
+                return {
+                    "source": "database",
+                    "stock_info": stock_info,
+                    "fund_flow": fund_flow,
+                    "history_df": df,
+                    "indicators": None,
                 }
-                data_list.append(daily_data)
 
-            if data_list:
-                db_logger.info(f"[{stock_code}] 批量插入 {len(data_list)} 条数据...")
-                manager.batch_insert_daily_data(data_list)
-                db_logger.info(f"[{stock_code}] 批量插入完成")
+        if need_insert:
+            if is_first_time:
+                db_logger.info(
+                    f"[{stock_code}] 首次运行，将存入所有 {len(history_df)} 条历史数据"
+                )
+                new_data_df = history_df
+            elif force_refresh:
+                db_logger.info(
+                    f"[{stock_code}] 强制刷新，更新所有 {len(history_df)} 条数据"
+                )
+                new_data_df = history_df
+            else:
+                db_logger.info(f"[{stock_code}] 已有数据，最新日期: {latest_date}")
+                latest_date_only = (
+                    latest_date.date() if hasattr(latest_date, "date") else latest_date
+                )
+                new_data_df = history_df[history_df["日期"] > str(latest_date_only)]
+                db_logger.info(f"[{stock_code}] 需要新增 {len(new_data_df)} 条数据")
 
-                db_logger.info(f"[{stock_code}] 批量更新技术指标...")
-                manager.batch_update_technical_indicators(history_df, indicators)
-                db_logger.info(f"[{stock_code}] 技术指标更新完成")
+            if is_first_time:
+                db_logger.info(f"[{stock_code}] 计算全部技术指标...")
+                indicators = calculate_all_indicators(history_df)
+            elif not new_data_df.empty:
+                db_logger.info(f"[{stock_code}] 只计算新增数据的技术指标...")
+                indicators = calculate_all_indicators(new_data_df)
+            else:
+                indicators = {}
 
-            inserted_count = len(data_list)
+            if not new_data_df.empty:
+                db_logger.info(
+                    f"[{stock_code}] 准备插入 {len(new_data_df)} 条新数据..."
+                )
+
+                data_list = []
+
+                for i, (idx, row) in enumerate(new_data_df.iterrows()):
+                    trade_date = pd.to_datetime(row.get("日期", idx))
+                    if isinstance(trade_date, pd.Timestamp):
+                        trade_date = trade_date.to_pydatetime()
+
+                    trade_date_only = (
+                        trade_date.date() if hasattr(trade_date, "date") else trade_date
+                    )
+                    is_latest = api_latest_date and trade_date_only == api_latest_date
+
+                    daily_data = {
+                        "trade_date": trade_date_only,
+                        "trade_time": trade_date,
+                        "open": to_python_type(row.get("开盘")),
+                        "high": to_python_type(row.get("最高")),
+                        "low": to_python_type(row.get("最低")),
+                        "close": to_python_type(row.get("收盘")),
+                        "volume": int(row.get("成交量", 0))
+                        if pd.notna(row.get("成交量"))
+                        else 0,
+                        "amount": to_python_type(row.get("成交额")),
+                        "change_pct": to_python_type(row.get("涨跌幅"))
+                        if is_latest
+                        else None,
+                        "change_amount": to_python_type(row.get("涨跌额"))
+                        if is_latest
+                        else None,
+                        "turnover_rate": to_python_type(row.get("换手率"))
+                        if is_latest
+                        else None,
+                        "pe_dynamic": to_python_type(stock_info.get("市盈率-动态"))
+                        if is_latest
+                        else None,
+                        "pb": to_python_type(stock_info.get("市净率"))
+                        if is_latest
+                        else None,
+                        "total_market_cap": to_python_type(stock_info.get("总市值"))
+                        if is_latest
+                        else None,
+                        "circ_market_cap": to_python_type(stock_info.get("流通市值"))
+                        if is_latest
+                        else None,
+                        "main_flow": to_python_type(fund_flow.get("主力净流入"))
+                        if is_latest
+                        else None,
+                        "main_flow_ratio": to_python_type(
+                            fund_flow.get("主力净流入占比")
+                        )
+                        if is_latest
+                        else None,
+                    }
+                    data_list.append(daily_data)
+
+                inserted_count = 0
+                updated_count = 0
+                if data_list:
+                    db_logger.info(
+                        f"[{stock_code}] 批量处理 {len(data_list)} 条数据..."
+                    )
+                    inserted_count, updated_count = manager.batch_insert_daily_data(
+                        data_list
+                    )
+                    if is_first_time:
+                        db_logger.info(f"[{stock_code}] 批量更新技术指标...")
+                        manager.batch_update_technical_indicators(
+                            history_df, indicators
+                        )
+                        db_logger.info(f"[{stock_code}] 技术指标更新完成")
+                    elif new_data_df is not None and not new_data_df.empty:
+                        db_logger.info(f"[{stock_code}] 批量更新新增数据的技术指标...")
+                        manager.batch_update_technical_indicators(
+                            new_data_df, indicators
+                        )
+                        db_logger.info(f"[{stock_code}] 技术指标更新完成")
+            else:
+                inserted_count = 0
+                updated_count = 0
         else:
-            db_logger.info(f"[{stock_code}] 跳过插入，已有最新数据")
             inserted_count = 0
+            updated_count = 0
 
-        db_logger.info(f"[{stock_code}] 数据同步完成: 插入 {inserted_count} 条")
+        db_logger.info(
+            f"[{stock_code}] 数据同步完成: 新增 {inserted_count} 条, 更新 {updated_count} 条"
+        )
 
         db_logger.info(f"[{stock_code}] 从数据库读取完整数据...")
         df = manager.get_historical_data(days)
