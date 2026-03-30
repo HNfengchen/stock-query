@@ -211,7 +211,9 @@ class DataFetcher:
             fetcher_logger.info(
                 f"[DataFetcher] 数据库可用，检查并获取股票 {stock_code} 数据..."
             )
-            db_result = get_or_fetch_stock_data(stock_code, force_refresh=False)
+            db_result = get_or_fetch_stock_data(
+                stock_code, force_refresh=False, days=120
+            )
 
             if db_result.get("source") == "database" and "dataframe" in db_result:
                 fetcher_logger.info(
@@ -227,7 +229,7 @@ class DataFetcher:
                     f"[DataFetcher] 股票基本信息获取完成: {info.get('名称')}, 最新价: {info.get('最新价')}"
                 )
                 fund_flow = self.fetch_fund_flow(stock_code)
-                history_df = self.fetch_history_data(stock_code, 60)
+                history_df = self.fetch_history_data(stock_code, 120)
                 fetcher_logger.debug(
                     f"[DataFetcher] 历史数据获取完成: {len(history_df) if history_df is not None else 0} 条"
                 )

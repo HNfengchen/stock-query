@@ -748,8 +748,10 @@ def get_or_fetch_stock_data(
                 db_logger.info(f"[{stock_code}] 计算全部技术指标...")
                 indicators = calculate_all_indicators(history_df)
             elif not new_data_df.empty:
-                db_logger.info(f"[{stock_code}] 只计算新增数据的技术指标...")
-                indicators = calculate_all_indicators(new_data_df)
+                db_logger.info(
+                    f"[{stock_code}] 计算新增数据的技术指标（使用完整历史数据）..."
+                )
+                indicators = calculate_all_indicators(history_df)
             else:
                 indicators = {}
 
@@ -829,9 +831,11 @@ def get_or_fetch_stock_data(
                         )
                         db_logger.info(f"[{stock_code}] 技术指标更新完成")
                     elif new_data_df is not None and not new_data_df.empty:
-                        db_logger.info(f"[{stock_code}] 批量更新新增数据的技术指标...")
+                        db_logger.info(
+                            f"[{stock_code}] 批量更新新增数据的技术指标（使用完整历史数据计算）..."
+                        )
                         manager.batch_update_technical_indicators(
-                            new_data_df, indicators
+                            history_df, indicators
                         )
                         db_logger.info(f"[{stock_code}] 技术指标更新完成")
             else:
