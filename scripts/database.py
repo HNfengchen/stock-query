@@ -570,9 +570,14 @@ class StockDataManager:
         cur.close()
         conn.close()
 
-    def get_historical_data(self, days: int = 60) -> pd.DataFrame:
+    def get_historical_data(self, days: int = None) -> pd.DataFrame:
         """获取历史数据"""
         conn = get_connection()
+
+        if days is not None and days > 0:
+            limit_clause = f"LIMIT {days}"
+        else:
+            limit_clause = ""
 
         query_sql = f"""
         SELECT 
@@ -586,7 +591,7 @@ class StockDataManager:
             main_flow, main_flow_ratio
         FROM {self.table_name}
         ORDER BY trade_date DESC
-        LIMIT {days}
+        {limit_clause}
         """
 
         df = pd.read_sql(query_sql, conn)
@@ -715,7 +720,7 @@ def get_or_fetch_stock_data(
                 need_insert = True
             else:
                 db_logger.info(f"[{stock_code}] API数据不新于数据库，跳过")
-                df = manager.get_historical_data(days)
+                df = manager.get_historical_data()
                 indicators = None
                 return {
                     "source": "database",
@@ -849,8 +854,8 @@ def get_or_fetch_stock_data(
             f"[{stock_code}] 数据同步完成: 新增 {inserted_count} 条, 更新 {updated_count} 条"
         )
 
-        db_logger.info(f"[{stock_code}] 从数据库读取完整数据...")
-        df = manager.get_historical_data(days)
+        db_logger.info(f"[{stock_code}] 从数据库读取全量数据...")
+        df = manager.get_historical_data()
 
         db_logger.info(f"[{stock_code}] 数据获取完成")
 
@@ -869,7 +874,7 @@ def get_or_fetch_stock_data(
         db_logger.error(traceback.format_exc())
 
         try:
-            df = manager.get_historical_data(days)
+            df = manager.get_historical_data()
             if df is not None and not df.empty:
                 return {"source": "database", "dataframe": df}
         except:
