@@ -1,6 +1,8 @@
 # Worktrees
 .worktrees/
 .opencode/
+.claude/
+.cursor/
 
 # Python
 __pycache__/

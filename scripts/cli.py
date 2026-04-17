@@ -40,6 +40,13 @@ def main():
     )
 
     parser.add_argument("stock", help="股票代码或名称")
+    parser.add_argument(
+        "position",
+        nargs="?",
+        default="未持有",
+        choices=["已持有", "未持有"],
+        help="持仓状态：已持有/未持有",
+    )
     parser.add_argument("--config", "-c", help="配置文件路径", default=None)
     parser.add_argument("--output-dir", "-o", help="输出目录", default=None)
     parser.add_argument(
@@ -65,7 +72,7 @@ def main():
         "directory", "output/reports"
     )
 
-    print(f"正在分析股票：{args.stock} ...")
+    print(f"正在分析股票：{args.stock} ({args.position}) ...")
 
     try:
         fetcher = DataFetcher(config)
@@ -74,13 +81,13 @@ def main():
         print(f"股票：{data['stock_name']} ({data['stock_code']})")
 
         analyzer = StockAnalyzer(config)
-        analysis = analyzer.generate_recommendation(data)
+        analysis = analyzer.generate_recommendation(data, position_status=args.position)
 
         signal = analysis["trading_signal"]
         print(f"交易信号：{signal['signal_text']} (评分：{signal['score']})")
 
         generator = ReportGenerator(config)
-        html = generator.generate_html_report(data, analysis)
+        html = generator.generate_html_report(data, analysis, position_status=args.position)
 
         stock_code = data["stock_code"]
         output_path = generator.save_report(html, stock_code, output_dir)

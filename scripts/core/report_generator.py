@@ -580,7 +580,9 @@ class ReportGenerator:
         }
         return json.dumps(config, ensure_ascii=False)
 
-    def generate_html_report(self, data: Dict, analysis: Dict) -> str:
+    def generate_html_report(
+        self, data: Dict, analysis: Dict, position_status: str = "未持有"
+    ) -> str:
         """生成 HTML 报告"""
         info = data.get("stock_info", {})
         fund_flow = data.get("fund_flow", {})
@@ -608,6 +610,8 @@ class ReportGenerator:
         rsi = indicators.get("RSI", {})
         kdj = indicators.get("KDJ", {})
         boll = indicators.get("BOLL", {})
+
+        position_strategy = analysis.get("position_strategy", {})
 
         def extract_latest(series):
             if isinstance(series, pd.Series) and not series.empty:
@@ -660,6 +664,19 @@ class ReportGenerator:
             "day2_target_high": price_pred.get("day2", {}).get("target_high", "N/A"),
             "day2_trend": price_pred.get("day2", {}).get("trend", "N/A"),
             "report_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "position_status": position_status,
+            "avg_cost": position_strategy.get("avg_cost", "N/A"),
+            "price_change_pct": position_strategy.get("price_change_pct", "N/A"),
+            "stop_profit_price": position_strategy.get("stop_profit_price", "N/A"),
+            "stop_profit_pct": position_strategy.get("stop_profit_pct", "N/A"),
+            "stop_loss_price": position_strategy.get("stop_loss_price", "N/A"),
+            "stop_loss_pct": position_strategy.get("stop_loss_pct", "N/A"),
+            "position_adjust": position_strategy.get("position_adjust", "N/A"),
+            "position_reason": position_strategy.get("reason", "N/A"),
+            "buy_timing": position_strategy.get("buy_timing", "N/A"),
+            "position_size_pct": position_strategy.get("position_size_pct", "N/A"),
+            "risk_level": position_strategy.get("risk_level", "N/A"),
+            "risk_control": position_strategy.get("risk_control", "N/A"),
             "include_charts": self.include_charts,
             "chart_height": self.chart_height,
             "kline_chart_config": "{}",

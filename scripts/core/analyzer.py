@@ -407,7 +407,9 @@ class StockAnalyzer:
 
         return result
 
-    def generate_recommendation(self, all_data: Dict) -> Dict:
+    def generate_recommendation(
+        self, all_data: Dict, position_status: str = "未持有"
+    ) -> Dict:
         """生成完整的买卖建议"""
         from scripts.technical_indicators import calculate_all_indicators
 
@@ -434,9 +436,186 @@ class StockAnalyzer:
         trading_signal = self.generate_trading_signal(analysis)
         price_prediction = self.predict_price_range(all_data, indicators)
 
+        current_price = all_data.get("stock_info", {}).get("最新价", 0)
+
+        if position_status == "已持有":
+            position_strategy = self.generate_position_strategy(
+                all_data, indicators, current_price
+            )
+        else:
+            position_strategy = self.generate_buy_strategy(
+                all_data, indicators, current_price
+            )
+
         return {
             "analysis": analysis,
             "trading_signal": trading_signal,
             "price_prediction": price_prediction,
             "indicators": indicators,
+            "position_strategy": position_strategy,
+            "position_status": position_status,
         }
+
+    def generate_position_strategy(
+        self, all_data: Dict, indicators: Dict, current_price: float
+    ) -> Dict:
+        """生成持仓策略（已持有时使用）"""
+        history_df = all_data.get("history_data")
+
+        avg_cost = current_price * 0.95
+        price_change = ((current_price - avg_cost) / avg_cost) * 100
+
+        macd = indicators.get("MACD", {})
+        rsi = indicators.get("RSI", {})
+        kdj = indicators.get("KDJ", {})
+        boll = indicators.get("BOLL", {})
+
+        macd_signal = macd.get("signal", "")
+        rsi_value = rsi.get("RSI(12)", {}).get("value")
+        if hasattr(rsi_value, "iloc"):
+            rsi_value = rsi_value.iloc[-1]
+        kdj_signal = kdj.get("signal", "")
+
+        if price_change > 15:
+            stop_profit_pct = 10
+        elif price_change > 8:
+            stop_profit_pct = 5
+        else:
+            stop_profit_pct = 3
+
+        if price_change < -8:
+            stop_loss_pct = -5
+        elif price_change < -5:
+            stop_loss_pct = -3
+        else:
+            stop_loss_pct = -2
+
+        target_price = current_price * (1 + stop_profit_pct / 100)
+        stop_price = current_price * (1 + stop_loss_pct / 100)
+
+        if rsi_value and rsi_value > 80:
+            position_adjust = "建议减仓"
+        elif rsi_value and rsi_value < 30:
+            position_adjust = "可考虑补仓"
+        elif macd_signal == "死叉" or kdj_signal == "死叉":
+            position_adjust = "建议减仓"
+        else:
+            position_adjust = "继续持有"
+
+        return {
+            "avg_cost": round(avg_cost, 2),
+            "current_price": current_price,
+            "price_change_pct": round(price_change, 2),
+            "stop_profit_price": round(target_price, 2),
+            "stop_profit_pct": stop_profit_pct,
+            "stop_loss_price": round(stop_price, 2),
+            "stop_loss_pct": stop_loss_pct,
+            "position_adjust": position_adjust,
+            "reason": self._generate_position_reason(
+                macd_signal, rsi_value, kdj_signal, price_change
+            ),
+        }
+
+    def _generate_position_reason(
+        self, macd_sig: str, rsi_val: float, kdj_sig: str, price_chg: float
+    ) -> str:
+        """生成持仓调整原因"""
+        reasons = []
+        if rsi_val and rsi_val > 70:
+            reasons.append(f"RSI偏高({rsi_val:.1f})，注意回调风险")
+        elif rsi_val and rsi_val < 30:
+            reasons.append(f"RSI偏低({rsi_val:.1f})，存在反弹机会")
+        if macd_sig == "死叉":
+            reasons.append("MACD死叉，短期看跌")
+        elif macd_sig == "金叉":
+            reasons.append("MACD金叉，短期看涨")
+        if kdj_sig == "死叉":
+            reasons.append("KDJ死叉")
+        elif kdj_sig == "超买":
+            reasons.append("KDJ超买")
+        if price_chg > 15:
+            reasons.append("涨幅较大，注意止盈")
+        if price_chg < -8:
+            reasons.append("跌幅较大，注意止损")
+        return "; ".join(reasons) if reasons else "无明显信号"
+
+    def generate_buy_strategy(
+        self, all_data: Dict, indicators: Dict, current_price: float
+    ) -> Dict:
+        """生成买入策略（未持有时使用）"""
+        history_df = all_data.get("history_data")
+
+        macd = indicators.get("MACD", {})
+        rsi = indicators.get("RSI", {})
+        kdj = indicators.get("KDJ", {})
+        boll = indicators.get("BOLL", {})
+
+        macd_signal = macd.get("signal", "")
+        rsi_value = rsi.get("RSI(12)", {}).get("value")
+        if hasattr(rsi_value, "iloc"):
+            rsi_value = rsi_value.iloc[-1]
+        kdj_signal = kdj.get("signal", "")
+
+        upper = boll.get("upper")
+        lower = boll.get("lower")
+        if hasattr(upper, "iloc"):
+            upper = upper.iloc[-1]
+            lower = lower.iloc[-1]
+
+        buy_timing = "不建议买入"
+        if macd_signal == "金叉" and rsi_value and rsi_value < 70:
+            buy_timing = "建议买入"
+        elif kdj_signal == "金叉" and rsi_value and rsi_value < 65:
+            buy_timing = "可考虑买入"
+        elif rsi_value and rsi_value < 30:
+            buy_timing = "RSI超卖，可以关注"
+
+        if upper and lower:
+            if current_price < lower:
+                risk_price = lower
+                risk_level = "较低"
+            elif current_price > upper:
+                risk_price = upper
+                risk_level = "较高"
+            else:
+                risk_price = current_price * 0.95
+                risk_level = "中等"
+        else:
+            risk_price = current_price * 0.95
+            risk_level = "中等"
+
+        position_size = min(30, 50 - (100 - rsi_value) / 2) if rsi_value else 20
+        position_size = max(10, position_size)
+
+        return {
+            "current_price": current_price,
+            "buy_timing": buy_timing,
+            "position_size_pct": round(position_size, 1),
+            "stop_loss_price": round(risk_price, 2),
+            "risk_level": risk_level,
+            "risk_control": self._generate_risk_control(
+                macd_signal, rsi_value, kdj_signal, upper, lower
+            ),
+        }
+
+    def _generate_risk_control(
+        self,
+        macd_sig: str,
+        rsi_val: float,
+        kdj_sig: str,
+        upper: float,
+        lower: float,
+    ) -> str:
+        """生成风险控制建议"""
+        controls = []
+        if rsi_val and rsi_val > 70:
+            controls.append("RSI偏高建仓风险大")
+        if upper and rsi_val and rsi_val > 80:
+            controls.append("接近上轨，建议观望")
+        if kdj_sig == "超买":
+            controls.append("KDJ超买，等回调")
+        if macd_sig == "死叉":
+            controls.append("MACD死叉，暂缓建仓")
+        if not controls:
+            controls.append("技术面无明显风险信号")
+        return "; ".join(controls)

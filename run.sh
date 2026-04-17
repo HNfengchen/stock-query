@@ -1,5 +1,6 @@
-./analyze_report.sh 000630
-./analyze_report.sh 603956
-./analyze_report.sh 601388
-# ./analyze_report.sh 000001
+rm -rf logs/ output/
+# ./analyze_report.sh 000001 未持有
+./analyze_report.sh 000630 未持有
+./analyze_report.sh 603956 已持有
+./analyze_report.sh 601388 已持有
 

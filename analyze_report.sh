@@ -1,16 +1,17 @@
 #!/bin/bash
 
 # 股票分析报告生成脚本
-# 用法：./analyze_report.sh 股票名称 [选项]
+# 用法：./analyze_report.sh 股票代码 [已持有|未持有] [选项]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 STOCK_NAME="${1:-}"
+POSITION="${2:-未持有}"
 CONFIG_FLAG=""
 OUTPUT_DIR_FLAG=""
 
-shift
+shift 2
 while [[ $# -gt 0 ]]; do
     case $1 in
         --config)
@@ -29,13 +30,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$STOCK_NAME" ]]; then
-    echo "用法：$0 <股票名称或代码> [--config <配置文件>] [--output-dir <输出目录>]"
+    echo "用法：$0 <股票代码> [已持有|未持有] [--config <配置文件>] [--output-dir <输出目录>]"
     echo "示例:"
-    echo "  $0 威派格"
-    echo "  $0 603956"
-    echo "  $0 威派格 --config config/config.yaml"
-    echo "  $0 威派格 --output-dir ./my_reports"
+    echo "  $0 000001 未持有"
+    echo "  $0 000001 已持有"
+    echo "  $0 603956 未持有 --output-dir ./my_reports"
     exit 1
 fi
 
-python -m scripts.cli "$STOCK_NAME" $CONFIG_FLAG $OUTPUT_DIR_FLAG
+python -m scripts.cli "$STOCK_NAME" "$POSITION" $CONFIG_FLAG $OUTPUT_DIR_FLAG

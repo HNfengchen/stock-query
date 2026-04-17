@@ -304,6 +304,25 @@
             margin-top: 4px;
         }
 
+        .reason-text {
+            background: rgba(34, 197, 94, 0.1);
+            border-left: 4px solid var(--cta);
+            padding: 16px;
+            margin-top: 16px;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .reason-label {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .reason-content {
+            font-size: 1rem;
+            color: var(--text);
+        }
+
         .warning {
             background: rgba(239, 83, 80, 0.1);
             border-left: 4px solid var(--down);
@@ -441,13 +460,72 @@
         </div>
 
         <div class="card">
-            <h2>买卖建议</h2>
+            <h2>{% if position_status == "已持有" %}持仓策略{% else %}买入策略{% endif %}</h2>
             <div class="recommendation">
+                {% if position_status == "已持有" %}
+                <div class="rec-grid">
+                    <div class="rec-item">
+                        <div class="rec-label">持仓成本(估)</div>
+                        <div class="rec-value">{{ avg_cost }} 元</div>
+                    </div>
+                    <div class="rec-item">
+                        <div class="rec-label">现价</div>
+                        <div class="rec-value">{{ current_price }} 元</div>
+                    </div>
+                    <div class="rec-item">
+                        <div class="rec-label">盈亏比例</div>
+                        <div class="rec-value">{% if price_change_pct > 0 %}+{% endif %}{{ price_change_pct }}%</div>
+                    </div>
+                    <div class="rec-item">
+                        <div class="rec-label">止盈价</div>
+                        <div class="rec-value">{{ stop_profit_price }} 元 ({{ stop_profit_pct }}%)</div>
+                    </div>
+                    <div class="rec-item">
+                        <div class="rec-label">止损价</div>
+                        <div class="rec-value">{{ stop_loss_price }} 元 ({{ stop_loss_pct }}%)</div>
+                    </div>
+                    <div class="rec-item">
+                        <div class="rec-label">仓位建议</div>
+                        <div class="rec-value signal-value">{{ position_adjust }}</div>
+                    </div>
+                </div>
+                <div class="reason-text">
+                    <div class="reason-label">调整原因：</div>
+                    <div class="reason-content">{{ position_reason }}</div>
+                </div>
+                {% else %}
                 <div class="rec-grid">
                     <div class="rec-item">
                         <div class="rec-label">当前价格</div>
                         <div class="rec-value">{{ current_price }} 元</div>
                     </div>
+                    <div class="rec-item">
+                        <div class="rec-label">买入时机</div>
+                        <div class="rec-value signal-value">{{ buy_timing }}</div>
+                    </div>
+                    <div class="rec-item">
+                        <div class="rec-label">建议仓位</div>
+                        <div class="rec-value">{{ position_size_pct }}%</div>
+                    </div>
+                    <div class="rec-item">
+                        <div class="rec-label">止损价</div>
+                        <div class="rec-value">{{ stop_loss_price }} 元</div>
+                    </div>
+                    <div class="rec-item">
+                        <div class="rec-label">风险等级</div>
+                        <div class="rec-value">{{ risk_level }}</div>
+                    </div>
+                    <div class="rec-item">
+                        <div class="rec-label">交易信号</div>
+                        <div class="rec-value signal-value">{{ signal_text }}</div>
+                    </div>
+                </div>
+                <div class="reason-text">
+                    <div class="reason-label">风险控制：</div>
+                    <div class="reason-content">{{ risk_control }}</div>
+                </div>
+                {% endif %}
+                <div class="rec-grid" style="margin-top: 16px;">
                     <div class="rec-item">
                         <div class="rec-label">支撑位</div>
                         <div class="rec-value">{{ support }} 元</div>
@@ -455,18 +533,6 @@
                     <div class="rec-item">
                         <div class="rec-label">压力位</div>
                         <div class="rec-value">{{ resistance }} 元</div>
-                    </div>
-                    <div class="rec-item">
-                        <div class="rec-label">目标低价</div>
-                        <div class="rec-value">{{ target_low }} 元</div>
-                    </div>
-                    <div class="rec-item">
-                        <div class="rec-label">目标高价</div>
-                        <div class="rec-value">{{ target_high }} 元</div>
-                    </div>
-                    <div class="rec-item">
-                        <div class="rec-label">交易信号</div>
-                        <div class="rec-value signal-value">{{ signal_text }}</div>
                     </div>
                 </div>
                 <div class="prediction-section">
