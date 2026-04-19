@@ -28,8 +28,8 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
     处理步骤：
     1. 过滤成交量<=0或为NaN的行（停牌日）
-    2. 基于3σ原则检测价格异常值（使用原始数据统一计算标准差，避免级联过滤）
-    3. 填充必要的缺失值
+    2. 过滤涨跌幅异常（单日>15%的极端行情）
+    3. 不使用3σ过滤（对妖股/周期股不适用）
 
     参数:
         df: 原始DataFrame
@@ -51,20 +51,11 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     if "收盘" in df.columns:
         df = df.dropna(subset=["收盘"])
 
-    price_cols = ["收盘", "最高", "最低"]
-    existing_cols = [col for col in price_cols if col in df.columns]
-
-    if existing_cols:
-        mask = pd.Series(True, index=df.index)
-
-        for col in existing_cols:
-            if df[col].std() > 0:
-                mean_val = df[col].mean()
-                std_val = df[col].std()
-                col_mask = (df[col] >= mean_val - 3 * std_val) & (df[col] <= mean_val + 3 * std_val)
-                mask = mask & col_mask
-
-        df = df[mask]
+    if "涨跌幅" in df.columns:
+        df = df.dropna(subset=["涨跌幅"])
+        df["涨跌幅"] = pd.to_numeric(df["涨跌幅"], errors="coerce")
+        pct_col = df["涨跌幅"]
+        df = df[(pct_col > -15) & (pct_col < 15)]
 
     cleaned_len = len(df)
     if cleaned_len < original_len:
