@@ -14,6 +14,20 @@ __pycache__/
 dist/
 build/
 
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.sisyphus/
+docs/
+
 # Output
 output/
 logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
