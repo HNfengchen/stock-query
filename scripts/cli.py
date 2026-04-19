@@ -57,6 +57,13 @@ def main():
         choices=["html", "markdown"],
     )
     parser.add_argument("--no-charts", help="不生成图表", action="store_true")
+    parser.add_argument(
+        "--cost",
+        "-k",
+        type=float,
+        help="持仓成本价（已持有时使用）",
+        default=None,
+    )
 
     args = parser.parse_args()
 
@@ -81,7 +88,9 @@ def main():
         print(f"股票：{data['stock_name']} ({data['stock_code']})")
 
         analyzer = StockAnalyzer(config)
-        analysis = analyzer.generate_recommendation(data, position_status=args.position)
+        analysis = analyzer.generate_recommendation(
+            data, position_status=args.position, cost_price=args.cost
+        )
 
         signal = analysis["trading_signal"]
         print(f"交易信号：{signal['signal_text']} (评分：{signal['score']})")

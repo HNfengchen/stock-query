@@ -251,6 +251,19 @@ class DataFetcher:
 
         fetcher_logger.info(f"[DataFetcher] 数据获取完成，返回结果")
 
+        data_quality = "unknown"
+        if DATABASE_AVAILABLE and db_result.get("source") == "api":
+            try:
+                validator_result = self.validate_data({}, {})
+                data_quality = (
+                    "validated"
+                    if validator_result.get("is_valid", False)
+                    else "unvalidated"
+                )
+            except Exception as e:
+                fetcher_logger.warning(f"[DataFetcher] 数据验证失败: {e}")
+                data_quality = "validation_failed"
+
         return {
             "stock_code": stock_code,
             "stock_name": stock_name,
@@ -261,4 +274,5 @@ class DataFetcher:
             "minute_data": minute_data,
             "financial_data": financial_data,
             "sector_info": sector_info,
+            "data_quality": data_quality,
         }

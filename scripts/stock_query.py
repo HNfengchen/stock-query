@@ -22,6 +22,51 @@ except ImportError:
     xtdata = None
 
 
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    数据清洗：过滤停牌日、检测异常值
+
+    处理步骤：
+    1. 过滤成交量<=0或为NaN的行（停牌日）
+    2. 基于3σ原则检测价格异常值
+    3. 填充必要的缺失值
+
+    参数:
+        df: 原始DataFrame
+
+    返回:
+        DataFrame: 清洗后的数据
+    """
+    if df is None or df.empty:
+        return df
+
+    original_len = len(df)
+
+    df = df.copy()
+
+    if "成交量" in df.columns:
+        df = df[df["成交量"] > 0]
+        df = df.dropna(subset=["成交量"])
+
+    if "收盘" in df.columns:
+        df = df.dropna(subset=["收盘"])
+
+    price_cols = ["收盘", "最高", "最低"]
+    existing_cols = [col for col in price_cols if col in df.columns]
+
+    for col in existing_cols:
+        if df[col].std() > 0:
+            mean_val = df[col].mean()
+            std_val = df[col].std()
+            df = df[(df[col] >= mean_val - 3 * std_val) & (df[col] <= mean_val + 3 * std_val)]
+
+    cleaned_len = len(df)
+    if cleaned_len < original_len:
+        print(f"数据清洗: 原始 {original_len} 条 -> 清洗后 {cleaned_len} 条 (过滤 {original_len - cleaned_len} 条)")
+
+    return df
+
+
 def _get_xtdata():
     """获取 xtquant 数据接口"""
     if XTQUANT_AVAILABLE:
@@ -373,7 +418,7 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
                 start_time=start_date,
                 end_time=end_date,
                 count=days + 10,
-                dividend_type="none",
+                dividend_type="front",
             )
 
             if market_data:
@@ -396,15 +441,16 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
                         df.index = pd.to_datetime(market_data["date"])
                         df.index.name = "日期"
 
+                    df = clean_data(df)
                     result = df.tail(days)
                     if not result.empty:
-                        print(f"xtquant 获取历史数据成功: {len(result)} 条")
+                        print(f"xtquant（前复权）获取历史数据成功: {len(result)} 条")
                         return result
         except Exception as e:
             print(f"xtquant 获取历史数据失败: {e}")
 
     try:
-        df = ef.stock.get_quote_history(stock_code, klt=101, fqt=0)
+        df = ef.stock.get_quote_history(stock_code, klt=101, fqt=1)
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             df = df.rename(
                 columns={
@@ -417,9 +463,10 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
                     "成交额": "成交额",
                 }
             )
+            df = clean_data(df)
             result = df.tail(days)
             if not result.empty:
-                print(f"efinance 获取历史数据成功: {len(result)} 条")
+                print(f"efinance（前复权）获取历史数据成功: {len(result)} 条")
                 return result
     except Exception as e:
         print(f"efinance 获取历史数据失败: {e}")
@@ -434,7 +481,7 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             start_date=start_date,
             end_date=end_date,
             frequency="d",
-            adjustflag="3",
+            adjustflag="2",
         )
 
         data_list = []
@@ -454,7 +501,8 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             df["收盘"] = pd.to_numeric(df["收盘"], errors="coerce")
             df["成交量"] = pd.to_numeric(df["成交量"], errors="coerce")
             df["成交额"] = pd.to_numeric(df["成交额"], errors="coerce")
-            print(f"baostock 获取历史数据成功: {len(df)} 条")
+            df = clean_data(df)
+            print(f"baostock（前复权）获取历史数据成功: {len(df)} 条")
             return df.tail(days)
     except ImportError:
         print("baostock 未安装")

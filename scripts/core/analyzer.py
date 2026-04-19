@@ -26,7 +26,7 @@ class StockAnalyzer:
         self.thresholds = config.get("analyzer", {}).get("thresholds", {})
         self.prediction_config = config.get("analyzer", {}).get("price_prediction", {})
 
-    def analyze_technical(self, indicators: Dict) -> Dict:
+    def analyze_technical(self, indicators: Dict, current_price: float = 0) -> Dict:
         """分析技术指标"""
         analyzer_logger.info("=" * 50)
         analyzer_logger.info("开始技术指标分析...")
@@ -42,6 +42,8 @@ class StockAnalyzer:
         rsi = indicators.get("RSI", {})
         kdj = indicators.get("KDJ", {})
         boll = indicators.get("BOLL", {})
+        ma = indicators.get("MA", {})
+        atr = indicators.get("ATR", {})
 
         analyzer_logger.debug(f"MACD信号: {macd.get('signal', 'N/A')}")
         analyzer_logger.debug(f"RSI数据: {rsi}")
@@ -65,17 +67,18 @@ class StockAnalyzer:
             score -= 15
             signals.append("MACD 空头")
 
-        # RSI 分析
+        # RSI 分析（适配新返回结构）
         for key, val in rsi.items():
-            if val.get("status") == "超卖":
+            rsi_signal = val.get("signal", "") if isinstance(val, dict) else ""
+            if rsi_signal == "超卖":
                 score += 10
                 signals.append(f"{key}超卖")
-            elif val.get("status") == "超买":
+            elif rsi_signal == "超买":
                 score -= 10
                 signals.append(f"{key}超买")
 
-        # KDJ 分析
-        kdj_signal = kdj.get("signal", "")
+        # KDJ 分析（适配新返回结构）
+        kdj_signal = kdj.get("signal", "") if isinstance(kdj, dict) else ""
         if kdj_signal == "金叉":
             score += 15
             signals.append("KDJ 金叉")
@@ -89,17 +92,79 @@ class StockAnalyzer:
             score -= 10
             signals.append("KDJ 超买")
 
-        # 归一化到 0-1 范围
-        normalized_score = max(0, min(1, (score + 50) / 100))
+        # BOLL 分析（任务T-12）
+        if current_price > 0 and isinstance(boll, dict):
+            boll_upper = boll.get("upper")
+            boll_middle = boll.get("middle")
+            boll_lower = boll.get("lower")
+
+            if hasattr(boll_upper, "iloc"):
+                boll_upper = boll_upper.iloc[-1]
+                boll_middle = boll_middle.iloc[-1] if boll_middle is not None else None
+                boll_lower = boll_lower.iloc[-1] if boll_lower is not None else None
+
+            try:
+                boll_upper = float(boll_upper) if boll_upper is not None else None
+                boll_middle = float(boll_middle) if boll_middle is not None else None
+                boll_lower = float(boll_lower) if boll_lower is not None else None
+
+                if boll_upper and current_price > boll_upper:
+                    score -= 10
+                    signals.append("BOLL超买")
+                elif boll_lower and current_price < boll_lower:
+                    score += 10
+                    signals.append("BOLL超卖")
+                elif boll_middle and current_price > boll_middle:
+                    score += 5
+                    signals.append("BOLL中轨上方")
+                elif boll_middle and current_price < boll_middle:
+                    score -= 5
+            except (TypeError, ValueError):
+                pass
+
+        # 均线排列判断（任务T-13）
+        if isinstance(ma, dict):
+            ma5_val = ma.get("MA5", {}).get("latest") if isinstance(ma.get("MA5"), dict) else None
+            ma10_val = ma.get("MA10", {}).get("latest") if isinstance(ma.get("MA10"), dict) else None
+            ma20_val = ma.get("MA20", {}).get("latest") if isinstance(ma.get("MA20"), dict) else None
+            ma60_val = ma.get("MA60", {}).get("latest") if isinstance(ma.get("MA60"), dict) else None
+
+            try:
+                ma5_val = float(ma5_val) if ma5_val is not None else None
+                ma10_val = float(ma10_val) if ma10_val is not None else None
+                ma20_val = float(ma20_val) if ma20_val is not None else None
+
+                if ma5_val and ma10_val and ma20_val:
+                    if ma5_val > ma10_val > ma20_val:
+                        score += 10
+                        signals.append("多头排列")
+                    elif ma5_val < ma10_val < ma20_val:
+                        score -= 10
+                        signals.append("空头排列")
+            except (TypeError, ValueError):
+                pass
+
+        # 基于实际分数范围[-70, 70]归一化（任务T-05）
+        MIN_SCORE = -70
+        MAX_SCORE = 70
+
+        normalized_score = (score - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
+        normalized_score = max(0, min(1, normalized_score))
 
         result["score"] = normalized_score
-        result["details"] = {"MACD": macd, "RSI": rsi, "KDJ": kdj, "BOLL": boll}
+        result["details"] = {
+            "MACD": macd,
+            "RSI": rsi,
+            "KDJ": kdj,
+            "BOLL": boll,
+            "MA": ma,
+        }
         result["signals"] = signals
 
         return result
 
     def analyze_fund_flow(self, fund_flow: Dict) -> Dict:
-        """分析资金流向"""
+        """分析资金流向（使用相对指标）"""
         result = {"score": 0, "details": {}, "trend": "neutral"}
 
         if "error" in fund_flow:
@@ -109,29 +174,47 @@ class StockAnalyzer:
         main_inflow = fund_flow.get("主力净流入", 0)
         ratio = fund_flow.get("主力净流入占比", 0)
 
+        try:
+            main_inflow = float(main_inflow) if main_inflow else 0
+        except (TypeError, ValueError):
+            main_inflow = 0
+
         score = 0
         trend = "neutral"
 
-        if main_inflow > 0:
-            if main_inflow > 10000:
-                score = 1.0
-                trend = "inflow"
-            elif main_inflow > 5000:
-                score = 0.7
-                trend = "inflow"
-            elif main_inflow > 0:
-                score = 0.4
-                trend = "inflow"
+        # 获取成交额计算相对指标
+        amount = fund_flow.get("成交额", 0)
+        try:
+            amount = float(amount) if amount else 1
+            if amount <= 0:
+                amount = 1
+        except (TypeError, ValueError):
+            amount = 1
+
+        inflow_ratio = main_inflow / amount if amount else 0
+
+        # 使用相对指标评分（任务T-06）
+        if inflow_ratio > 0.05:
+            score = 1.0
+            trend = "inflow"
+        elif inflow_ratio > 0.02:
+            score = 0.7
+            trend = "inflow"
+        elif inflow_ratio > 0:
+            score = 0.4
+            trend = "inflow"
+        elif inflow_ratio < -0.05:
+            score = 0
+            trend = "outflow"
+        elif inflow_ratio < -0.02:
+            score = 0.3
+            trend = "outflow"
+        elif inflow_ratio < 0:
+            score = 0.5
+            trend = "neutral"
         else:
-            if main_inflow < -10000:
-                score = 0
-                trend = "outflow"
-            elif main_inflow < -5000:
-                score = 0.3
-                trend = "outflow"
-            else:
-                score = 0.5
-                trend = "neutral"
+            score = 0.5
+            trend = "neutral"
 
         history = fund_flow.get("历史数据", [])
         if len(history) >= 3:
@@ -147,6 +230,7 @@ class StockAnalyzer:
         result["details"] = {
             "main_inflow": main_inflow,
             "ratio": ratio,
+            "inflow_ratio": inflow_ratio,
             "history": history,
         }
         result["trend"] = trend
@@ -250,8 +334,16 @@ class StockAnalyzer:
             }.get(signal, "持有"),
         }
 
-    def predict_price_range(self, data: Dict, indicators: Dict) -> Dict:
-        """预测价格区间（含未来两天预测）"""
+    def get_limit_pct(self, stock_code: str) -> float:
+        """根据股票代码获取涨跌停比例"""
+        code = stock_code.lstrip("0")
+        if code.startswith("30") or code.startswith("68"):
+            return 0.20
+        else:
+            return 0.10
+
+    def predict_price_range(self, data: Dict, indicators: Dict, stock_code: str = "") -> Dict:
+        """预测价格区间（含未来两天预测，涨跌停校验）"""
         analyzer_logger.info("=" * 50)
         analyzer_logger.info("开始价格预测...")
 
@@ -317,8 +409,30 @@ class StockAnalyzer:
             trend = "down"
 
         atr_mult = self.prediction_config.get("atr_multiplier", 1.5)
-        price_range = resistance - support
+
+        # 使用ATR（任务T-03）
+        atr_data = indicators.get("ATR", {})
+        atr_value = None
+        if isinstance(atr_data, dict):
+            atr_value = atr_data.get("latest")
+            if hasattr(atr_value, "iloc"):
+                atr_value = atr_value.iloc[-1] if not pd.isna(atr_value.iloc[-1]) else None
+            try:
+                atr_value = float(atr_value) if atr_value is not None else None
+            except (TypeError, ValueError):
+                atr_value = None
+
+        if atr_value and current_price:
+            price_range = atr_value
+        else:
+            price_range = resistance - support
+
         day_range = price_range * 0.5
+
+        # 涨跌停校验（任务T-14）
+        limit_pct = self.get_limit_pct(stock_code) if stock_code else 0.10
+        limit_up = current_price * (1 + limit_pct) if current_price else None
+        limit_down = current_price * (1 - limit_pct) if current_price else None
 
         if trend == "up":
             base_target_high = current_price + price_range * atr_mult
@@ -329,6 +443,12 @@ class StockAnalyzer:
         else:
             base_target_low = support
             base_target_high = resistance
+
+        # 涨跌停限制
+        if limit_up and base_target_high:
+            base_target_high = min(base_target_high, limit_up)
+        if limit_down and base_target_low:
+            base_target_low = max(base_target_low, limit_down)
 
         day1_trend = trend
         day2_trend = trend
@@ -408,7 +528,10 @@ class StockAnalyzer:
         return result
 
     def generate_recommendation(
-        self, all_data: Dict, position_status: str = "未持有"
+        self,
+        all_data: Dict,
+        position_status: str = "未持有",
+        cost_price: float = None,
     ) -> Dict:
         """生成完整的买卖建议"""
         from scripts.technical_indicators import calculate_all_indicators
@@ -421,7 +544,15 @@ class StockAnalyzer:
 
         all_data["indicators"] = indicators
 
-        technical_analysis = self.analyze_technical(indicators)
+        current_price = all_data.get("stock_info", {}).get("最新价", 0)
+        try:
+            current_price = float(current_price) if current_price else 0
+        except (TypeError, ValueError):
+            current_price = 0
+
+        stock_code = all_data.get("stock_code", "")
+
+        technical_analysis = self.analyze_technical(indicators, current_price)
         fund_flow_analysis = self.analyze_fund_flow(all_data.get("fund_flow", {}))
         sentiment_analysis = self.analyze_market_sentiment(all_data)
 
@@ -434,13 +565,11 @@ class StockAnalyzer:
         }
 
         trading_signal = self.generate_trading_signal(analysis)
-        price_prediction = self.predict_price_range(all_data, indicators)
-
-        current_price = all_data.get("stock_info", {}).get("最新价", 0)
+        price_prediction = self.predict_price_range(all_data, indicators, stock_code)
 
         if position_status == "已持有":
             position_strategy = self.generate_position_strategy(
-                all_data, indicators, current_price
+                all_data, indicators, current_price, cost_price
             )
         else:
             position_strategy = self.generate_buy_strategy(
@@ -457,13 +586,21 @@ class StockAnalyzer:
         }
 
     def generate_position_strategy(
-        self, all_data: Dict, indicators: Dict, current_price: float
+        self,
+        all_data: Dict,
+        indicators: Dict,
+        current_price: float,
+        cost_price: float = None,
     ) -> Dict:
         """生成持仓策略（已持有时使用）"""
         history_df = all_data.get("history_data")
 
-        avg_cost = current_price * 0.95
-        price_change = ((current_price - avg_cost) / avg_cost) * 100
+        if cost_price:
+            avg_cost = cost_price
+        else:
+            avg_cost = current_price * 0.95
+
+        price_change = ((current_price - avg_cost) / avg_cost) * 100 if avg_cost else 0
 
         macd = indicators.get("MACD", {})
         rsi = indicators.get("RSI", {})
