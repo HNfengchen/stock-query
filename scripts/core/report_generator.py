@@ -613,11 +613,15 @@ class ReportGenerator:
 
         position_strategy = analysis.get("position_strategy", {})
 
-        def extract_latest(series):
-            if isinstance(series, pd.Series) and not series.empty:
-                valid = series.dropna()
+        def extract_latest(value):
+            if value is None:
+                return "N/A"
+            if isinstance(value, (int, float)):
+                return round(float(value), 2)
+            if isinstance(value, pd.Series) and not value.empty:
+                valid = value.dropna()
                 if not valid.empty:
-                    return round(float(valid.iloc[-1]), 4)
+                    return round(float(valid.iloc[-1]), 2)
             return "N/A"
 
         context = {
@@ -637,13 +641,13 @@ class ReportGenerator:
             "macd_signal": macd.get("signal", "N/A"),
             "macd_dif": extract_latest(macd.get("DIF")),
             "macd_dea": extract_latest(macd.get("DEA")),
-            "rsi_6_value": extract_latest(rsi.get("RSI(6)", {}).get("value")),
-            "rsi_6_status": rsi.get("RSI(6)", {}).get("status", "N/A"),
-            "rsi_12_value": extract_latest(rsi.get("RSI(12)", {}).get("value")),
-            "rsi_12_status": rsi.get("RSI(12)", {}).get("status", "N/A"),
-            "kdj_k": extract_latest(kdj.get("K")),
-            "kdj_d": extract_latest(kdj.get("D")),
-            "kdj_j": extract_latest(kdj.get("J")),
+            "rsi_6_value": extract_latest(rsi.get("RSI(6)", {}).get("latest")) if isinstance(rsi.get("RSI(6)"), dict) else "N/A",
+            "rsi_6_status": rsi.get("RSI(6)", {}).get("signal", "N/A") if isinstance(rsi.get("RSI(6)"), dict) else "N/A",
+            "rsi_12_value": extract_latest(rsi.get("RSI(12)", {}).get("latest")) if isinstance(rsi.get("RSI(12)"), dict) else "N/A",
+            "rsi_12_status": rsi.get("RSI(12)", {}).get("signal", "N/A") if isinstance(rsi.get("RSI(12)"), dict) else "N/A",
+            "kdj_k": extract_latest(kdj.get("latest", {}).get("K")) if isinstance(kdj.get("latest"), dict) else (extract_latest(kdj.get("K")) if kdj.get("K") is not None else "N/A"),
+            "kdj_d": extract_latest(kdj.get("latest", {}).get("D")) if isinstance(kdj.get("latest"), dict) else (extract_latest(kdj.get("D")) if kdj.get("D") is not None else "N/A"),
+            "kdj_j": extract_latest(kdj.get("latest", {}).get("J")) if isinstance(kdj.get("latest"), dict) else (extract_latest(kdj.get("J")) if kdj.get("J") is not None else "N/A"),
             "kdj_signal": kdj.get("signal", "N/A"),
             "boll_upper": extract_latest(boll.get("upper")),
             "boll_middle": extract_latest(boll.get("middle")),

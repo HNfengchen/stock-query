@@ -688,23 +688,37 @@ class StockAnalyzer:
         boll = indicators.get("BOLL", {})
 
         macd_signal = macd.get("signal", "")
-        rsi_value = rsi.get("RSI(12)", {}).get("value")
-        if hasattr(rsi_value, "iloc"):
-            rsi_value = rsi_value.iloc[-1]
-        kdj_signal = kdj.get("signal", "")
+        rsi_data = rsi.get("RSI(12)", {})
+        rsi_value = rsi_data.get("latest") if isinstance(rsi_data, dict) else None
+        if rsi_value is None and hasattr(rsi_data.get("series"), "iloc"):
+            rsi_value = rsi_data.get("series").iloc[-1]
+        kdj_signal = kdj.get("signal", "") if isinstance(kdj, dict) else ""
 
         upper = boll.get("upper")
         lower = boll.get("lower")
         if hasattr(upper, "iloc"):
             upper = upper.iloc[-1]
-            lower = lower.iloc[-1]
+            lower = lower.iloc[-1] if lower is not None else None
+        try:
+            upper = float(upper) if upper is not None else None
+            lower = float(lower) if lower is not None else None
+        except (TypeError, ValueError):
+            upper, lower = None, None
+
+        technical_analysis = all_data.get("technical_analysis", {})
+        tech_score = technical_analysis.get("score", 0)
 
         buy_timing = "不建议买入"
-        if macd_signal == "金叉" and rsi_value and rsi_value < 70:
+        if tech_score >= 0.7:
             buy_timing = "建议买入"
-        elif kdj_signal == "金叉" and rsi_value and rsi_value < 65:
-            buy_timing = "可考虑买入"
-        elif rsi_value and rsi_value < 30:
+        elif tech_score >= 0.5:
+            if macd_signal == "金叉" or macd_signal == "多头":
+                buy_timing = "建议买入"
+            elif kdj_signal == "金叉":
+                buy_timing = "可考虑买入"
+            elif rsi_value and rsi_value < 30:
+                buy_timing = "RSI超卖，可以关注"
+        elif rsi_value and rsi_value < 25:
             buy_timing = "RSI超卖，可以关注"
 
         if upper and lower:
