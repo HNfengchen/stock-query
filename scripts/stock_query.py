@@ -28,7 +28,7 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
     处理步骤：
     1. 过滤成交量<=0或为NaN的行（停牌日）
-    2. 基于3σ原则检测价格异常值
+    2. 基于3σ原则检测价格异常值（使用原始数据统一计算标准差，避免级联过滤）
     3. 填充必要的缺失值
 
     参数:
@@ -54,11 +54,17 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     price_cols = ["收盘", "最高", "最低"]
     existing_cols = [col for col in price_cols if col in df.columns]
 
-    for col in existing_cols:
-        if df[col].std() > 0:
-            mean_val = df[col].mean()
-            std_val = df[col].std()
-            df = df[(df[col] >= mean_val - 3 * std_val) & (df[col] <= mean_val + 3 * std_val)]
+    if existing_cols:
+        mask = pd.Series(True, index=df.index)
+
+        for col in existing_cols:
+            if df[col].std() > 0:
+                mean_val = df[col].mean()
+                std_val = df[col].std()
+                col_mask = (df[col] >= mean_val - 3 * std_val) & (df[col] <= mean_val + 3 * std_val)
+                mask = mask & col_mask
+
+        df = df[mask]
 
     cleaned_len = len(df)
     if cleaned_len < original_len:
