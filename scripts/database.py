@@ -455,37 +455,48 @@ class StockDataManager:
             ind_data["macd_dea"] = to_python_type(macd_dea)
             ind_data["macd_hist"] = to_python_type(macd_hist)
 
-            rsi6 = rsi_data.get("RSI(6)", {}).get("value")
-            rsi12 = rsi_data.get("RSI(12)", {}).get("value")
-            rsi24 = rsi_data.get("RSI(24)", {}).get("value")
-            if isinstance(rsi6, (list, pd.Series)) and i < len(rsi6):
-                rsi6 = rsi6.iloc[i] if hasattr(rsi6, "iloc") else rsi6[i]
-                rsi12 = rsi12.iloc[i] if hasattr(rsi12, "iloc") else rsi12[i]
-                rsi24 = rsi24.iloc[i] if hasattr(rsi24, "iloc") else rsi24[i]
+            rsi6_series = rsi_data.get("RSI(6)", {}).get("series")
+            rsi12_series = rsi_data.get("RSI(12)", {}).get("series")
+            rsi24_series = rsi_data.get("RSI(24)", {}).get("series")
+            if rsi6_series is not None and i < len(rsi6_series):
+                rsi6 = rsi6_series.iloc[i] if hasattr(rsi6_series, "iloc") else rsi6_series[i]
+            else:
+                rsi6 = None
+            if rsi12_series is not None and i < len(rsi12_series):
+                rsi12 = rsi12_series.iloc[i] if hasattr(rsi12_series, "iloc") else rsi12_series[i]
+            else:
+                rsi12 = None
+            if rsi24_series is not None and i < len(rsi24_series):
+                rsi24 = rsi24_series.iloc[i] if hasattr(rsi24_series, "iloc") else rsi24_series[i]
+            else:
+                rsi24 = None
             ind_data["rsi_6"] = to_python_type(rsi6)
             ind_data["rsi_12"] = to_python_type(rsi12)
             ind_data["rsi_24"] = to_python_type(rsi24)
 
-            kdj_k = kdj_data.get("K")
-            kdj_d = kdj_data.get("D")
-            kdj_j = kdj_data.get("J")
-            if isinstance(kdj_k, (list, pd.Series)) and i < len(kdj_k):
-                kdj_k = kdj_k.iloc[i] if hasattr(kdj_k, "iloc") else kdj_k[i]
-                kdj_d = kdj_d.iloc[i] if hasattr(kdj_d, "iloc") else kdj_d[i]
-                kdj_j = kdj_j.iloc[i] if hasattr(kdj_j, "iloc") else kdj_j[i]
+            kdj_series = kdj_data.get("series", {})
+            kdj_k = kdj_series.get("K") if isinstance(kdj_series, dict) else kdj_data.get("K")
+            kdj_d = kdj_series.get("D") if isinstance(kdj_series, dict) else kdj_data.get("D")
+            kdj_j = kdj_series.get("J") if isinstance(kdj_series, dict) else kdj_data.get("J")
+            if isinstance(kdj_k, pd.Series) and i < len(kdj_k):
+                kdj_k = kdj_k.iloc[i]
+                kdj_d = kdj_d.iloc[i] if kdj_d is not None else None
+                kdj_j = kdj_j.iloc[i] if kdj_j is not None else None
             ind_data["k"] = to_python_type(kdj_k)
             ind_data["d"] = to_python_type(kdj_d)
             ind_data["j"] = to_python_type(kdj_j)
 
-            ma5 = ma_data.get("MA5")
-            ma10 = ma_data.get("MA10")
-            ma20 = ma_data.get("MA20")
-            ma60 = ma_data.get("MA60")
-            if isinstance(ma5, (list, pd.Series)) and i < len(ma5):
-                ma5 = ma5.iloc[i] if hasattr(ma5, "iloc") else ma5[i]
-                ma10 = ma10.iloc[i] if hasattr(ma10, "iloc") else ma10[i]
-                ma20 = ma20.iloc[i] if hasattr(ma20, "iloc") else ma20[i]
-                ma60 = ma60.iloc[i] if hasattr(ma60, "iloc") else ma60[i]
+            ma5_series = ma_data.get("MA5", {}).get("series") if isinstance(ma_data.get("MA5"), dict) else ma_data.get("MA5")
+            ma10_series = ma_data.get("MA10", {}).get("series") if isinstance(ma_data.get("MA10"), dict) else ma_data.get("MA10")
+            ma20_series = ma_data.get("MA20", {}).get("series") if isinstance(ma_data.get("MA20"), dict) else ma_data.get("MA20")
+            ma60_series = ma_data.get("MA60", {}).get("series") if isinstance(ma_data.get("MA60"), dict) else ma_data.get("MA60")
+            if isinstance(ma5_series, pd.Series) and i < len(ma5_series):
+                ma5 = ma5_series.iloc[i]
+                ma10 = ma10_series.iloc[i] if ma10_series is not None else None
+                ma20 = ma20_series.iloc[i] if ma20_series is not None else None
+                ma60 = ma60_series.iloc[i] if ma60_series is not None else None
+            else:
+                ma5 = ma10 = ma20 = ma60 = None
             ind_data["ma5"] = to_python_type(ma5)
             ind_data["ma10"] = to_python_type(ma10)
             ind_data["ma20"] = to_python_type(ma20)
