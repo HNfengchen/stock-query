@@ -22,17 +22,18 @@ except ImportError:
     xtdata = None
 
 
-def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+def clean_data(df: pd.DataFrame, stock_code: str = None) -> pd.DataFrame:
     """
     数据清洗：过滤停牌日、检测异常值
 
     处理步骤：
     1. 过滤成交量<=0或为NaN的行（停牌日）
-    2. 过滤涨跌幅异常（单日>15%的极端行情）
+    2. 过滤涨跌幅异常（根据板块设定不同阈值）
     3. 不使用3σ过滤（对妖股/周期股不适用）
 
     参数:
         df: 原始DataFrame
+        stock_code: 股票代码，用于判断板块设定涨跌幅阈值
 
     返回:
         DataFrame: 清洗后的数据
@@ -55,7 +56,19 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
         df = df.dropna(subset=["涨跌幅"])
         df["涨跌幅"] = pd.to_numeric(df["涨跌幅"], errors="coerce")
         pct_col = df["涨跌幅"]
-        df = df[(pct_col > -15) & (pct_col < 15)]
+
+        # 根据股票代码判断板块，设定不同的涨跌幅阈值
+        pct_min, pct_max = -15, 15  # 默认值
+        if stock_code:
+            code_str = str(stock_code)
+            if code_str.startswith("30") or code_str.startswith("68"):
+                pct_min, pct_max = -21, 21  # 创业板/科创板
+            elif code_str.startswith("00") or code_str.startswith("60") or code_str.startswith("01"):
+                pct_min, pct_max = -11, 11  # 主板
+            elif "ST" in code_str or "*ST" in code_str:
+                pct_min, pct_max = -6, 6  # ST股
+
+        df = df[(pct_col > pct_min) & (pct_col < pct_max)]
 
     cleaned_len = len(df)
     if cleaned_len < original_len:
@@ -105,7 +118,7 @@ def parse_stock_code(user_input: str) -> Tuple[Optional[str], Optional[str]]:
                             code = stock.split(".")[0]
                             market = "sh" if stock.endswith(".SH") else "sz"
                             return code, market
-                except:
+                except Exception:
                     continue
         except Exception as e:
             print(f"通过 xtquant 查询失败: {e}")
@@ -438,7 +451,7 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
                         df.index = pd.to_datetime(market_data["date"])
                         df.index.name = "日期"
 
-                    df = clean_data(df)
+                    df = clean_data(df, stock_code)
                     result = df.tail(days)
                     if not result.empty:
                         print(f"xtquant（前复权）获取历史数据成功: {len(result)} 条")
@@ -460,7 +473,7 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
                     "成交额": "成交额",
                 }
             )
-            df = clean_data(df)
+            df = clean_data(df, stock_code)
             result = df.tail(days)
             if not result.empty:
                 print(f"efinance（前复权）获取历史数据成功: {len(result)} 条")
@@ -498,7 +511,7 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             df["收盘"] = pd.to_numeric(df["收盘"], errors="coerce")
             df["成交量"] = pd.to_numeric(df["成交量"], errors="coerce")
             df["成交额"] = pd.to_numeric(df["成交额"], errors="coerce")
-            df = clean_data(df)
+            df = clean_data(df, stock_code)
             print(f"baostock（前复权）获取历史数据成功: {len(df)} 条")
             return df.tail(days)
     except ImportError:
@@ -546,7 +559,7 @@ def format_number(value, unit: str = "") -> str:
             return f"{num / 1e4:.2f}万{unit}"
         else:
             return f"{num:.2f}{unit}"
-    except:
+    except (ValueError, TypeError, KeyError):
         return str(value)
 
 
@@ -634,11 +647,19 @@ def generate_report(stock_input: str) -> str:
     if "error" not in indicators:
         report += "### 4.1 MACD指标\n\n"
         macd = indicators.get("MACD", {})
+        macd_series = macd.get("series", {})
+        dif = macd_series.get("DIF")
+        dea = macd_series.get("DEA")
+        macd_val = macd_series.get("MACD")
+        if hasattr(dif, "iloc"):
+            dif = dif.iloc[-1]
+            dea = dea.iloc[-1] if dea is not None else None
+            macd_val = macd_val.iloc[-1] if macd_val is not None else None
         report += "| 项目 | 数值 |\n"
         report += "|------|------|\n"
-        report += f"| DIF | {macd.get('DIF', 'N/A')} |\n"
-        report += f"| DEA | {macd.get('DEA', 'N/A')} |\n"
-        report += f"| MACD柱 | {macd.get('MACD', 'N/A')} |\n"
+        report += f"| DIF | {dif} |\n"
+        report += f"| DEA | {dea} |\n"
+        report += f"| MACD柱 | {macd_val} |\n"
         report += f"| 信号 | {macd.get('signal', 'N/A')} |\n"
         report += "\n"
 
@@ -647,9 +668,11 @@ def generate_report(stock_input: str) -> str:
         report += "| 周期 | 数值 | 状态 |\n"
         report += "|------|------|------|\n"
         for key, val in rsi.items():
-            report += (
-                f"| {key} | {val.get('value', 'N/A')} | {val.get('status', 'N/A')} |\n"
-            )
+            latest_val = val.get("latest") if isinstance(val, dict) else val
+            signal_val = val.get("signal") if isinstance(val, dict) else val
+            if hasattr(latest_val, "iloc"):
+                latest_val = latest_val.iloc[-1]
+            report += f"| {key} | {latest_val} | {signal_val} |\n"
         report += "\n"
 
         report += "### 4.3 KDJ指标\n\n"

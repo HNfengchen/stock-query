@@ -24,13 +24,17 @@ def calculate_macd(
         signal: 信号线周期，默认9
 
     返回:
-        dict: 包含DIF、DEA、MACD柱的序列和信号
+        dict: 包含latest、series和signal的字典
     """
     if len(close_prices) < slow + signal:
+        length = len(close_prices) if hasattr(close_prices, '__len__') else 0
         return {
-            "DIF": pd.Series([None] * len(close_prices)),
-            "DEA": pd.Series([None] * len(close_prices)),
-            "MACD": pd.Series([None] * len(close_prices)),
+            "latest": {"DIF": None, "DEA": None, "MACD": None},
+            "series": {
+                "DIF": pd.Series([None] * length),
+                "DEA": pd.Series([None] * length),
+                "MACD": pd.Series([None] * length),
+            },
             "signal": "数据不足",
         }
 
@@ -45,6 +49,7 @@ def calculate_macd(
     dea_series = dea.round(4)
     macd_series = macd.round(4)
 
+    signal_text = "数据不足"
     if len(dif) >= 2:
         if dif.iloc[-1] > dea.iloc[-1] and dif.iloc[-2] <= dea.iloc[-2]:
             signal_text = "金叉"
@@ -54,13 +59,18 @@ def calculate_macd(
             signal_text = "多头"
         else:
             signal_text = "空头"
-    else:
-        signal_text = "数据不足"
 
     return {
-        "DIF": dif_series,
-        "DEA": dea_series,
-        "MACD": macd_series,
+        "latest": {
+            "DIF": round(dif.iloc[-1], 4) if not pd.isna(dif.iloc[-1]) else None,
+            "DEA": round(dea.iloc[-1], 4) if not pd.isna(dea.iloc[-1]) else None,
+            "MACD": round(macd.iloc[-1], 4) if not pd.isna(macd.iloc[-1]) else None,
+        },
+        "series": {
+            "DIF": dif_series,
+            "DEA": dea_series,
+            "MACD": macd_series,
+        },
         "signal": signal_text,
     }
 
@@ -246,16 +256,19 @@ def calculate_boll(
         k: 标准差倍数，默认2
 
     返回:
-        dict: 包含上轨、中轨、下轨的序列
+        dict: 包含latest、series的字典
     """
     closes = pd.Series(close_prices)
     length = len(closes)
 
     if length < n:
         return {
-            "upper": pd.Series([None] * length),
-            "middle": pd.Series([None] * length),
-            "lower": pd.Series([None] * length),
+            "latest": {"upper": None, "middle": None, "lower": None},
+            "series": {
+                "upper": pd.Series([None] * length),
+                "middle": pd.Series([None] * length),
+                "lower": pd.Series([None] * length),
+            },
         }
 
     middle = closes.rolling(window=n).mean()
@@ -265,9 +278,16 @@ def calculate_boll(
     lower = middle - k * std
 
     return {
-        "upper": upper.round(2),
-        "middle": middle.round(2),
-        "lower": lower.round(2),
+        "latest": {
+            "upper": round(upper.iloc[-1], 2) if not pd.isna(upper.iloc[-1]) else None,
+            "middle": round(middle.iloc[-1], 2) if not pd.isna(middle.iloc[-1]) else None,
+            "lower": round(lower.iloc[-1], 2) if not pd.isna(lower.iloc[-1]) else None,
+        },
+        "series": {
+            "upper": upper.round(2),
+            "middle": middle.round(2),
+            "lower": lower.round(2),
+        },
     }
 
 

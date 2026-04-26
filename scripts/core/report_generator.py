@@ -649,9 +649,10 @@ class ReportGenerator:
             "kdj_d": extract_latest(kdj.get("latest", {}).get("D")) if isinstance(kdj.get("latest"), dict) else (extract_latest(kdj.get("D")) if kdj.get("D") is not None else "N/A"),
             "kdj_j": extract_latest(kdj.get("latest", {}).get("J")) if isinstance(kdj.get("latest"), dict) else (extract_latest(kdj.get("J")) if kdj.get("J") is not None else "N/A"),
             "kdj_signal": kdj.get("signal", "N/A"),
-            "boll_upper": extract_latest(boll.get("upper")),
-            "boll_middle": extract_latest(boll.get("middle")),
-            "boll_lower": extract_latest(boll.get("lower")),
+            # 兼容新旧BOLL返回格式
+            "boll_upper": extract_latest(boll.get("latest", {}).get("upper")) if isinstance(boll.get("latest"), dict) else extract_latest(boll.get("upper")),
+            "boll_middle": extract_latest(boll.get("latest", {}).get("middle")) if isinstance(boll.get("latest"), dict) else extract_latest(boll.get("middle")),
+            "boll_lower": extract_latest(boll.get("latest", {}).get("lower")) if isinstance(boll.get("latest"), dict) else extract_latest(boll.get("lower")),
             "main_inflow": f"{fund_flow.get('主力净流入', 0) / 10000:.2f}万",
             "main_inflow_ratio": f"{fund_flow.get('主力净流入占比', 'N/A')}",
             "fund_flow_trend": self._format_trend(

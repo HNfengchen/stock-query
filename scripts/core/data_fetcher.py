@@ -252,6 +252,9 @@ class DataFetcher:
         fetcher_logger.info(f"[DataFetcher] 数据获取完成，返回结果")
 
         data_quality = "unknown"
+        # TODO: D-02 数据交叉验证需要同时获取xtquant和efinance数据进行对比
+        # 当前架构仅在数据库模式或API模式下获取数据，暂无法实现真正的交叉验证
+        # 需要重构以支持同时获取两个数据源
         if DATABASE_AVAILABLE and db_result.get("source") == "api":
             try:
                 validator_result = self.validate_data({}, {})

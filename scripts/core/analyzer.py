@@ -144,9 +144,9 @@ class StockAnalyzer:
             except (TypeError, ValueError):
                 pass
 
-        # 基于实际分数范围[-70, 70]归一化（任务T-05）
-        MIN_SCORE = -70
-        MAX_SCORE = 70
+        # 基于实际分数范围[-90, 90]归一化（BOLL和均线评分加入后调整）
+        MIN_SCORE = -90
+        MAX_SCORE = 90
 
         normalized_score = (score - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
         normalized_score = max(0, min(1, normalized_score))
@@ -260,7 +260,7 @@ class StockAnalyzer:
                 score += 0.1
             elif turnover < 2:
                 score -= 0.1
-        except:
+        except (ValueError, TypeError):
             pass
 
         try:
@@ -271,7 +271,7 @@ class StockAnalyzer:
                 score += 0.1
             elif volume_ratio < 0.5:
                 score -= 0.1
-        except:
+        except (ValueError, TypeError):
             pass
 
         result["score"] = max(0, min(1, score))
@@ -353,7 +353,7 @@ class StockAnalyzer:
         current_price = info.get("最新价", 0)
         try:
             current_price = float(current_price)
-        except:
+        except (ValueError, TypeError):
             current_price = 0
 
         analyzer_logger.info(f"当前价格: {current_price}")
@@ -454,7 +454,7 @@ class StockAnalyzer:
         day2_trend = trend
 
         macd = indicators.get("MACD", {}).get("signal", "")
-        rsi = indicators.get("RSI", {}).get("RSI(6)", {}).get("status", "")
+        rsi = indicators.get("RSI", {}).get("RSI(6)", {}).get("signal", "")
 
         if rsi == "超买":
             day2_trend = "down"
@@ -608,10 +608,27 @@ class StockAnalyzer:
         boll = indicators.get("BOLL", {})
 
         macd_signal = macd.get("signal", "")
-        rsi_value = rsi.get("RSI(12)", {}).get("value")
+        rsi_value = rsi.get("RSI(12)", {}).get("latest")
         if hasattr(rsi_value, "iloc"):
             rsi_value = rsi_value.iloc[-1]
         kdj_signal = kdj.get("signal", "")
+
+        # 兼容新旧BOLL返回格式
+        boll_latest = boll.get("latest", {})
+        if isinstance(boll_latest, dict):
+            boll_upper = boll_latest.get("upper")
+            boll_lower = boll_latest.get("lower")
+            if hasattr(boll_upper, "iloc"):
+                boll_upper = boll_upper.iloc[-1]
+                boll_lower = boll_lower.iloc[-1] if boll_lower is not None else None
+            try:
+                boll_upper = float(boll_upper) if boll_upper is not None else None
+                boll_lower = float(boll_lower) if boll_lower is not None else None
+            except (TypeError, ValueError):
+                boll_upper, boll_lower = None, None
+        else:
+            boll_upper = boll.get("upper")
+            boll_lower = boll.get("lower")
 
         if price_change > 15:
             stop_profit_pct = 10
@@ -694,11 +711,14 @@ class StockAnalyzer:
             rsi_value = rsi_data.get("series").iloc[-1]
         kdj_signal = kdj.get("signal", "") if isinstance(kdj, dict) else ""
 
-        upper = boll.get("upper")
-        lower = boll.get("lower")
-        if hasattr(upper, "iloc"):
-            upper = upper.iloc[-1]
-            lower = lower.iloc[-1] if lower is not None else None
+        # 兼容新旧BOLL返回格式
+        boll_latest = boll.get("latest", {})
+        if isinstance(boll_latest, dict):
+            upper = boll_latest.get("upper")
+            lower = boll_latest.get("lower")
+        else:
+            upper = boll.get("upper")
+            lower = boll.get("lower")
         try:
             upper = float(upper) if upper is not None else None
             lower = float(lower) if lower is not None else None

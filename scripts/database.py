@@ -438,9 +438,16 @@ class StockDataManager:
 
             ind_data = {"trade_date": trade_date_only}
 
-            macd_dif = macd_data.get("DIF")
-            macd_dea = macd_data.get("DEA")
-            macd_hist = macd_data.get("MACD")
+            # 兼容新旧MACD返回格式
+            macd_series = macd_data.get("series", {})
+            if isinstance(macd_series, dict):
+                macd_dif = macd_series.get("DIF")
+                macd_dea = macd_series.get("DEA")
+                macd_hist = macd_series.get("MACD")
+            else:
+                macd_dif = macd_data.get("DIF")
+                macd_dea = macd_data.get("DEA")
+                macd_hist = macd_data.get("MACD")
             if isinstance(macd_dif, (list, pd.Series)) and i < len(macd_dif):
                 macd_dif = (
                     macd_dif.iloc[i] if hasattr(macd_dif, "iloc") else macd_dif[i]
@@ -502,9 +509,16 @@ class StockDataManager:
             ind_data["ma20"] = to_python_type(ma20)
             ind_data["ma60"] = to_python_type(ma60)
 
-            boll_upper = boll_data.get("upper")
-            boll_middle = boll_data.get("middle")
-            boll_lower = boll_data.get("lower")
+            # 兼容新旧BOLL返回格式
+            boll_series = boll_data.get("series", {})
+            if isinstance(boll_series, dict):
+                boll_upper = boll_series.get("upper")
+                boll_middle = boll_series.get("middle")
+                boll_lower = boll_series.get("lower")
+            else:
+                boll_upper = boll_data.get("upper")
+                boll_middle = boll_data.get("middle")
+                boll_lower = boll_data.get("lower")
             if isinstance(boll_upper, (list, pd.Series)) and i < len(boll_upper):
                 boll_upper = (
                     boll_upper.iloc[i] if hasattr(boll_upper, "iloc") else boll_upper[i]
