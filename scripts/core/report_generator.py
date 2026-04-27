@@ -638,9 +638,10 @@ class ReportGenerator:
             "circulating_market_value": self._format_market_value(info.get("流通市值")),
             "pe": info.get("市盈率-动态", info.get("市盈率(动)", "N/A")),
             "pb": info.get("市净率", "N/A"),
+            # 兼容新旧MACD返回格式
             "macd_signal": macd.get("signal", "N/A"),
-            "macd_dif": extract_latest(macd.get("DIF")),
-            "macd_dea": extract_latest(macd.get("DEA")),
+            "macd_dif": extract_latest(macd.get("latest", {}).get("DIF")) if isinstance(macd.get("latest"), dict) else extract_latest(macd.get("DIF")),
+            "macd_dea": extract_latest(macd.get("latest", {}).get("DEA")) if isinstance(macd.get("latest"), dict) else extract_latest(macd.get("DEA")),
             "rsi_6_value": extract_latest(rsi.get("RSI(6)", {}).get("latest")) if isinstance(rsi.get("RSI(6)"), dict) else "N/A",
             "rsi_6_status": rsi.get("RSI(6)", {}).get("signal", "N/A") if isinstance(rsi.get("RSI(6)"), dict) else "N/A",
             "rsi_12_value": extract_latest(rsi.get("RSI(12)", {}).get("latest")) if isinstance(rsi.get("RSI(12)"), dict) else "N/A",
