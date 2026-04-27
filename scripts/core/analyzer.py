@@ -67,15 +67,21 @@ class StockAnalyzer:
             score -= 15
             signals.append("MACD 空头")
 
-        # RSI 分析（适配新返回结构）
-        for key, val in rsi.items():
-            rsi_signal = val.get("signal", "") if isinstance(val, dict) else ""
-            if rsi_signal == "超卖":
-                score += 10
-                signals.append(f"{key}超卖")
-            elif rsi_signal == "超买":
-                score -= 10
-                signals.append(f"{key}超买")
+        # RSI 分析（仅使用RSI(12)作为代表周期，避免三周期权重叠加）
+        rsi_12 = rsi.get("RSI(12)", {})
+        rsi_signal = rsi_12.get("signal", "") if isinstance(rsi_12, dict) else ""
+        if rsi_signal == "超卖":
+            score += 10
+            signals.append("RSI(12)超卖")
+        elif rsi_signal == "超买":
+            score -= 10
+            signals.append("RSI(12)超买")
+        elif rsi_signal == "偏强":
+            score += 5
+            signals.append("RSI(12)偏强")
+        elif rsi_signal == "偏弱":
+            score -= 5
+            signals.append("RSI(12)偏弱")
 
         # KDJ 分析（适配新返回结构）
         kdj_signal = kdj.get("signal", "") if isinstance(kdj, dict) else ""
@@ -94,9 +100,15 @@ class StockAnalyzer:
 
         # BOLL 分析（任务T-12）
         if current_price > 0 and isinstance(boll, dict):
-            boll_upper = boll.get("upper")
-            boll_middle = boll.get("middle")
-            boll_lower = boll.get("lower")
+            boll_latest = boll.get("latest", {})
+            if isinstance(boll_latest, dict):
+                boll_upper = boll_latest.get("upper")
+                boll_middle = boll_latest.get("middle")
+                boll_lower = boll_latest.get("lower")
+            else:
+                boll_upper = boll.get("upper")
+                boll_middle = boll.get("middle")
+                boll_lower = boll.get("lower")
 
             if hasattr(boll_upper, "iloc"):
                 boll_upper = boll_upper.iloc[-1]
@@ -163,7 +175,7 @@ class StockAnalyzer:
 
         return result
 
-    def analyze_fund_flow(self, fund_flow: Dict) -> Dict:
+    def analyze_fund_flow(self, fund_flow: Dict, stock_info: Dict = None) -> Dict:
         """分析资金流向（使用相对指标）"""
         result = {"score": 0, "details": {}, "trend": "neutral"}
 
@@ -182,8 +194,11 @@ class StockAnalyzer:
         score = 0
         trend = "neutral"
 
-        # 获取成交额计算相对指标
+        # 优先从fund_flow获取成交额，否则从stock_info获取
         amount = fund_flow.get("成交额", 0)
+        if not amount and stock_info:
+            amount = stock_info.get("成交额") or stock_info.get("今日成交额") or stock_info.get("成交额(万)")
+
         try:
             amount = float(amount) if amount else 1
             if amount <= 0:
@@ -369,8 +384,13 @@ class StockAnalyzer:
             }
 
         boll = indicators.get("BOLL", {})
-        lower = boll.get("lower")
-        upper = boll.get("upper")
+        boll_latest = boll.get("latest", {})
+        if isinstance(boll_latest, dict):
+            lower = boll_latest.get("lower")
+            upper = boll_latest.get("upper")
+        else:
+            lower = boll.get("lower")
+            upper = boll.get("upper")
 
         analyzer_logger.debug(f"布林带: lower={lower}, upper={upper}")
 
@@ -553,7 +573,9 @@ class StockAnalyzer:
         stock_code = all_data.get("stock_code", "")
 
         technical_analysis = self.analyze_technical(indicators, current_price)
-        fund_flow_analysis = self.analyze_fund_flow(all_data.get("fund_flow", {}))
+        fund_flow_analysis = self.analyze_fund_flow(
+            all_data.get("fund_flow", {}), all_data.get("stock_info", {})
+        )
         sentiment_analysis = self.analyze_market_sentiment(all_data)
 
         all_data["technical_analysis"] = technical_analysis
@@ -630,22 +652,48 @@ class StockAnalyzer:
             boll_upper = boll.get("upper")
             boll_lower = boll.get("lower")
 
-        if price_change > 15:
-            stop_profit_pct = 10
-        elif price_change > 8:
-            stop_profit_pct = 5
-        else:
-            stop_profit_pct = 3
+        # 获取ATR用于动态止损
+        atr = indicators.get("ATR", {})
+        atr_value = None
+        if isinstance(atr, dict):
+            atr_latest = atr.get("latest")
+            if isinstance(atr_latest, (int, float)):
+                atr_value = float(atr_latest)
+            elif hasattr(atr_latest, "iloc"):
+                atr_value = float(atr_latest.iloc[-1]) if not atr_latest.empty else None
+        elif isinstance(atr, (int, float)):
+            atr_value = float(atr)
 
-        if price_change < -8:
-            stop_loss_pct = -5
-        elif price_change < -5:
-            stop_loss_pct = -3
+        # 动态止损：基于ATR计算止损距离
+        if atr_value and atr_value > 0:
+            atr_stop_loss_multiplier = 2.0  # 2倍ATR作为止损距离
+            atr_based_stop_loss = current_price - atr_value * atr_stop_loss_multiplier
+            if price_change > 15:
+                stop_profit_pct = 10
+            elif price_change > 8:
+                stop_profit_pct = 5
+            else:
+                stop_profit_pct = 3
+            atr_based_stop_profit = current_price * (1 + stop_profit_pct / 100)
+            target_price = atr_based_stop_profit
+            stop_price = max(atr_based_stop_loss, current_price * (1 - 0.05))  # 取ATR止损和5%止损的较大值
         else:
-            stop_loss_pct = -2
+            if price_change > 15:
+                stop_profit_pct = 10
+            elif price_change > 8:
+                stop_profit_pct = 5
+            else:
+                stop_profit_pct = 3
 
-        target_price = current_price * (1 + stop_profit_pct / 100)
-        stop_price = current_price * (1 + stop_loss_pct / 100)
+            if price_change < -8:
+                stop_loss_pct = -5
+            elif price_change < -5:
+                stop_loss_pct = -3
+            else:
+                stop_loss_pct = -2
+
+            target_price = current_price * (1 + stop_profit_pct / 100)
+            stop_price = current_price * (1 + stop_loss_pct / 100)
 
         if rsi_value and rsi_value > 80:
             position_adjust = "建议减仓"
@@ -711,7 +759,7 @@ class StockAnalyzer:
             rsi_value = rsi_data.get("series").iloc[-1]
         kdj_signal = kdj.get("signal", "") if isinstance(kdj, dict) else ""
 
-        # 兼容新旧BOLL返回格式
+        # 统一使用新格式访问BOLL
         boll_latest = boll.get("latest", {})
         if isinstance(boll_latest, dict):
             upper = boll_latest.get("upper")
@@ -728,6 +776,18 @@ class StockAnalyzer:
         technical_analysis = all_data.get("technical_analysis", {})
         tech_score = technical_analysis.get("score", 0)
 
+        # 获取ATR用于动态止损
+        atr = indicators.get("ATR", {})
+        atr_value = None
+        if isinstance(atr, dict):
+            atr_latest = atr.get("latest")
+            if isinstance(atr_latest, (int, float)):
+                atr_value = float(atr_latest)
+            elif hasattr(atr_latest, "iloc"):
+                atr_value = float(atr_latest.iloc[-1]) if not atr_latest.empty else None
+        elif isinstance(atr, (int, float)):
+            atr_value = float(atr)
+
         buy_timing = "不建议买入"
         if tech_score >= 0.7:
             buy_timing = "建议买入"
@@ -741,7 +801,13 @@ class StockAnalyzer:
         elif rsi_value and rsi_value < 25:
             buy_timing = "RSI超卖，可以关注"
 
-        if upper and lower:
+        # 基于ATR计算买入止损价
+        if atr_value and atr_value > 0:
+            atr_stop_loss_multiplier = 2.0
+            risk_price = current_price - atr_value * atr_stop_loss_multiplier
+            risk_price = max(risk_price, current_price * 0.90)  # 不超过10%止损
+            risk_level = "中等（基于ATR）"
+        elif upper and lower:
             if current_price < lower:
                 risk_price = lower
                 risk_level = "较低"

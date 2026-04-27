@@ -591,13 +591,13 @@ class ReportGenerator:
         price_change = info.get("涨跌幅", 0)
         try:
             price_change = float(str(price_change).replace("%", ""))
-        except:
+        except (ValueError, TypeError):
             price_change = 0
 
         current_price = info.get("最新价", 0)
         try:
             current_price = float(current_price)
-        except:
+        except (ValueError, TypeError):
             current_price = 0
 
         signal = analysis.get("trading_signal", {})

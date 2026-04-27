@@ -22,7 +22,7 @@ except ImportError:
     xtdata = None
 
 
-def clean_data(df: pd.DataFrame, stock_code: str = None) -> pd.DataFrame:
+def clean_data(df: pd.DataFrame, stock_code: str = None, stock_name: str = None) -> pd.DataFrame:
     """
     数据清洗：过滤停牌日、检测异常值
 
@@ -34,6 +34,7 @@ def clean_data(df: pd.DataFrame, stock_code: str = None) -> pd.DataFrame:
     参数:
         df: 原始DataFrame
         stock_code: 股票代码，用于判断板块设定涨跌幅阈值
+        stock_name: 股票名称，用于判断是否为ST股
 
     返回:
         DataFrame: 清洗后的数据
@@ -59,14 +60,23 @@ def clean_data(df: pd.DataFrame, stock_code: str = None) -> pd.DataFrame:
 
         # 根据股票代码判断板块，设定不同的涨跌幅阈值
         pct_min, pct_max = -15, 15  # 默认值
-        if stock_code:
+        is_st = False
+
+        # 首先检查股票名称是否包含ST（更可靠）
+        if stock_name:
+            name_upper = str(stock_name).upper()
+            if "ST" in name_upper or "*ST" in name_upper or "S*" in name_upper:
+                is_st = True
+
+        # 备用：根据股票代码判断（代码中包含ST的情况极少）
+        if stock_code and not is_st:
             code_str = str(stock_code)
             if code_str.startswith("30") or code_str.startswith("68"):
                 pct_min, pct_max = -21, 21  # 创业板/科创板
             elif code_str.startswith("00") or code_str.startswith("60") or code_str.startswith("01"):
                 pct_min, pct_max = -11, 11  # 主板
-            elif "ST" in code_str or "*ST" in code_str:
-                pct_min, pct_max = -6, 6  # ST股
+        elif is_st:
+            pct_min, pct_max = -6, 6  # ST股
 
         df = df[(pct_col > pct_min) & (pct_col < pct_max)]
 
@@ -677,11 +687,19 @@ def generate_report(stock_input: str) -> str:
 
         report += "### 4.3 KDJ指标\n\n"
         kdj = indicators.get("KDJ", {})
+        kdj_latest = kdj.get("latest", {})
+        k_val = kdj_latest.get("K") if isinstance(kdj_latest, dict) else kdj.get("K")
+        d_val = kdj_latest.get("D") if isinstance(kdj_latest, dict) else kdj.get("D")
+        j_val = kdj_latest.get("J") if isinstance(kdj_latest, dict) else kdj.get("J")
+        if hasattr(k_val, "iloc"):
+            k_val = k_val.iloc[-1] if not k_val.empty else None
+            d_val = d_val.iloc[-1] if d_val is not None and not d_val.empty else None
+            j_val = j_val.iloc[-1] if j_val is not None and not j_val.empty else None
         report += "| 项目 | 数值 |\n"
         report += "|------|------|\n"
-        report += f"| K值 | {kdj.get('K', 'N/A')} |\n"
-        report += f"| D值 | {kdj.get('D', 'N/A')} |\n"
-        report += f"| J值 | {kdj.get('J', 'N/A')} |\n"
+        report += f"| K值 | {k_val if k_val is not None else 'N/A'} |\n"
+        report += f"| D值 | {d_val if d_val is not None else 'N/A'} |\n"
+        report += f"| J值 | {j_val if j_val is not None else 'N/A'} |\n"
         report += f"| 信号 | {kdj.get('signal', 'N/A')} |\n"
         report += "\n"
 
@@ -690,16 +708,35 @@ def generate_report(stock_input: str) -> str:
         report += "| 均线 | 价格 |\n"
         report += "|------|------|\n"
         for key, val in ma.items():
-            report += f"| {key} | {val if val else 'N/A'} |\n"
+            if isinstance(val, dict):
+                ma_val = val.get("latest")
+                if hasattr(ma_val, "iloc"):
+                    ma_val = ma_val.iloc[-1] if not ma_val.empty else None
+            else:
+                ma_val = val
+            report += f"| {key} | {ma_val if ma_val is not None else 'N/A'} |\n"
         report += "\n"
 
         report += "### 4.5 布林带\n\n"
         boll = indicators.get("BOLL", {})
+        boll_latest = boll.get("latest", {})
+        if isinstance(boll_latest, dict):
+            upper_val = boll_latest.get("upper")
+            middle_val = boll_latest.get("middle")
+            lower_val = boll_latest.get("lower")
+            if hasattr(upper_val, "iloc"):
+                upper_val = upper_val.iloc[-1] if not upper_val.empty else None
+                middle_val = middle_val.iloc[-1] if middle_val is not None and not middle_val.empty else None
+                lower_val = lower_val.iloc[-1] if lower_val is not None and not lower_val.empty else None
+        else:
+            upper_val = boll.get("upper")
+            middle_val = boll.get("middle")
+            lower_val = boll.get("lower")
         report += "| 项目 | 价格 |\n"
         report += "|------|------|\n"
-        report += f"| 上轨 | {boll.get('upper', 'N/A')} |\n"
-        report += f"| 中轨 | {boll.get('middle', 'N/A')} |\n"
-        report += f"| 下轨 | {boll.get('lower', 'N/A')} |\n"
+        report += f"| 上轨 | {upper_val if upper_val is not None else 'N/A'} |\n"
+        report += f"| 中轨 | {middle_val if middle_val is not None else 'N/A'} |\n"
+        report += f"| 下轨 | {lower_val if lower_val is not None else 'N/A'} |\n"
         report += "\n"
     else:
         report += f"*{indicators.get('error', '技术指标计算失败')}*\n\n"
