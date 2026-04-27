@@ -253,7 +253,7 @@ class StockAnalyzer:
         return result
 
     def analyze_market_sentiment(self, data: Dict) -> Dict:
-        """分析市场情绪"""
+        """分析市场情绪（包含大盘参考）"""
         result = {"score": 0.5, "details": {}}
 
         info = data.get("stock_info", {})
@@ -270,7 +270,7 @@ class StockAnalyzer:
                 else float(turnover)
             )
             if turnover > 15:
-                score += 0.2
+                score += 0.15
             elif turnover > 8:
                 score += 0.1
             elif turnover < 2:
@@ -281,7 +281,7 @@ class StockAnalyzer:
         try:
             volume_ratio = float(volume_ratio) if volume_ratio else 1.0
             if volume_ratio > 2:
-                score += 0.2
+                score += 0.15
             elif volume_ratio > 1.5:
                 score += 0.1
             elif volume_ratio < 0.5:
@@ -289,8 +289,38 @@ class StockAnalyzer:
         except (ValueError, TypeError):
             pass
 
+        # 增加大盘维度
+        market_change = 0
+        market_status = "未知"
+        try:
+            import efinance as ef
+            market_snapshot = ef.stock.get_quote_snapshot("000001")
+            if market_snapshot is not None and not market_snapshot.empty:
+                market_change = float(market_snapshot.iloc[0].get("涨跌幅", 0))
+                if market_change > 1:
+                    market_status = "大涨"
+                    score += 0.2
+                elif market_change > 0.5:
+                    market_status = "上涨"
+                    score += 0.1
+                elif market_change < -1:
+                    market_status = "大跌"
+                    score -= 0.2
+                elif market_change < -0.5:
+                    market_status = "下跌"
+                    score -= 0.1
+                else:
+                    market_status = "平稳"
+        except Exception as e:
+            analyzer_logger.debug(f"获取大盘数据失败: {e}")
+
         result["score"] = max(0, min(1, score))
-        result["details"] = {"turnover": turnover, "volume_ratio": volume_ratio}
+        result["details"] = {
+            "turnover": turnover,
+            "volume_ratio": volume_ratio,
+            "market_change": market_change,
+            "market_status": market_status,
+        }
 
         return result
 
@@ -351,8 +381,7 @@ class StockAnalyzer:
 
     def get_limit_pct(self, stock_code: str) -> float:
         """根据股票代码获取涨跌停比例"""
-        code = stock_code.lstrip("0")
-        if code.startswith("30") or code.startswith("68"):
+        if stock_code.startswith("30") or stock_code.startswith("68"):
             return 0.20
         else:
             return 0.10
@@ -677,6 +706,9 @@ class StockAnalyzer:
             atr_based_stop_profit = current_price * (1 + stop_profit_pct / 100)
             target_price = atr_based_stop_profit
             stop_price = max(atr_based_stop_loss, current_price * (1 - 0.05))  # 取ATR止损和5%止损的较大值
+            
+            # 计算ATR止损对应的百分比
+            stop_loss_pct = round(((stop_price - current_price) / current_price) * 100, 2)
         else:
             if price_change > 15:
                 stop_profit_pct = 10
@@ -713,6 +745,7 @@ class StockAnalyzer:
             "stop_loss_price": round(stop_price, 2),
             "stop_loss_pct": stop_loss_pct,
             "position_adjust": position_adjust,
+            "cost_provided": cost_price is not None,
             "reason": self._generate_position_reason(
                 macd_signal, rsi_value, kdj_signal, price_change
             ),
