@@ -252,17 +252,31 @@ class DataFetcher:
         fetcher_logger.info(f"[DataFetcher] 数据获取完成，返回结果")
 
         data_quality = "unknown"
-        # TODO: D-02 数据交叉验证需要同时获取xtquant和efinance数据进行对比
-        # 当前架构仅在数据库模式或API模式下获取数据，暂无法实现真正的交叉验证
-        # 需要重构以支持同时获取两个数据源
-        if DATABASE_AVAILABLE and db_result.get("source") == "api":
+        if DATABASE_AVAILABLE:
             try:
-                validator_result = self.validate_data({}, {})
-                data_quality = (
-                    "validated"
-                    if validator_result.get("is_valid", False)
-                    else "unvalidated"
-                )
+                if self._xtquant_adapter and db_result.get("source") == "api":
+                    xtquant_full_code = f"{stock_code}.{'SH' if stock_code.startswith(('60', '68')) else 'SZ'}"
+                    xtquant_info = self._xtquant_adapter.get_instrument_detail(xtquant_full_code)
+                    if xtquant_info and not xtquant_info.get("error"):
+                        xtquant_data = {
+                            "最新价": xtquant_info.get("close"),
+                            "成交量": xtquant_info.get("volume"),
+                        }
+                    else:
+                        xtquant_data = {}
+                    validator_result = self.validate_data(xtquant_data, info)
+                    data_quality = (
+                        "validated"
+                        if validator_result.get("is_valid", False)
+                        else "unvalidated"
+                    )
+                elif not DATABASE_AVAILABLE:
+                    validator_result = self.validate_data(info, {})
+                    data_quality = (
+                        "validated"
+                        if validator_result.get("is_valid", False)
+                        else "unvalidated"
+                    )
             except Exception as e:
                 fetcher_logger.warning(f"[DataFetcher] 数据验证失败: {e}")
                 data_quality = "validation_failed"

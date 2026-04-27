@@ -374,6 +374,35 @@ def calculate_obv(
     return {"obv": obv, "latest": latest, "signal": signal}
 
 
+def calculate_volume_ma(
+    volumes: Union[List, pd.Series], periods: List[int] = [5, 10, 20]
+) -> Dict:
+    """
+    计算成交量MA指标
+
+    参数:
+        volumes: 成交量序列
+        periods: MA周期列表，默认[5, 10, 20]
+
+    返回:
+        dict: 包含各周期成交量MA的序列和最新值
+    """
+    volumes = pd.Series(volumes)
+    result = {}
+
+    for period in periods:
+        if len(volumes) >= period:
+            ma = volumes.rolling(window=period).mean().round(0)
+            latest = ma.iloc[-1] if not pd.isna(ma.iloc[-1]) else None
+        else:
+            ma = pd.Series([None] * len(volumes))
+            latest = None
+
+        result[f"MA{period}"] = {"latest": latest, "series": ma}
+
+    return result
+
+
 def calculate_volume_ratio(volume: Union[List, pd.Series], n: int = 5) -> Dict:
     """
     计算量比指标
@@ -462,5 +491,6 @@ def calculate_all_indicators(df: pd.DataFrame) -> Dict:
     if volumes is not None:
         result["Volume_Ratio"] = calculate_volume_ratio(volumes)
         result["OBV"] = calculate_obv(closes, volumes)
+        result["Volume_MA"] = calculate_volume_ma(volumes)
 
     return result

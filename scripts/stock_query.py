@@ -408,13 +408,14 @@ def get_minute_data(stock_code: str) -> Dict:
     return minute_data
 
 
-def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
+def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) -> pd.DataFrame:
     """
     获取历史K线数据
 
     参数:
         stock_code: 股票代码
         days: 获取天数
+        stock_name: 股票名称，用于ST股检测
 
     返回:
         DataFrame: 历史K线数据
@@ -425,6 +426,8 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
 
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
+
+    stock_name = stock_name or None
 
     if xdata:
         try:
@@ -461,7 +464,7 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
                         df.index = pd.to_datetime(market_data["date"])
                         df.index.name = "日期"
 
-                    df = clean_data(df, stock_code)
+                    df = clean_data(df, stock_code, stock_name)
                     result = df.tail(days)
                     if not result.empty:
                         print(f"xtquant（前复权）获取历史数据成功: {len(result)} 条")
@@ -483,7 +486,7 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
                     "成交额": "成交额",
                 }
             )
-            df = clean_data(df, stock_code)
+            df = clean_data(df, stock_code, stock_name)
             result = df.tail(days)
             if not result.empty:
                 print(f"efinance（前复权）获取历史数据成功: {len(result)} 条")
@@ -521,7 +524,7 @@ def get_history_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             df["收盘"] = pd.to_numeric(df["收盘"], errors="coerce")
             df["成交量"] = pd.to_numeric(df["成交量"], errors="coerce")
             df["成交额"] = pd.to_numeric(df["成交额"], errors="coerce")
-            df = clean_data(df, stock_code)
+            df = clean_data(df, stock_code, stock_name)
             print(f"baostock（前复权）获取历史数据成功: {len(df)} 条")
             return df.tail(days)
     except ImportError:
@@ -729,9 +732,9 @@ def generate_report(stock_input: str) -> str:
                 middle_val = middle_val.iloc[-1] if middle_val is not None and not middle_val.empty else None
                 lower_val = lower_val.iloc[-1] if lower_val is not None and not lower_val.empty else None
         else:
-            upper_val = boll.get("upper")
-            middle_val = boll.get("middle")
-            lower_val = boll.get("lower")
+            upper_val = None
+            middle_val = None
+            lower_val = None
         report += "| 项目 | 价格 |\n"
         report += "|------|------|\n"
         report += f"| 上轨 | {upper_val if upper_val is not None else 'N/A'} |\n"

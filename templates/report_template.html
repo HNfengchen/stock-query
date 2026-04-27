@@ -465,8 +465,8 @@
                 {% if position_status == "已持有" %}
                 <div class="rec-grid">
                     <div class="rec-item">
-                        <div class="rec-label">持仓成本(估)</div>
-                        <div class="rec-value">{{ avg_cost }} 元</div>
+                        <div class="rec-label">{% if cost_provided %}持仓成本{% else %}持仓成本(估){% endif %}</div>
+                        <div class="rec-value">{{ avg_cost }} 元 {% if not cost_provided %}<span style="font-size: 10px; color: #999;">(预估)</span>{% endif %}</div>
                     </div>
                     <div class="rec-item">
                         <div class="rec-label">现价</div>

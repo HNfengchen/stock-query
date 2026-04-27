@@ -106,9 +106,9 @@ class StockAnalyzer:
                 boll_middle = boll_latest.get("middle")
                 boll_lower = boll_latest.get("lower")
             else:
-                boll_upper = boll.get("upper")
-                boll_middle = boll.get("middle")
-                boll_lower = boll.get("lower")
+                boll_upper = None
+                boll_middle = None
+                boll_lower = None
 
             if hasattr(boll_upper, "iloc"):
                 boll_upper = boll_upper.iloc[-1]
@@ -418,8 +418,8 @@ class StockAnalyzer:
             lower = boll_latest.get("lower")
             upper = boll_latest.get("upper")
         else:
-            lower = boll.get("lower")
-            upper = boll.get("upper")
+            lower = None
+            upper = None
 
         analyzer_logger.debug(f"布林带: lower={lower}, upper={upper}")
 
@@ -678,8 +678,8 @@ class StockAnalyzer:
             except (TypeError, ValueError):
                 boll_upper, boll_lower = None, None
         else:
-            boll_upper = boll.get("upper")
-            boll_lower = boll.get("lower")
+            boll_upper = None
+            boll_lower = None
 
         # 获取ATR用于动态止损
         atr = indicators.get("ATR", {})
@@ -798,8 +798,8 @@ class StockAnalyzer:
             upper = boll_latest.get("upper")
             lower = boll_latest.get("lower")
         else:
-            upper = boll.get("upper")
-            lower = boll.get("lower")
+            upper = None
+            lower = None
         try:
             upper = float(upper) if upper is not None else None
             lower = float(lower) if lower is not None else None

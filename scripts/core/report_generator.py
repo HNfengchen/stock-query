@@ -163,8 +163,13 @@ class ReportGenerator:
             ],
         }
 
-    def _prepare_technical_data(self, history_df: pd.DataFrame) -> Dict:
-        """从历史数据计算并准备技术指标图数据"""
+    def _prepare_technical_data(self, history_df: pd.DataFrame, indicators: Dict = None) -> Dict:
+        """从历史数据计算并准备技术指标图数据
+
+        参数:
+            history_df: 历史K线数据
+            indicators: 预计算的技术指标，如果提供则直接使用，否则重新计算
+        """
         if history_df is None or history_df.empty:
             return {
                 "labels": [],
@@ -178,10 +183,6 @@ class ReportGenerator:
                 "j": [],
             }
 
-        closes = history_df["收盘"].tolist()
-        highs = history_df["最高"].tolist()
-        lows = history_df["最低"].tolist()
-
         if "日期" in history_df.columns:
             dates = (
                 pd.to_datetime(history_df["日期"]).dt.strftime("%Y-%m-%d").tolist()
@@ -190,6 +191,40 @@ class ReportGenerator:
             )
         else:
             dates = [str(d)[:10] for d in history_df.index]
+
+        if indicators and isinstance(indicators, dict):
+            rsi = indicators.get("RSI", {})
+            kdj = indicators.get("KDJ", {})
+            macd = indicators.get("MACD", {})
+
+            rsi6_series = rsi.get("RSI(6)", {}).get("series", pd.Series(dtype=float))
+            rsi12_series = rsi.get("RSI(12)", {}).get("series", pd.Series(dtype=float))
+            macd_series = macd.get("series", {})
+
+            dif_series = macd_series.get("DIF", pd.Series(dtype=float))
+            dea_series = macd_series.get("DEA", pd.Series(dtype=float))
+            macd_bar_series = macd_series.get("MACD", pd.Series(dtype=float))
+
+            k_series = kdj.get("series", {}).get("K", pd.Series(dtype=float))
+            d_series = kdj.get("series", {}).get("D", pd.Series(dtype=float))
+            j_series = kdj.get("series", {}).get("J", pd.Series(dtype=float))
+
+            n = len(dates)
+            return {
+                "labels": dates,
+                "dif": [float(x) if not pd.isna(x) else 0.0 for x in dif_series.tolist()] if hasattr(dif_series, 'tolist') else [0.0] * n,
+                "dea": [float(x) if not pd.isna(x) else 0.0 for x in dea_series.tolist()] if hasattr(dea_series, 'tolist') else [0.0] * n,
+                "macd": [float(x) if not pd.isna(x) else 0.0 for x in macd_bar_series.tolist()] if hasattr(macd_bar_series, 'tolist') else [0.0] * n,
+                "rsi6": [float(x) if not pd.isna(x) else 0.0 for x in rsi6_series.tolist()] if hasattr(rsi6_series, 'tolist') else [0.0] * n,
+                "rsi12": [float(x) if not pd.isna(x) else 0.0 for x in rsi12_series.tolist()] if hasattr(rsi12_series, 'tolist') else [0.0] * n,
+                "k": [float(x) if not pd.isna(x) else 0.0 for x in k_series.tolist()] if hasattr(k_series, 'tolist') else [0.0] * n,
+                "d": [float(x) if not pd.isna(x) else 0.0 for x in d_series.tolist()] if hasattr(d_series, 'tolist') else [0.0] * n,
+                "j": [float(x) if not pd.isna(x) else 0.0 for x in j_series.tolist()] if hasattr(j_series, 'tolist') else [0.0] * n,
+            }
+
+        closes = history_df["收盘"].tolist()
+        highs = history_df["最高"].tolist()
+        lows = history_df["最低"].tolist()
 
         closes_series = pd.Series(closes)
         highs_series = pd.Series(highs)
@@ -438,9 +473,14 @@ class ReportGenerator:
         }
         return json.dumps(config, ensure_ascii=False)
 
-    def create_technical_chart_config(self, history_df: pd.DataFrame) -> str:
-        """生成技术指标图配置 (Chart.js)"""
-        data = self._prepare_technical_data(history_df)
+    def create_technical_chart_config(self, history_df: pd.DataFrame, indicators: Dict = None) -> str:
+        """生成技术指标图配置 (Chart.js)
+
+        参数:
+            history_df: 历史K线数据
+            indicators: 预计算的技术指标
+        """
+        data = self._prepare_technical_data(history_df, indicators)
 
         if not data["labels"]:
             return "{}"
@@ -650,10 +690,10 @@ class ReportGenerator:
             "kdj_d": extract_latest(kdj.get("latest", {}).get("D")) if isinstance(kdj.get("latest"), dict) else (extract_latest(kdj.get("D")) if kdj.get("D") is not None else "N/A"),
             "kdj_j": extract_latest(kdj.get("latest", {}).get("J")) if isinstance(kdj.get("latest"), dict) else (extract_latest(kdj.get("J")) if kdj.get("J") is not None else "N/A"),
             "kdj_signal": kdj.get("signal", "N/A"),
-            # 兼容新旧BOLL返回格式
-            "boll_upper": extract_latest(boll.get("latest", {}).get("upper")) if isinstance(boll.get("latest"), dict) else extract_latest(boll.get("upper")),
-            "boll_middle": extract_latest(boll.get("latest", {}).get("middle")) if isinstance(boll.get("latest"), dict) else extract_latest(boll.get("middle")),
-            "boll_lower": extract_latest(boll.get("latest", {}).get("lower")) if isinstance(boll.get("latest"), dict) else extract_latest(boll.get("lower")),
+            # 使用新格式访问BOLL
+            "boll_upper": extract_latest(boll.get("latest", {}).get("upper")) if isinstance(boll.get("latest"), dict) else "N/A",
+            "boll_middle": extract_latest(boll.get("latest", {}).get("middle")) if isinstance(boll.get("latest"), dict) else "N/A",
+            "boll_lower": extract_latest(boll.get("latest", {}).get("lower")) if isinstance(boll.get("latest"), dict) else "N/A",
             "main_inflow": f"{fund_flow.get('主力净流入', 0) / 10000:.2f}万",
             "main_inflow_ratio": f"{fund_flow.get('主力净流入占比', 'N/A')}",
             "fund_flow_trend": self._format_trend(
@@ -671,6 +711,7 @@ class ReportGenerator:
             "day2_trend": price_pred.get("day2", {}).get("trend", "N/A"),
             "report_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "position_status": position_status,
+            "cost_provided": position_strategy.get("cost_provided", False),
             "avg_cost": position_strategy.get("avg_cost", "N/A"),
             "price_change_pct": position_strategy.get("price_change_pct", "N/A"),
             "stop_profit_price": position_strategy.get("stop_profit_price", "N/A"),
@@ -697,7 +738,7 @@ class ReportGenerator:
                     history_df
                 )
                 context["technical_chart_config"] = self.create_technical_chart_config(
-                    history_df
+                    history_df, indicators
                 )
 
                 if fund_flow:
