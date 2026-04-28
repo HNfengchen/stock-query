@@ -97,8 +97,9 @@ def calculate_rsi(
     for period in periods:
         if len(closes) < period + 1:
             result[f"RSI({period})"] = {
-                "value": pd.Series([None] * len(closes)),
-                "status": "数据不足",
+                "latest": None,
+                "series": pd.Series([None] * len(closes)),
+                "signal": "数据不足",
             }
             continue
 

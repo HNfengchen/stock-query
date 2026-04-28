@@ -208,7 +208,7 @@ class StockAnalyzer:
 
         inflow_ratio = main_inflow / amount if amount else 0
 
-        # 使用相对指标评分（任务T-06）
+        # 修正：流出越多评分越低（M-01）
         if inflow_ratio > 0.05:
             score = 1.0
             trend = "inflow"
@@ -216,20 +216,17 @@ class StockAnalyzer:
             score = 0.7
             trend = "inflow"
         elif inflow_ratio > 0:
-            score = 0.4
+            score = 0.5
             trend = "inflow"
-        elif inflow_ratio < -0.05:
-            score = 0
+        elif inflow_ratio > -0.02:
+            score = 0.4
             trend = "outflow"
-        elif inflow_ratio < -0.02:
+        elif inflow_ratio > -0.05:
             score = 0.3
             trend = "outflow"
-        elif inflow_ratio < 0:
-            score = 0.5
-            trend = "neutral"
         else:
-            score = 0.5
-            trend = "neutral"
+            score = 0.1
+            trend = "outflow"
 
         history = fund_flow.get("历史数据", [])
         if len(history) >= 3:
@@ -238,7 +235,7 @@ class StockAnalyzer:
                 score = min(1.0, score + 0.2)
                 trend = "inflow"
             elif all(x < 0 for x in recent_inflows):
-                score = max(0, score - 0.2)
+                score = max(0.1, score - 0.15)
                 trend = "outflow"
 
         result["score"] = score
@@ -274,7 +271,7 @@ class StockAnalyzer:
             elif turnover > 8:
                 score += 0.1
             elif turnover < 2:
-                score -= 0.1
+                score -= 0.05
         except (ValueError, TypeError):
             pass
 
@@ -285,7 +282,7 @@ class StockAnalyzer:
             elif volume_ratio > 1.5:
                 score += 0.1
             elif volume_ratio < 0.5:
-                score -= 0.1
+                score -= 0.05
         except (ValueError, TypeError):
             pass
 
@@ -299,16 +296,16 @@ class StockAnalyzer:
                 market_change = float(market_snapshot.iloc[0].get("涨跌幅", 0))
                 if market_change > 1:
                     market_status = "大涨"
-                    score += 0.2
+                    score += 0.1
                 elif market_change > 0.5:
                     market_status = "上涨"
-                    score += 0.1
+                    score += 0.05
                 elif market_change < -1:
                     market_status = "大跌"
-                    score -= 0.2
+                    score -= 0.1
                 elif market_change < -0.5:
                     market_status = "下跌"
-                    score -= 0.1
+                    score -= 0.05
                 else:
                     market_status = "平稳"
         except Exception as e:
@@ -503,17 +500,28 @@ class StockAnalyzer:
         day2_trend = trend
 
         macd = indicators.get("MACD", {}).get("signal", "")
-        rsi = indicators.get("RSI", {}).get("RSI(6)", {}).get("signal", "")
+        rsi_6 = indicators.get("RSI", {}).get("RSI(6)", {}).get("signal", "")
+        rsi_12 = indicators.get("RSI", {}).get("RSI(12)", {}).get("signal", "")
 
-        if rsi == "超买":
+        # M-04：价格预测比例与趋势强度挂钩
+        tech_score = technical_analysis.get("score", 0.5)
+        if tech_score >= 0.7:
+            day_range_mult_low, day_range_mult_high = 0.2, 0.8
+        elif tech_score >= 0.5:
+            day_range_mult_low, day_range_mult_high = 0.4, 0.6
+        else:
+            day_range_mult_low, day_range_mult_high = 0.3, 0.7
+
+        # M-08：day2趋势修正改用RSI(12)（更稳定）
+        if rsi_12 == "超买":
             day2_trend = "down"
-        elif rsi == "超卖":
+        elif rsi_12 == "超卖":
             day2_trend = "up"
 
         if trend == "up":
             day1 = {
-                "target_low": round(current_price + day_range * 0.3, 2),
-                "target_high": round(current_price + day_range * 0.7, 2),
+                "target_low": round(current_price + day_range * day_range_mult_low, 2),
+                "target_high": round(current_price + day_range * day_range_mult_high, 2),
                 "trend": day1_trend,
                 "signal": "看涨延续",
             }
@@ -525,8 +533,8 @@ class StockAnalyzer:
             }
         elif trend == "down":
             day1 = {
-                "target_low": round(current_price - day_range * 0.7, 2),
-                "target_high": round(current_price - day_range * 0.3, 2),
+                "target_low": round(current_price - day_range * day_range_mult_high, 2),
+                "target_high": round(current_price - day_range * day_range_mult_low, 2),
                 "trend": day1_trend,
                 "signal": "看跌延续",
             }
@@ -693,21 +701,15 @@ class StockAnalyzer:
         elif isinstance(atr, (int, float)):
             atr_value = float(atr)
 
-        # 动态止损：基于ATR计算止损距离
+        # 动态止损（M-05止盈也基于ATR）
         if atr_value and atr_value > 0:
-            atr_stop_loss_multiplier = 2.0  # 2倍ATR作为止损距离
+            atr_stop_loss_multiplier = 2.0
+            atr_stop_profit_multiplier = 2.5
             atr_based_stop_loss = current_price - atr_value * atr_stop_loss_multiplier
-            if price_change > 15:
-                stop_profit_pct = 10
-            elif price_change > 8:
-                stop_profit_pct = 5
-            else:
-                stop_profit_pct = 3
-            atr_based_stop_profit = current_price * (1 + stop_profit_pct / 100)
+            atr_based_stop_profit = current_price + atr_value * atr_stop_profit_multiplier
             target_price = atr_based_stop_profit
-            stop_price = max(atr_based_stop_loss, current_price * (1 - 0.05))  # 取ATR止损和5%止损的较大值
-            
-            # 计算ATR止损对应的百分比
+            stop_price = max(atr_based_stop_loss, current_price * (1 - 0.05))
+            stop_profit_pct = round((atr_based_stop_profit - current_price) / current_price * 100, 2)
             stop_loss_pct = round(((stop_price - current_price) / current_price) * 100, 2)
         else:
             if price_change > 15:
@@ -854,8 +856,14 @@ class StockAnalyzer:
             risk_price = current_price * 0.95
             risk_level = "中等"
 
+        # 买入仓位计算（M-03）：增加趋势过滤
         position_size = min(30, 50 - (100 - rsi_value) / 2) if rsi_value else 20
         position_size = max(10, position_size)
+
+        # 下跌趋势中仓位减半
+        is_downtrend = macd_signal in ("空头", "死叉") or kdj_signal in ("死叉", "超买")
+        if is_downtrend:
+            position_size = max(10, position_size // 2)
 
         return {
             "current_price": current_price,

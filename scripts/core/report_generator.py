@@ -222,6 +222,9 @@ class ReportGenerator:
                 "j": [float(x) if not pd.isna(x) else 0.0 for x in j_series.tolist()] if hasattr(j_series, 'tolist') else [0.0] * n,
             }
 
+        # C-03：fallback分支（仅作防御性编程，实际使用时应传入indicators）
+        import logging
+        logging.warning("ReportGenerator: 使用fallback计算指标，可能与分析结果不一致")
         closes = history_df["收盘"].tolist()
         highs = history_df["最高"].tolist()
         lows = history_df["最低"].tolist()
