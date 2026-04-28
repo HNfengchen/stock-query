@@ -1,6 +1,6 @@
 """
 回测模块
-使用历史数据验证价格预测的准确率
+使用历史数据验证价格预测的准确率，包含交易成本计算
 """
 
 import pandas as pd
@@ -12,6 +12,10 @@ from scripts.logger import get_logger
 
 backtest_logger = get_logger("Backtest")
 
+COMMISSION_RATE = 0.00025
+STAMP_DUTY_RATE = 0.0005
+SLIPPAGE = 0.001
+
 
 class Backtester:
     """价格预测回测器
@@ -21,9 +25,31 @@ class Backtester:
     - 趋势不明时：区间较宽
     """
 
-    def __init__(self, atr_multiplier: float = 1.5, stop_profit_mult: float = 2.5):
+    def __init__(self, atr_multiplier: float = 1.5, stop_profit_mult: float = 2.5, stock_code: str = "", stock_name: str = ""):
         self.atr_multiplier = atr_multiplier
         self.stop_profit_mult = stop_profit_mult
+        self.stock_code = stock_code
+        self.stock_name = stock_name
+
+    def calculate_transaction_cost(self, price: float, shares: int) -> float:
+        """计算单次交易成本（佣金+印花税+滑点）"""
+        if price <= 0 or shares <= 0:
+            return 0
+        amount = price * shares
+        commission = max(5, amount * COMMISSION_RATE)
+        stamp_duty = amount * STAMP_DUTY_RATE
+        slippage_cost = amount * SLIPPAGE
+        return commission + stamp_duty + slippage_cost
+
+    def get_limit_pct(self) -> float:
+        """获取涨跌停限制比例"""
+        if "ST" in self.stock_name or "*ST" in self.stock_name or "S*" in self.stock_name:
+            return 0.05
+        if self.stock_code.startswith("68") or self.stock_code.startswith("8"):
+            return 0.20
+        if self.stock_code.startswith("30") or self.stock_code.startswith("837"):
+            return 0.20
+        return 0.10
 
     def calculate_predictions(
         self, df: pd.DataFrame, lookback_days: int = 60
@@ -96,12 +122,19 @@ class Backtester:
             except (TypeError, ValueError):
                 rsi_12 = 50
 
-            if macd_signal == "多头" or macd_signal == "金叉":
+            if macd_signal in ("多头", "金叉", "金叉确认"):
                 trend = "up"
-            elif macd_signal == "空头" or macd_signal == "死叉":
+            elif macd_signal in ("空头", "死叉", "死叉确认"):
                 trend = "down"
             else:
                 trend = "neutral"
+
+            day2_trend = trend
+
+            if rsi_12 > 60:
+                day2_trend = "up"
+            elif rsi_12 < 40:
+                day2_trend = "down"
 
             day_range = price_range * 0.5
 
@@ -122,6 +155,15 @@ class Backtester:
                 day2_high = resistance if resistance else current_price * 1.1
                 day2_low = support if support else current_price * 0.9
 
+            limit_pct = self.get_limit_pct()
+            limit_up = current_price * (1 + limit_pct) if current_price else None
+            limit_down = current_price * (1 - limit_pct) if current_price else None
+
+            if limit_up and day2_high:
+                day2_high = min(day2_high, limit_up)
+            if limit_down and day2_low:
+                day2_low = max(day2_low, limit_down)
+
             prediction_date = df.index[i] if hasattr(df.index, "__getitem__") else df.iloc[i]["日期"]
             actual_day1 = df.iloc[i + 1]["收盘"] if i + 1 < n else None
             actual_day2 = df.iloc[i + 2]["收盘"] if i + 2 < n else None
@@ -129,6 +171,7 @@ class Backtester:
             results.append({
                 "date": str(prediction_date),
                 "trend": trend,
+                "day2_trend": day2_trend,
                 "day1": {"high": day1_high, "low": day1_low},
                 "day2": {"high": day2_high, "low": day2_low},
                 "actual_day1": actual_day1,

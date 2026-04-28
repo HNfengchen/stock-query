@@ -249,6 +249,18 @@ class DataFetcher:
         if sector_info.get("所属行业") != "N/A" and "所属行业" not in info:
             info["所属行业"] = sector_info["所属行业"]
 
+        market_data = {}
+        try:
+            import efinance as ef
+            market_snapshot = ef.stock.get_quote_snapshot("000001")
+            if market_snapshot is not None and not market_snapshot.empty:
+                market_data = {
+                    "涨跌幅": market_snapshot.iloc[0].get("涨跌幅", 0),
+                    "名称": "上证指数",
+                }
+        except Exception as e:
+            fetcher_logger.debug(f"[DataFetcher] 获取大盘数据失败: {e}")
+
         fetcher_logger.info(f"[DataFetcher] 数据获取完成，返回结果")
 
         data_quality = "unknown"
@@ -292,4 +304,5 @@ class DataFetcher:
             "financial_data": financial_data,
             "sector_info": sector_info,
             "data_quality": data_quality,
+            "market_data": market_data,
         }

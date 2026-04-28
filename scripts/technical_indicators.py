@@ -50,7 +50,29 @@ def calculate_macd(
     macd_series = macd.round(4)
 
     signal_text = "数据不足"
-    if len(dif) >= 2:
+    if len(dif) >= 5:
+        dif_diff = dif.iloc[-1] - dea.iloc[-1]
+        avg_diff = (dif - dea).abs().tail(20).mean()
+        threshold = avg_diff * 0.3 if avg_diff else 0
+
+        dif_rising = dif.iloc[-1] > dif.iloc[-2] > dif.iloc[-3]
+        dif_falling = dif.iloc[-1] < dif.iloc[-2] < dif.iloc[-3]
+
+        if dif.iloc[-1] > dea.iloc[-1] and dif.iloc[-2] <= dea.iloc[-2]:
+            if dif_rising and abs(dif_diff) > threshold:
+                signal_text = "金叉确认"
+            else:
+                signal_text = "金叉"
+        elif dif.iloc[-1] < dea.iloc[-1] and dif.iloc[-2] >= dea.iloc[-2]:
+            if dif_falling and abs(dif_diff) > threshold:
+                signal_text = "死叉确认"
+            else:
+                signal_text = "死叉"
+        elif dif.iloc[-1] > dea.iloc[-1]:
+            signal_text = "多头"
+        else:
+            signal_text = "空头"
+    elif len(dif) >= 2:
         if dif.iloc[-1] > dea.iloc[-1] and dif.iloc[-2] <= dea.iloc[-2]:
             signal_text = "金叉"
         elif dif.iloc[-1] < dea.iloc[-1] and dif.iloc[-2] >= dea.iloc[-2]:
@@ -131,6 +153,19 @@ def calculate_rsi(
             signal = "数据不足"
 
         result[f"RSI({period})"] = {"latest": latest, "series": rsi_series[period], "signal": signal}
+
+    if len(periods) >= 2:
+        rsi_6 = result.get("RSI(6)", {}).get("latest")
+        rsi_12 = result.get("RSI(12)", {}).get("latest")
+        if rsi_6 is not None and rsi_12 is not None and len(rsi_series.get(6, pd.Series())) >= 2:
+            rsi_6_s = rsi_series.get(6, pd.Series())
+            rsi_12_s = rsi_series.get(12, pd.Series())
+            if rsi_6_s.iloc[-1] > rsi_12_s.iloc[-1] and rsi_6_s.iloc[-2] <= rsi_12_s.iloc[-2]:
+                if "RSI(6)" in result:
+                    result["RSI(6)"]["cross"] = "金叉"
+            elif rsi_6_s.iloc[-1] < rsi_12_s.iloc[-1] and rsi_6_s.iloc[-2] >= rsi_12_s.iloc[-2]:
+                if "RSI(6)" in result:
+                    result["RSI(6)"]["cross"] = "死叉"
 
     return result
 
@@ -273,21 +308,39 @@ def calculate_boll(
         }
 
     middle = closes.rolling(window=n).mean()
-    std = closes.rolling(window=n).std()
+    std = closes.rolling(window=n).std(ddof=0)
 
     upper = middle + k * std
     lower = middle - k * std
+
+    bandwidth = ((upper - middle) / middle * 100).round(2)
+    pct_b = ((closes - lower) / (upper - lower) * 100).round(2)
+
+    latest_bandwidth = bandwidth.iloc[-1] if not pd.isna(bandwidth.iloc[-1]) else None
+    latest_pct_b = pct_b.iloc[-1] if not pd.isna(pct_b.iloc[-1]) else None
+
+    signal = "正常"
+    if latest_bandwidth is not None:
+        if latest_bandwidth < 10:
+            signal = "收窄"
+        elif latest_bandwidth > 25:
+            signal = "扩张"
 
     return {
         "latest": {
             "upper": round(upper.iloc[-1], 2) if not pd.isna(upper.iloc[-1]) else None,
             "middle": round(middle.iloc[-1], 2) if not pd.isna(middle.iloc[-1]) else None,
             "lower": round(lower.iloc[-1], 2) if not pd.isna(lower.iloc[-1]) else None,
+            "bandwidth": latest_bandwidth,
+            "pct_b": latest_pct_b,
         },
+        "signal": signal,
         "series": {
             "upper": upper.round(2),
             "middle": middle.round(2),
             "lower": lower.round(2),
+            "bandwidth": bandwidth,
+            "pct_b": pct_b,
         },
     }
 
@@ -327,7 +380,9 @@ def calculate_atr(
     tr3 = (low - close.shift(1)).abs()
 
     true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = true_range.rolling(window=period, min_periods=period).mean().round(2)
+
+    # M-06: 改用Wilder平滑（等同于EWM with com=period-1）
+    atr = true_range.ewm(com=period - 1, adjust=False).mean().round(2)
 
     latest = round(atr.iloc[-1], 2) if not pd.isna(atr.iloc[-1]) else None
 

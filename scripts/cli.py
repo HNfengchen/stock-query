@@ -108,11 +108,12 @@ def main():
 
         if args.backtest:
             history_df = data.get("history_data")
+            stock_name = data.get("stock_name", "")
             if history_df is not None and not history_df.empty:
                 print("正在运行回测...")
                 from scripts.core.backtest import Backtester
 
-                backtester = Backtester()
+                backtester = Backtester(stock_code=data.get("stock_code", ""), stock_name=stock_name)
                 bt_result = backtester.run_backtest(history_df, data["stock_code"])
                 if "error" not in bt_result:
                     stats = bt_result.get("statistics", {})

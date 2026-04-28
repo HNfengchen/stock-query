@@ -24,12 +24,13 @@ except ImportError:
 
 def clean_data(df: pd.DataFrame, stock_code: str = None, stock_name: str = None) -> pd.DataFrame:
     """
-    数据清洗：过滤停牌日、检测异常值
+    数据清洗：过滤停牌日、检测异常值、缺失值填充
 
     处理步骤：
     1. 过滤成交量<=0或为NaN的行（停牌日）
     2. 过滤涨跌幅异常（根据板块设定不同阈值）
-    3. 不使用3σ过滤（对妖股/周期股不适用）
+    3. 对OHLCV核心字段dropna，对辅助字段用前值填充
+    4. 不使用3σ过滤（对妖股/周期股不适用）
 
     参数:
         df: 原始DataFrame
@@ -45,6 +46,13 @@ def clean_data(df: pd.DataFrame, stock_code: str = None, stock_name: str = None)
     original_len = len(df)
 
     df = df.copy()
+
+    core_fields = ["收盘", "开盘", "最高", "最低"]
+    aux_fields = ["成交量", "成交额", "涨跌幅", "振幅"]
+
+    for field in aux_fields:
+        if field in df.columns:
+            df[field] = df[field].ffill()
 
     if "成交量" in df.columns:
         df = df[df["成交量"] > 0]
