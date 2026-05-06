@@ -145,6 +145,7 @@ export interface BacktestResult {
     predicted_low: number
     predicted_high: number
     actual_price: number
+    current_price: number | null
     hit: boolean
   }>
   equity_curve: Array<{

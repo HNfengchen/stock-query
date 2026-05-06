@@ -1,66 +1,22 @@
 import sys
 import os
 import json
-import tempfile
-import subprocess
 import math
 import numpy as np
 from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import yaml
 import pandas as pd
-from scripts.core.data_fetcher import DataFetcher
 from scripts.core.backtest import Backtester
 from scripts.technical_indicators import calculate_all_indicators
-
-
-def load_config():
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "config.yaml")
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+from backend.utils import clean_float, to_list, sanitize_for_json
+from backend.services.analysis_service import get_fetcher
 
 
 def get_history_data(stock_code: str, days: int = 120) -> pd.DataFrame:
-    config = load_config()
-    fetcher = DataFetcher(config)
+    fetcher = get_fetcher()
     return fetcher.fetch_history_data(stock_code, days)
-
-
-def _clean_float(v):
-    if v is None:
-        return None
-    if isinstance(v, float):
-        if math.isnan(v) or math.isinf(v):
-            return None
-        return round(v, 6)
-    if isinstance(v, (np.integer, np.floating)):
-        f = float(v)
-        if math.isnan(f) or math.isinf(f):
-            return None
-        return round(f, 6)
-    if hasattr(v, 'item'):
-        try:
-            f = float(v.item())
-            if math.isnan(f) or math.isinf(f):
-                return None
-            return round(f, 6)
-        except Exception:
-            return str(v)
-    return v
-
-
-def _sanitize(obj):
-    if isinstance(obj, dict):
-        return {k: _sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_sanitize(v) for v in obj]
-    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-        return None
-    if isinstance(obj, (np.bool_,)):
-        return bool(obj)
-    return obj
 
 
 def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict:
@@ -74,7 +30,6 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
 
     df_sorted = df.copy()
     if "日期" in df_sorted.columns:
-        import pandas as pd
         df_sorted["日期"] = pd.to_datetime(df_sorted["日期"])
         df_sorted = df_sorted.sort_values("日期")
         df_sorted = df_sorted.set_index("日期")
@@ -87,12 +42,27 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
 
     equity_curve = []
     equity = 1.0
+    prev_trend = None
+    position_size = 0.3
+    commission_rate = 0.00025
+    stamp_duty_rate = 0.0005
+    slippage = 0.001
+    total_cost_rate = commission_rate + stamp_duty_rate + slippage
+
     for p in all_predictions:
         current = p.get("current_price", 0)
         actual = p.get("actual_day1")
+        trend = p.get("trend", "neutral")
+
         if actual is not None and current > 0:
             ret = (actual - current) / current
-            equity *= (1 + ret * 0.3)
+            if trend != prev_trend:
+                cost = abs(ret) * position_size * total_cost_rate
+                equity *= (1 + ret * position_size - cost)
+            else:
+                equity *= (1 + ret * position_size)
+            prev_trend = trend
+
         equity_curve.append({
             "date": str(p.get("date", ""))[:10],
             "value": round(equity, 4),
@@ -113,6 +83,7 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
             "predicted_low": round(float(day1.get("low", 0)), 2),
             "predicted_high": round(float(day1.get("high", 0)), 2),
             "actual_price": round(float(actual), 2) if actual is not None else None,
+            "current_price": round(float(current), 2) if current is not None else None,
             "hit": hit,
         })
 
@@ -145,75 +116,117 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
         "equity_curve": equity_curve,
     }
 
-    return _sanitize(result)
+    return sanitize_for_json(result)
+
+
+BLOCKED_MODULES = {
+    'os', 'sys', 'subprocess', 'shutil', 'socket', 'http', 'urllib',
+    'requests', 'pathlib', 'importlib', 'ctypes', 'pickle', 'shelve',
+    'marshal', 'code', 'codeop', 'compile', 'compileall', 'py_compile',
+    'zipimport', 'pkgutil', 'multiprocessing', 'threading', 'signal',
+    'tempfile', 'glob', 'fnmatch', 'linecache', 'tokenize', 'dis',
+    'inspect', 'ast', 'eval', 'exec', 'open', '__import__',
+    'globals', 'locals', 'vars', 'dir', 'getattr', 'setattr', 'delattr',
+    'hasattr', 'type', 'object', 'class', 'bases',
+}
+
+DANGEROUS_PATTERNS = [
+    '__import__', 'import os', 'import sys', 'import subprocess',
+    'import shutil', 'import socket', 'import http', 'import urllib',
+    'import requests', 'import pathlib', 'import ctypes', 'import pickle',
+    'exec(', 'eval(', 'compile(', 'open(', '__builtins__',
+    'os.system', 'os.popen', 'os.exec', 'os.spawn', 'os.remove',
+    'os.unlink', 'os.rmdir', 'os.makedirs', 'os.rename',
+    'subprocess.', 'shutil.', 'socket.', 'http.',
+]
+
+
+def _validate_algorithm_code(code: str):
+    for pattern in DANGEROUS_PATTERNS:
+        if pattern in code:
+            raise ValueError(f"算法代码包含不允许的操作: {pattern}")
 
 
 def run_custom_backtest(stock_code: str, algorithm_code: str, algorithm_name: str = "custom") -> Dict:
+    _validate_algorithm_code(algorithm_code)
+
     df = get_history_data(stock_code, days=120)
     if df is None or df.empty or len(df) < 30:
         raise ValueError(f"无法获取 {stock_code} 的足够历史数据")
 
     indicators = calculate_all_indicators(df)
 
-    with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w', encoding='utf-8') as f:
-        json.dump({
-            "dates": [str(d)[:10] for d in df.index],
-            "opens": df["开盘"].tolist() if "开盘" in df.columns else [],
-            "closes": df["收盘"].tolist() if "收盘" in df.columns else [],
-            "highs": df["最高"].tolist() if "最高" in df.columns else [],
-            "lows": df["最低"].tolist() if "最低" in df.columns else [],
-            "volumes": df["成交量"].tolist() if "成交量" in df.columns else [],
-        }, f)
-        data_path = f.name
+    data_dict = {
+        "dates": [str(d)[:10] for d in df.index],
+        "opens": _safe_list(df, "开盘"),
+        "closes": _safe_list(df, "收盘"),
+        "highs": _safe_list(df, "最高"),
+        "lows": _safe_list(df, "最低"),
+        "volumes": _safe_list(df, "成交量"),
+    }
+    indicators_dict = _serialize_indicators(indicators)
 
-    with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w', encoding='utf-8') as f:
-        json.dump(_serialize_indicators(indicators), f)
-        indicators_path = f.name
+    safe_builtins = {}
+    for name in ['print', 'len', 'range', 'int', 'float', 'str', 'bool',
+                 'list', 'dict', 'tuple', 'set', 'abs', 'max', 'min', 'sum',
+                 'round', 'sorted', 'enumerate', 'zip', 'map', 'filter',
+                 'True', 'False', 'None', 'isinstance', 'type', 'hasattr']:
+        safe_builtins[name] = __builtins__[name] if isinstance(__builtins__, dict) else getattr(__builtins__, name)
 
-    runner_code = f'''
-import json, sys
-sys.path.insert(0, r"{os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))}")
-with open(r"{data_path}", encoding="utf-8") as f:
-    data = json.load(f)
-with open(r"{indicators_path}", encoding="utf-8") as f:
-    indicators = json.load(f)
+    local_ns = {
+        '__builtins__': safe_builtins,
+        'pd': __import__('pandas'),
+        'np': __import__('numpy'),
+        'json': __import__('json'),
+        'math': __import__('math'),
+        'data': data_dict,
+        'indicators': indicators_dict,
+    }
 
-import pandas as pd
-df = pd.DataFrame(data)
-
-{algorithm_code}
-
-results = []
-for i in range(30, len(df)):
-    sub_df = df.iloc[:i+1]
-    sub_ind = {{}}
-    for k, v in indicators.items():
-        if isinstance(v, dict) and "series" in v:
-            sub_ind[k] = {{"latest": v.get("latest"), "signal": v.get("signal")}}
-        else:
-            sub_ind[k] = v
     try:
-        sig = signal(sub_df, sub_ind)
+        exec(algorithm_code, local_ns)
     except Exception as e:
-        sig = "hold"
-    results.append(sig)
+        raise ValueError(f"算法代码执行错误: {e}")
 
-print(json.dumps(results))
-'''
+    if 'signal' not in local_ns or not callable(local_ns['signal']):
+        raise ValueError("算法代码必须定义 signal(df, indicators) 函数")
 
-    result = subprocess.run(
-        [sys.executable, "-c", runner_code],
-        capture_output=True, text=True, timeout=30,
-    )
+    signal_func = local_ns['signal']
+    test_df = __import__('pandas').DataFrame(data_dict)
+    try:
+        test_result = signal_func(test_df, indicators_dict)
+        if test_result not in ('buy', 'sell', 'hold'):
+            raise ValueError("signal函数必须返回 'buy', 'sell' 或 'hold'")
+    except ValueError:
+        raise
+    except Exception:
+        pass
 
-    os.unlink(data_path)
-    os.unlink(indicators_path)
+    signals = []
+    for i in range(30, len(test_df)):
+        sub_df = test_df.iloc[:i+1]
+        sub_ind = {}
+        for k, v in indicators_dict.items():
+            if isinstance(v, dict) and "series" in v:
+                sub_ind[k] = {"latest": v.get("latest"), "signal": v.get("signal")}
+            else:
+                sub_ind[k] = v
+        try:
+            sig = signal_func(sub_df, sub_ind)
+            if sig not in ('buy', 'sell', 'hold'):
+                sig = 'hold'
+        except Exception:
+            sig = 'hold'
+        signals.append(sig)
 
-    if result.returncode != 0:
-        return {"error": result.stderr, "stock_code": stock_code}
+    return sanitize_for_json(_evaluate_signals(df, signals))
 
-    signals = json.loads(result.stdout)
-    return _sanitize(_evaluate_signals(df, signals))
+
+def _safe_list(df, col):
+    if col in df.columns:
+        vals = df[col].tolist()
+        return [float(v) if hasattr(v, 'item') else v for v in vals]
+    return []
 
 
 def _serialize_indicators(indicators):
@@ -225,9 +238,14 @@ def _serialize_indicators(indicators):
                 if hasattr(v, 'tolist'):
                     cleaned[k] = v.tolist()
                 elif hasattr(v, 'item'):
-                    cleaned[k] = v.item()
+                    try:
+                        cleaned[k] = v.item()
+                    except Exception:
+                        cleaned[k] = str(v)
                 elif isinstance(v, dict):
-                    cleaned[k] = {kk: vv.item() if hasattr(vv, 'item') else vv for kk, vv in v.items()}
+                    cleaned[k] = {kk: _safe_item(vv) for kk, vv in v.items()}
+                elif isinstance(v, list):
+                    cleaned[k] = [_safe_item(x) for x in v]
                 else:
                     cleaned[k] = v
             result[key] = cleaned
@@ -236,67 +254,82 @@ def _serialize_indicators(indicators):
     return result
 
 
-def _evaluate_signals(df: pd.DataFrame, signals: List[str]) -> Dict:
+def _safe_item(v):
+    if hasattr(v, 'item'):
+        try:
+            return v.item()
+        except Exception:
+            pass
+    if hasattr(v, 'tolist'):
+        return v.tolist()
+    return v
+
+
+def _evaluate_signals(df, signals):
+    if "收盘" not in df.columns or len(signals) == 0:
+        return {"error": "无法评估信号", "stock_code": ""}
+
     closes = df["收盘"].values
-    predictions = []
-    equity = [1.0]
+    equity = 1.0
+    position = 0
+    entry_price = 0
+    equity_curve = []
+    commission_rate = 0.00025
+    stamp_duty_rate = 0.0005
+    slippage = 0.001
+    total_cost_rate = commission_rate + stamp_duty_rate + slippage
 
-    for i, sig in enumerate(signals):
+    for i, signal in enumerate(signals):
         idx = i + 30
-        if idx + 1 >= len(closes):
+        if idx >= len(closes):
             break
-        current_price = closes[idx]
-        next_price = closes[idx + 1]
 
-        predicted_range = (current_price * 0.98, current_price * 1.02)
-        hit = bool(predicted_range[0] <= next_price <= predicted_range[1])
-        trend = "上涨" if sig == "buy" else ("下跌" if sig == "sell" else "震荡")
+        price = float(closes[idx])
 
-        predictions.append({
-            "date": str(df.index[idx])[:10] if hasattr(df.index[idx], 'strftime') else str(df.index[idx])[:10],
-            "trend": trend,
-            "predicted_low": round(float(predicted_range[0]), 2),
-            "predicted_high": round(float(predicted_range[1]), 2),
-            "actual_price": round(float(next_price), 2),
-            "hit": hit,
-        })
+        if signal == "buy" and position == 0:
+            position = 1
+            entry_price = price * (1 + slippage)
+        elif signal == "sell" and position == 1:
+            sell_price = price * (1 - slippage)
+            profit = (sell_price - entry_price) / entry_price
+            cost = profit * total_cost_rate
+            equity *= (1 + profit - cost)
+            position = 0
+            entry_price = 0
 
-        ret = 0
-        if sig == "buy":
-            ret = (next_price - current_price) / current_price if current_price > 0 else 0
-        elif sig == "sell":
-            ret = -(next_price - current_price) / current_price if current_price > 0 else 0
-        equity.append(equity[-1] * (1 + ret))
+        equity_curve.append({"date": str(df.index[idx])[:10], "value": round(equity, 4)})
 
-    if not predictions:
-        raise ValueError("预测数据不足")
+    if position == 1 and len(closes) > 30:
+        last_price = float(closes[-1])
+        profit = (last_price - entry_price) / entry_price
+        equity *= (1 + profit)
 
-    hits = [p["hit"] for p in predictions]
-    day1_acc = sum(hits) / len(hits) if hits else 0
+    returns = []
+    for i in range(1, len(equity_curve)):
+        if equity_curve[i - 1]["value"] > 0:
+            r = (equity_curve[i]["value"] - equity_curve[i - 1]["value"]) / equity_curve[i - 1]["value"]
+            returns.append(r)
 
-    returns = [(equity[i] - equity[i - 1]) / equity[i - 1] for i in range(1, len(equity)) if equity[i - 1] > 0]
     sharpe = (np.mean(returns) / np.std(returns) * np.sqrt(252)) if returns and np.std(returns) > 0 else 0
 
     max_dd = 0
-    peak = equity[0]
-    for val in equity:
-        if val > peak:
-            peak = val
-        dd = (peak - val) / peak if peak > 0 else 0
+    peak = 1.0
+    for ec in equity_curve:
+        if ec["value"] > peak:
+            peak = ec["value"]
+        dd = (peak - ec["value"]) / peak if peak > 0 else 0
         if dd > max_dd:
             max_dd = dd
 
     return {
         "stock_code": "",
         "statistics": {
-            "day1_accuracy": round(float(day1_acc), 4),
-            "day2_accuracy": round(float(day1_acc), 4),
-            "day1_trend_accuracy": round(float(day1_acc), 4),
-            "day2_trend_accuracy": round(float(day1_acc), 4),
+            "day1_accuracy": 0,
+            "day2_accuracy": 0,
             "sharpe_ratio": round(float(sharpe), 4),
             "max_drawdown": round(float(-max_dd), 4),
-            "total_predictions": len(predictions),
+            "total_predictions": len(signals),
         },
-        "predictions": predictions,
-        "equity_curve": [{"date": p["date"], "value": round(float(equity[i + 1]), 4)} for i, p in enumerate(predictions)],
+        "predictions": [],
+        "equity_curve": equity_curve,
     }

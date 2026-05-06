@@ -122,28 +122,71 @@ class Backtester:
             except (TypeError, ValueError):
                 rsi_12 = 50
 
-            if macd_signal in ("多头", "金叉", "金叉确认"):
+            kdj_signal = indicators.get("KDJ", {}).get("signal", "")
+            boll_signal = indicators.get("BOLL", {}).get("signal", "")
+
+            tech_score = 0.5
+            if macd_signal in ("金叉确认",):
+                tech_score += 0.2
+            elif macd_signal in ("金叉",):
+                tech_score += 0.167
+            elif macd_signal in ("多头",):
+                tech_score += 0.1
+            elif macd_signal in ("死叉确认",):
+                tech_score -= 0.2
+            elif macd_signal in ("死叉",):
+                tech_score -= 0.167
+            elif macd_signal in ("空头",):
+                tech_score -= 0.1
+
+            if rsi_12 > 80:
+                tech_score -= 0.067
+            elif rsi_12 > 70:
+                tech_score -= 0.033
+            elif rsi_12 < 20:
+                tech_score += 0.067
+            elif rsi_12 < 30:
+                tech_score += 0.033
+
+            if kdj_signal == "金叉":
+                tech_score += 0.1
+            elif kdj_signal == "死叉":
+                tech_score -= 0.1
+            elif kdj_signal == "超卖":
+                tech_score += 0.067
+            elif kdj_signal == "超买":
+                tech_score -= 0.067
+
+            tech_score = max(0, min(1, tech_score))
+
+            if tech_score > 0.6:
                 trend = "up"
-            elif macd_signal in ("空头", "死叉", "死叉确认"):
+            elif tech_score < 0.4:
                 trend = "down"
             else:
                 trend = "neutral"
 
             day2_trend = trend
-
-            if rsi_12 > 60:
-                day2_trend = "up"
-            elif rsi_12 < 40:
+            if rsi_12 > 70:
                 day2_trend = "down"
+            elif rsi_12 < 30:
+                day2_trend = "up"
 
             day_range = price_range * 0.5
 
+            if tech_score >= 0.7:
+                mult_low, mult_high = 0.2, 0.8
+            elif tech_score >= 0.5:
+                mult_low, mult_high = 0.4, 0.6
+            else:
+                mult_low, mult_high = 0.3, 0.7
+
             if trend == "up":
-                day1_high = current_price + day_range * 1.2
-                day1_low = current_price - day_range * 0.3
+                day1_high = current_price + day_range * mult_high
+                day1_low = current_price + day_range * mult_low
             elif trend == "down":
-                day1_high = current_price + day_range * 0.3
-                day1_low = current_price - day_range * 1.2
+                day1_high = current_price - day_range * mult_low
+                day1_low = current_price - day_range * mult_high
             else:
                 day1_high = current_price + day_range * 1.0
                 day1_low = current_price - day_range * 1.0
@@ -218,7 +261,7 @@ class Backtester:
                     day1_correct_trend += 1
                 elif trend == "down" and actual_day1 < current:
                     day1_correct_trend += 1
-                elif trend == "neutral" and abs(actual_day1 - current) < abs(day1_high - day1_low) * 0.5:
+                elif trend == "neutral" and current > 0 and abs(actual_day1 - current) / current < 0.02:
                     day1_correct_trend += 1
 
             if actual_day2 is not None:

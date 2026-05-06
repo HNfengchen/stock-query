@@ -15,8 +15,14 @@ const scorePercent = computed(() => {
   return Math.round((props.result.trading_signal?.score || 0) * 100)
 })
 
+const ps = computed<any>(() => props.result.position_strategy || ({} as any))
+
 const isHeld = computed(() => {
-  return 'avg_cost' in (props.result.position_strategy || {})
+  return 'avg_cost' in ps.value
+})
+
+const profitBelowCost = computed(() => {
+  return isHeld.value && ps.value.stop_profit_price != null && ps.value.avg_cost != null && ps.value.stop_profit_price < ps.value.avg_cost
 })
 
 function fmt(val: any) {
@@ -83,21 +89,21 @@ function getTrendType(trend: string) {
         <div class="card-label">持仓策略</div>
         <template v-if="isHeld">
           <div class="strat-grid">
-            <div class="strat-item"><span class="strat-label">成本</span><span class="strat-val">{{ fmt((result.position_strategy as any).avg_cost) }}</span></div>
-            <div class="strat-item"><span class="strat-label">盈亏</span><span class="strat-val" :class="((result.position_strategy as any).price_change_pct || 0) >= 0 ? 'profit' : 'loss'">{{ fmt((result.position_strategy as any).price_change_pct) }}%</span></div>
-            <div class="strat-item"><span class="strat-label">止盈</span><span class="strat-val profit">{{ fmt((result.position_strategy as any).stop_profit_price) }}</span></div>
-            <div class="strat-item"><span class="strat-label">止损</span><span class="strat-val loss">{{ fmt((result.position_strategy as any).stop_loss_price) }}</span></div>
+            <div class="strat-item"><span class="strat-label">成本</span><span class="strat-val">{{ fmt(ps.avg_cost) }}</span></div>
+            <div class="strat-item"><span class="strat-label">盈亏</span><span class="strat-val" :class="(ps.price_change_pct || 0) >= 0 ? 'profit' : 'loss'">{{ fmt(ps.price_change_pct) }}%</span></div>
+            <div class="strat-item"><span class="strat-label">{{ profitBelowCost ? '目标' : '止盈' }}</span><span class="strat-val" :class="profitBelowCost ? 'warn' : 'profit'">{{ fmt(ps.stop_profit_price) }}</span></div>
+            <div class="strat-item"><span class="strat-label">止损</span><span class="strat-val loss">{{ fmt(ps.stop_loss_price) }}</span></div>
           </div>
           <div class="strat-action">
-            <el-tag :type="(result.position_strategy as any).position_adjust?.includes('减仓') ? 'danger' : (result.position_strategy as any).position_adjust?.includes('补仓') ? 'success' : 'info'" effect="dark" size="small">{{ (result.position_strategy as any).position_adjust }}</el-tag>
+            <el-tag :type="ps.position_adjust?.includes('减仓') ? 'danger' : ps.position_adjust?.includes('补仓') ? 'success' : 'info'" effect="dark" size="small">{{ ps.position_adjust }}</el-tag>
           </div>
         </template>
         <template v-else>
           <div class="strat-grid">
-            <div class="strat-item"><span class="strat-label">时机</span><el-tag :type="(result.position_strategy as any).buy_timing?.includes('建议') ? 'success' : 'warning'" effect="dark" size="small">{{ (result.position_strategy as any).buy_timing }}</el-tag></div>
-            <div class="strat-item"><span class="strat-label">仓位</span><span class="strat-val">{{ (result.position_strategy as any).position_size_pct }}%</span></div>
-            <div class="strat-item"><span class="strat-label">止损</span><span class="strat-val loss">{{ fmt((result.position_strategy as any).stop_loss_price) }}</span></div>
-            <div class="strat-item"><span class="strat-label">风险</span><el-tag :type="(result.position_strategy as any).risk_level?.includes('低') ? 'success' : (result.position_strategy as any).risk_level?.includes('高') ? 'danger' : 'warning'" effect="dark" size="small">{{ (result.position_strategy as any).risk_level }}</el-tag></div>
+            <div class="strat-item"><span class="strat-label">时机</span><el-tag :type="ps.buy_timing?.includes('建议') ? 'success' : 'warning'" effect="dark" size="small">{{ ps.buy_timing }}</el-tag></div>
+            <div class="strat-item"><span class="strat-label">仓位</span><span class="strat-val">{{ ps.position_size_pct }}%</span></div>
+            <div class="strat-item"><span class="strat-label">止损</span><span class="strat-val loss">{{ fmt(ps.stop_loss_price) }}</span></div>
+            <div class="strat-item"><span class="strat-label">风险</span><el-tag :type="ps.risk_level?.includes('低') ? 'success' : ps.risk_level?.includes('高') ? 'danger' : 'warning'" effect="dark" size="small">{{ ps.risk_level }}</el-tag></div>
           </div>
         </template>
       </div>
@@ -261,6 +267,7 @@ function getTrendType(trend: string) {
 
 .strat-val.profit { color: #00d4aa; }
 .strat-val.loss { color: #ff4757; }
+.strat-val.warn { color: #f0a030; }
 
 .strat-action {
   text-align: center;

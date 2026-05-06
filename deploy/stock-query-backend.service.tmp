@@ -1,0 +1,17 @@
+[Unit]
+Description=Stock Query Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=fengchen
+WorkingDirectory=/mnt/e/projects/quantitative_trade/stock-query
+ExecStart=/home/fengchen/miniconda3/bin/python3 -m uvicorn backend.app:app --host 0.0.0.0 --port 8002 --workers 1
+Restart=always
+RestartSec=5
+Environment=PYTHONPATH=/mnt/e/projects/quantitative_trade/stock-query
+Environment=PATH=homeengchen/.trae-cn-server/tools/trae-gopls/current:homeengchen/.trae-cn-server/sdks/workspaces/3b6c540b/versions/node/current:homeengchen/.trae-cn-server/sdks/versions/node/current:/home/fengchen/.bun/bin:/home/fengchen/.opencode/bin:homeengchen/.trae-cn-server/tools/trae-gopls/current:homeengchen/.trae-cn-server/sdks/workspaces/3b6c540b/versions/node/current:homeengchen/.trae-cn-server/sdks/versions/node/current:/home/fengchen/.trae-cn-server/bin/stable-54012f49b4eaf3a9234479401dacf14b0bbf8b06-debian10/bin/remote-cli:/home/fengchen/.bun/bin:/home/fengchen/.opencode/bin:/home/fengchen/miniconda3/bin:/home/fengchen/miniconda3/condabin:/usr/local/java/jdk21/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Users/fengchen/.trae-cn/tools/trae-gopls/current:/mnt/c/Users/fengchen/.trae-cn/sdks/workspaces/3b6c540b/versions/node/current:/mnt/c/Users/fengchen/.trae-cn/sdks/versions/node/current:/mnt/d/cursor/resources/app/bin:/mnt/d/cursor/resources/app/bin:/mnt/d/cursor/resources/app/bin:/mnt/d/cursor/resources/app/bin:/mnt/d/cursor/resources/app/bin:/mnt/d/java24/bin:/mnt/d/cursor/resources/app/bin:/mnt/c/Users/fengchen/AppData/Local/Programs/cursor/resources/app/bin:/mnt/d/cursor/resources/app/bin:/mnt/e/VMware/bin:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0:/mnt/c/Windows/System32/OpenSSH:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/Program Files/NVIDIA Corporation/NVIDIA app/NvDLISR:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Users/fengchen/AppData/Local/Microsoft/WindowsApps:/mnt/e/zawu/node/node_global:/mnt/c/Users/fengchen/AppData/Local/Programs/Ollama:/mnt/d/cursor/resources/app/bin:/mnt/d/cursor/resources/app/bin:/mnt/c/Users/fengchen/AppData/Local/Programs/cursor/resources/app/bin:/mnt/c/Users/fengchen/AppData/Local/Programs/cursor/resources/app/bin:/mnt/c/Users/fengchen/AppData/Local/Mic:/mnt/e/Git/cmd:/mnt/e/zawu/node:/mnt/c/Program Files/Docker/Docker/resources/bin:/mnt/e/cursor/resources/app/codeBin:/mnt/f/cursor/resources/app/codeBin:/mnt/e/Trae CN/bin:/mnt/c/Users/fengchen/AppData/Local/Microsoft/WindowsApps:/mnt/e/zawu/node/node_global:/mnt/c/Users/fengchen/AppData/Local/Programs/Ollama:/mnt/d/texlive/2025/bin/windows:/mnt/d/zawu/Ollama:/mnt/e/zawu/ollama:/mnt/c/Users/fengchen/AppData/Roaming/npm:/mnt/c/Users/fengchen/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin:/mnt/c/Users/fengchen/.local/bin:/mnt/e/Trae CN/resources/app/bin/lib:/snap/bin:/home/fengchen/.trae-cn-server/extensions/ms-python.debugpy-2025.18.0-linux-x64/bundled/scripts/noConfigScripts
+Environment=CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+
+[Install]
+WantedBy=multi-user.target

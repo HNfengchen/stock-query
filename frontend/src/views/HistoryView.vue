@@ -8,7 +8,6 @@ const store = useStockStore()
 const router = useRouter()
 
 const dialogVisible = ref(false)
-const batchDialogVisible = ref(false)
 const editDialogVisible = ref(false)
 const editingStock = ref<any>(null)
 
@@ -17,8 +16,6 @@ const newStock = ref<AnalysisRequest>({
   position_status: '未持有',
   cost_price: null,
 })
-
-const batchInput = ref('')
 
 onMounted(() => {
   store.loadWatchlist()
@@ -46,35 +43,15 @@ async function confirmRemove(stockCode: string) {
   }
 }
 
-function analyzeStock(stockCode: string) {
-  router.push({ path: '/', query: { code: stockCode } })
-}
-
-function openBatchDialog() {
-  batchInput.value = ''
-  batchDialogVisible.value = true
-}
-
-async function confirmBatch() {
-  const lines = batchInput.value.trim().split(/\n/)
-  const stocks: AnalysisRequest[] = lines.map(line => {
-    const parts = line.trim().split(/\s+/)
-    const input = parts[0] || ''
-    return {
-      stock_input: input,
-      position_status: (parts[1] === '已持有' ? '已持有' : '未持有') as '已持有' | '未持有',
-      cost_price: parts[2] ? parseFloat(parts[2]) : null,
-    }
-  }).filter(s => s.stock_input)
-
-  if (stocks.length === 0) return
-
-  try {
-    await store.runBatchAnalysis(stocks)
-    batchDialogVisible.value = false
-  } catch (e) {
-    console.error(e)
+function analyzeStock(item: any) {
+  const query: Record<string, string> = { code: item.stock_code }
+  if (item.position_status) {
+    query.position = item.position_status
   }
+  if (item.cost_price) {
+    query.cost = String(item.cost_price)
+  }
+  router.push({ path: '/', query })
 }
 
 function openEdit(item: any) {
@@ -83,8 +60,16 @@ function openEdit(item: any) {
 }
 
 async function confirmEdit() {
-  // TODO: implement update API
-  editDialogVisible.value = false
+  if (!editingStock.value) return
+  try {
+    await store.updateStock(editingStock.value.stock_code, {
+      position_status: editingStock.value.position_status,
+      cost_price: editingStock.value.cost_price,
+    })
+    editDialogVisible.value = false
+  } catch (e) {
+    console.error(e)
+  }
 }
 </script>
 
@@ -93,18 +78,10 @@ async function confirmEdit() {
     <div class="page-header">
       <h2>历史股票管理</h2>
       <div class="header-actions">
-        <el-button type="primary" @click="openBatchDialog">
-          <el-icon><DocumentCopy /></el-icon> 批量分析
-        </el-button>
         <el-button @click="openAddDialog">
           <el-icon><Plus /></el-icon> 添加股票
         </el-button>
       </div>
-    </div>
-
-    <div v-if="store.batchProgress.status === 'analyzing'" class="batch-progress">
-      <el-progress :percentage="Math.round((store.batchProgress.current / store.batchProgress.total) * 100)" :stroke-width="16" striped />
-      <span>正在分析 {{ store.batchProgress.currentStock }} ({{ store.batchProgress.current }}/{{ store.batchProgress.total }})</span>
     </div>
 
     <div class="stock-grid">
@@ -126,7 +103,7 @@ async function confirmEdit() {
           <span v-else class="card-cost">成本: -</span>
         </div>
         <div class="card-actions">
-          <el-button type="primary" size="small" text @click.stop="analyzeStock(item.stock_code)">
+          <el-button type="primary" size="small" text @click.stop="analyzeStock(item)">
             分析
           </el-button>
           <el-button type="danger" size="small" text @click.stop="confirmRemove(item.stock_code)">
@@ -161,21 +138,6 @@ async function confirmEdit() {
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="confirmAdd">添加</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 批量分析对话框 -->
-    <el-dialog v-model="batchDialogVisible" title="批量分析" width="500px" class="dark-dialog">
-      <p class="dialog-hint">每行输入: 股票代码 [持仓状态] [成本价]</p>
-      <el-input
-        v-model="batchInput"
-        type="textarea"
-        :rows="8"
-        placeholder="601515 未持有&#10;603956 已持有 11.3&#10;000630 未持有"
-      />
-      <template #footer>
-        <el-button @click="batchDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="confirmBatch">开始分析</el-button>
       </template>
     </el-dialog>
 
@@ -225,22 +187,6 @@ async function confirmEdit() {
 .header-actions {
   display: flex;
   gap: 12px;
-}
-
-.batch-progress {
-  margin-bottom: 24px;
-  padding: 16px;
-  background: rgba(0, 212, 170, 0.05);
-  border-radius: 12px;
-  border: 1px solid rgba(0, 212, 170, 0.15);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.batch-progress span {
-  font-size: 13px;
-  color: #8b92a8;
 }
 
 .stock-grid {

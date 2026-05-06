@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -84,13 +84,7 @@ watch(() => props.data, (val) => {
   if (val && val.dates.length > 0) {
     option.value = buildOption(val)
   }
-}, { immediate: true, deep: true })
-
-onMounted(() => {
-  if (props.data && props.data.dates.length > 0) {
-    option.value = buildOption(props.data)
-  }
-})
+}, { immediate: true })
 </script>
 
 <template>

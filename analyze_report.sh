@@ -1,19 +1,14 @@
 #!/bin/bash
 
-# 股票分析报告生成脚本
-# 用法: ./analyze_report.sh 股票代码 [已持有|未持有] [持仓成本] [选项]
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 STOCK_NAME="${1:-}"
 POSITION="${2:-未持有}"
 COST="${3:-}"
-CONFIG_FLAG=""
-OUTPUT_DIR_FLAG=""
-BACKTEST_FLAG=""
 
-shift 2
+shift $# 2>/dev/null
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --config)
@@ -29,8 +24,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         *)
-            echo "未知参数: $1"
-            exit 1
+            shift
             ;;
     esac
 done

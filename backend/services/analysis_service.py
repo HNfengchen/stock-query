@@ -3,8 +3,9 @@ import os
 import json
 import math
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
+from functools import lru_cache
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -12,48 +13,36 @@ import yaml
 from scripts.core.data_fetcher import DataFetcher
 from scripts.core.analyzer import StockAnalyzer
 from scripts.technical_indicators import calculate_all_indicators
+from backend.utils import clean_float, to_list, sanitize_for_json, deep_clean_nan, clean_nested
+
+_config_cache = None
+_fetcher_cache = None
+_analyzer_cache = None
+_result_cache = {}
 
 
 def load_config():
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "config.yaml")
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        _config_cache = yaml.safe_load(f)
+    return _config_cache
 
 
-def _clean_float(v):
-    if v is None:
-        return None
-    if isinstance(v, float):
-        if math.isnan(v) or math.isinf(v):
-            return None
-        return round(v, 6)
-    if isinstance(v, (np.integer, np.floating)):
-        f = float(v)
-        if math.isnan(f) or math.isinf(f):
-            return None
-        return round(f, 6)
-    if hasattr(v, 'item'):
-        try:
-            f = float(v.item())
-            if math.isnan(f) or math.isinf(f):
-                return None
-            return round(f, 6)
-        except Exception:
-            return str(v)
-    return v
+def get_fetcher():
+    global _fetcher_cache
+    if _fetcher_cache is None:
+        _fetcher_cache = DataFetcher(load_config())
+    return _fetcher_cache
 
 
-def _to_list(val):
-    if val is None:
-        return []
-    if hasattr(val, 'tolist'):
-        arr = val.tolist()
-        if isinstance(arr, (list, tuple)):
-            return [_clean_float(x) for x in arr]
-        return [_clean_float(arr)]
-    if isinstance(val, (list, tuple)):
-        return [_clean_float(x) for x in val]
-    return [_clean_float(val)]
+def get_analyzer():
+    global _analyzer_cache
+    if _analyzer_cache is None:
+        _analyzer_cache = StockAnalyzer(load_config())
+    return _analyzer_cache
 
 
 def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Dict:
@@ -73,39 +62,51 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
     else:
         dates = [str(d)[:10] for d in df.index]
 
-    opens = _to_list(df.get("开盘", []))
-    closes = _to_list(df.get("收盘", []))
-    highs = _to_list(df.get("最高", []))
-    lows = _to_list(df.get("最低", []))
-    volumes = _to_list(df.get("成交量", []))
+    opens = to_list(df.get("开盘", []))
+    closes = to_list(df.get("收盘", []))
+    highs = to_list(df.get("最高", []))
+    lows = to_list(df.get("最低", []))
+    volumes = to_list(df.get("成交量", []))
 
-    ma5 = _to_list(df["收盘"].rolling(window=5).mean().fillna(0)) if "收盘" in df.columns else []
-    ma10 = _to_list(df["收盘"].rolling(window=10).mean().fillna(0)) if "收盘" in df.columns else []
-    ma20 = _to_list(df["收盘"].rolling(window=20).mean().fillna(0)) if "收盘" in df.columns else []
-    ma60 = _to_list(df["收盘"].rolling(window=60).mean().fillna(0)) if "收盘" in df.columns else []
+    ma_data = indicators.get("MA", {})
+    ma5 = to_list(ma_data.get("MA5", {}).get("series", [])) if isinstance(ma_data.get("MA5"), dict) else []
+    ma10 = to_list(ma_data.get("MA10", {}).get("series", [])) if isinstance(ma_data.get("MA10"), dict) else []
+    ma20 = to_list(ma_data.get("MA20", {}).get("series", [])) if isinstance(ma_data.get("MA20"), dict) else []
+    ma60 = to_list(ma_data.get("MA60", {}).get("series", [])) if isinstance(ma_data.get("MA60"), dict) else []
 
-    boll_upper = []
-    boll_middle = []
-    boll_lower = []
-    if "收盘" in df.columns and len(df) >= 20:
+    if not ma5 and "收盘" in df.columns:
+        ma5 = to_list(df["收盘"].rolling(window=5).mean().fillna(0))
+    if not ma10 and "收盘" in df.columns:
+        ma10 = to_list(df["收盘"].rolling(window=10).mean().fillna(0))
+    if not ma20 and "收盘" in df.columns:
+        ma20 = to_list(df["收盘"].rolling(window=20).mean().fillna(0))
+    if not ma60 and "收盘" in df.columns:
+        ma60 = to_list(df["收盘"].rolling(window=60).mean().fillna(0))
+
+    boll_data = indicators.get("BOLL", {}).get("series", {})
+    boll_upper = to_list(boll_data.get("upper", [])) if isinstance(boll_data, dict) else []
+    boll_middle = to_list(boll_data.get("middle", [])) if isinstance(boll_data, dict) else []
+    boll_lower = to_list(boll_data.get("lower", [])) if isinstance(boll_data, dict) else []
+
+    if not boll_upper and "收盘" in df.columns and len(df) >= 20:
         middle = df["收盘"].rolling(window=20).mean()
-        std = df["收盘"].rolling(window=20).std(ddof=0)
-        boll_upper = _to_list((middle + 2 * std).fillna(0))
-        boll_middle = _to_list(middle.fillna(0))
-        boll_lower = _to_list((middle - 2 * std).fillna(0))
+        std = df["收盘"].rolling(window=20).std(ddof=1)
+        boll_upper = to_list((middle + 2 * std).fillna(0))
+        boll_middle = to_list(middle.fillna(0))
+        boll_lower = to_list((middle - 2 * std).fillna(0))
 
     macd_series = indicators.get("MACD", {}).get("series", {})
     rsi_series = indicators.get("RSI", {})
     kdj_series = indicators.get("KDJ", {}).get("series", {})
 
-    macd_vals = _to_list(macd_series.get("MACD", []))
-    dif_vals = _to_list(macd_series.get("DIF", []))
-    dea_vals = _to_list(macd_series.get("DEA", []))
-    rsi6_vals = _to_list(rsi_series.get("RSI(6)", {}).get("series", []))
-    rsi12_vals = _to_list(rsi_series.get("RSI(12)", {}).get("series", []))
-    k_vals = _to_list(kdj_series.get("K", []))
-    d_vals = _to_list(kdj_series.get("D", []))
-    j_vals = _to_list(kdj_series.get("J", []))
+    macd_vals = to_list(macd_series.get("MACD", []))
+    dif_vals = to_list(macd_series.get("DIF", []))
+    dea_vals = to_list(macd_series.get("DEA", []))
+    rsi6_vals = to_list(rsi_series.get("RSI(6)", {}).get("series", []))
+    rsi12_vals = to_list(rsi_series.get("RSI(12)", {}).get("series", []))
+    k_vals = to_list(kdj_series.get("K", []))
+    d_vals = to_list(kdj_series.get("D", []))
+    j_vals = to_list(kdj_series.get("J", []))
 
     ff_dates = []
     ff_main_flow = []
@@ -116,9 +117,9 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
         if isinstance(hist, list):
             for item in hist:
                 ff_dates.append(str(item.get("日期", ""))[:10])
-                ff_main_flow.append(_clean_float(item.get("主力净流入")))
-                ff_main_flow_ratio.append(_clean_float(item.get("主力净流入占比")))
-                ff_retail_flow.append(_clean_float(item.get("小单净流入")))
+                ff_main_flow.append(clean_float(item.get("主力净流入")))
+                ff_main_flow_ratio.append(clean_float(item.get("主力净流入占比")))
+                ff_retail_flow.append(clean_float(item.get("小单净流入")))
 
     return {
         "kline": {
@@ -135,8 +136,15 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
 
 
 def run_analysis(stock_input: str, position_status: str, cost_price: Optional[float] = None) -> Dict:
-    config = load_config()
-    fetcher = DataFetcher(config)
+    cache_key = (stock_input, position_status, cost_price)
+    now = datetime.now()
+    if cache_key in _result_cache:
+        cached_result, cached_time = _result_cache[cache_key]
+        if (now - cached_time).total_seconds() < 300:
+            return cached_result
+
+    fetcher = get_fetcher()
+    analyzer = get_analyzer()
 
     stock_code, stock_name, market = fetcher.resolve_stock_code(stock_input)
     info = fetcher.fetch_stock_info(stock_code)
@@ -148,7 +156,6 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
 
     indicators = calculate_all_indicators(history_df)
 
-    analyzer = StockAnalyzer(config)
     analysis = analyzer.generate_recommendation({
         "stock_code": stock_code,
         "stock_name": stock_name,
@@ -170,61 +177,52 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
         "stock_code": stock_code,
         "stock_name": stock_name or info.get("名称", stock_code),
         "analysis": {
-            "technical_score": _clean_float(analysis_data.get("technical", {}).get("score", 0)),
-            "fund_flow_score": _clean_float(analysis_data.get("fund_flow", {}).get("score", 0)),
-            "sentiment_score": _clean_float(analysis_data.get("sentiment", {}).get("score", 0)),
-            "overall_score": _clean_float(trading_signal.get("score", 0)),
+            "technical_score": clean_float(analysis_data.get("technical", {}).get("score", 0)),
+            "fund_flow_score": clean_float(analysis_data.get("fund_flow", {}).get("score", 0)),
+            "sentiment_score": clean_float(analysis_data.get("sentiment", {}).get("score", 0)),
+            "overall_score": clean_float(trading_signal.get("score", 0)),
             "recommendation": trading_signal.get("signal_text", "未知"),
-            "details": _clean_nested(analysis_data),
+            "details": clean_nested(analysis_data),
         },
         "trading_signal": {
-            "score": _clean_float(trading_signal.get("score", 0)),
+            "score": clean_float(trading_signal.get("score", 0)),
             "signal": trading_signal.get("signal", "hold"),
             "signal_text": trading_signal.get("signal_text", "持有"),
         },
         "price_prediction": {
-            "current": _clean_float(price_prediction.get("current")),
-            "support": _clean_float(price_prediction.get("support")),
-            "resistance": _clean_float(price_prediction.get("resistance")),
+            "current": clean_float(price_prediction.get("current")),
+            "support": clean_float(price_prediction.get("support")),
+            "resistance": clean_float(price_prediction.get("resistance")),
             "day1": {
-                "target_low": _clean_float(price_prediction.get("day1", {}).get("target_low")),
-                "target_high": _clean_float(price_prediction.get("day1", {}).get("target_high")),
+                "target_low": clean_float(price_prediction.get("day1", {}).get("target_low")),
+                "target_high": clean_float(price_prediction.get("day1", {}).get("target_high")),
                 "trend": price_prediction.get("day1", {}).get("trend", "neutral"),
                 "signal": price_prediction.get("day1", {}).get("signal", ""),
             },
             "day2": {
-                "target_low": _clean_float(price_prediction.get("day2", {}).get("target_low")),
-                "target_high": _clean_float(price_prediction.get("day2", {}).get("target_high")),
+                "target_low": clean_float(price_prediction.get("day2", {}).get("target_low")),
+                "target_high": clean_float(price_prediction.get("day2", {}).get("target_high")),
                 "trend": price_prediction.get("day2", {}).get("trend", "neutral"),
                 "signal": price_prediction.get("day2", {}).get("signal", ""),
             },
         },
         "indicators": _clean_indicators(indicators),
-        "position_strategy": _clean_nested(position_strategy),
-        "stock_info": {k: _clean_float(v) for k, v in info.items()},
+        "position_strategy": clean_nested(position_strategy),
+        "stock_info": {k: clean_float(v) for k, v in info.items()},
         "charts": charts,
     }
 
-    result = _deep_clean_nan(result)
+    result = deep_clean_nan(result)
+    _result_cache[cache_key] = (result, now)
+    _cleanup_cache()
     return result
 
 
-def _deep_clean_nan(obj):
-    if isinstance(obj, dict):
-        return {k: _deep_clean_nan(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_deep_clean_nan(v) for v in obj]
-    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-        return None
-    return obj
-
-
-def _clean_nested(obj):
-    if isinstance(obj, dict):
-        return {k: _clean_nested(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_clean_nested(v) for v in obj]
-    return _clean_float(obj)
+def _cleanup_cache():
+    now = datetime.now()
+    expired = [k for k, (_, t) in _result_cache.items() if (now - t).total_seconds() > 300]
+    for k in expired:
+        del _result_cache[k]
 
 
 def _clean_indicators(indicators: Dict) -> Dict:
@@ -234,10 +232,10 @@ def _clean_indicators(indicators: Dict) -> Dict:
             cleaned = {}
             for k, v in val.items():
                 if hasattr(v, 'tolist'):
-                    cleaned[k] = _to_list(v)
+                    cleaned[k] = to_list(v)
                 elif hasattr(v, 'item'):
                     try:
-                        cleaned[k] = _clean_float(v.item())
+                        cleaned[k] = clean_float(v.item())
                     except Exception:
                         cleaned[k] = _safe_item(v)
                 elif isinstance(v, dict):
@@ -245,19 +243,19 @@ def _clean_indicators(indicators: Dict) -> Dict:
                 elif isinstance(v, list):
                     cleaned[k] = [_safe_item(x) for x in v]
                 else:
-                    cleaned[k] = _clean_float(v)
+                    cleaned[k] = clean_float(v)
             result[key] = cleaned
         else:
-            result[key] = _clean_float(val)
+            result[key] = clean_float(val)
     return result
 
 
 def _safe_item(v):
     if hasattr(v, 'item'):
         try:
-            return _clean_float(v.item())
+            return clean_float(v.item())
         except Exception:
             pass
     if hasattr(v, 'tolist'):
-        return _to_list(v)
-    return _clean_float(v)
+        return to_list(v)
+    return clean_float(v)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -46,8 +46,8 @@ function buildOption(data: KlineData) {
         params.forEach((p: any) => {
           if (p.seriesName === 'K线') {
             const d = p.data
-            html += `<div>开盘: <span style="color:${upColor}">${d[1]}</span> 收盘: <span style="color:${d[2] >= d[1] ? upColor : downColor}">${d[2]}</span></div>`
-            html += `<div>最高: <span style="color:${upColor}">${d[3]}</span> 最低: <span style="color:${downColor}">${d[4]}</span></div>`
+            html += `<div>开盘: <span style="color:${upColor}">${d[0]}</span> 收盘: <span style="color:${d[1] >= d[0] ? upColor : downColor}">${d[1]}</span></div>`
+            html += `<div>最高: <span style="color:${upColor}">${d[3]}</span> 最低: <span style="color:${downColor}">${d[2]}</span></div>`
           } else {
             html += `<div>${p.seriesName}: <span style="color:${p.color}">${p.value}</span></div>`
           }
@@ -205,13 +205,7 @@ watch(() => props.data, (val) => {
   if (val && val.dates.length > 0) {
     option.value = buildOption(val)
   }
-}, { immediate: true, deep: true })
-
-onMounted(() => {
-  if (props.data && props.data.dates.length > 0) {
-    option.value = buildOption(props.data)
-  }
-})
+}, { immediate: true })
 </script>
 
 <template>

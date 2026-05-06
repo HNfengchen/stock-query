@@ -73,7 +73,6 @@ class StockAnalyzer:
             score -= 15
             signals.append("MACD 空头")
 
-        # RSI 分析（仅使用RSI(12)作为代表周期，避免三周期权重叠加）
         rsi_12 = rsi.get("RSI(12)", {})
         rsi_signal = rsi_12.get("signal", "") if isinstance(rsi_12, dict) else ""
         if rsi_signal == "超卖":
@@ -96,6 +95,31 @@ class StockAnalyzer:
         elif "死叉" in rsi_cross:
             score -= 5
             signals.append("RSI死叉")
+
+        rsi_6 = rsi.get("RSI(6)", {})
+        rsi_6_signal = rsi_6.get("signal", "") if isinstance(rsi_6, dict) else ""
+        if rsi_6_signal == "超卖":
+            score += 5
+            signals.append("RSI(6)超卖")
+        elif rsi_6_signal == "超买":
+            score -= 5
+            signals.append("RSI(6)超买")
+
+        rsi_6_val = rsi_6.get("latest") if isinstance(rsi_6, dict) else None
+        rsi_24 = rsi.get("RSI(24)", {})
+        rsi_24_val = rsi_24.get("latest") if isinstance(rsi_24, dict) else None
+        if rsi_6_val is not None and rsi_24_val is not None:
+            try:
+                r6 = float(rsi_6_val) if not hasattr(rsi_6_val, 'iloc') else float(rsi_6_val.iloc[-1])
+                r24 = float(rsi_24_val) if not hasattr(rsi_24_val, 'iloc') else float(rsi_24_val.iloc[-1])
+                if r6 > 70 and r24 < 40:
+                    score -= 10
+                    signals.append("RSI顶背离")
+                elif r6 < 30 and r24 > 60:
+                    score += 10
+                    signals.append("RSI底背离")
+            except (TypeError, ValueError):
+                pass
 
         # KDJ 分析（适配新返回结构）
         kdj_signal = kdj.get("signal", "") if isinstance(kdj, dict) else ""
@@ -183,11 +207,8 @@ class StockAnalyzer:
             except (TypeError, ValueError):
                 pass
 
-        # M-01: 基于实际可达分数范围[-60, 60]归一化
-        # 理论最大: MACD金叉确认30 + RSI超卖10 + KDJ金叉15 + BOLL超卖10 + MA多头排列10 = 75
-        # 保守估计: [-60, 60]
-        MIN_SCORE = -60
-        MAX_SCORE = 60
+        MIN_SCORE = -75
+        MAX_SCORE = 75
 
         upward_signals = sum(1 for s in signals if any(x in s for x in ["金叉", "超卖", "多头", "偏强"]))
         downward_signals = sum(1 for s in signals if any(x in s for x in ["死叉", "超买", "空头", "偏弱", "空头排列"]))
@@ -195,6 +216,11 @@ class StockAnalyzer:
         conflict_penalty = 0
         if upward_signals > 0 and downward_signals > 0:
             conflict_penalty = min(0.15, abs(upward_signals - downward_signals) * 0.03)
+
+        atr_signal = atr.get("signal", "") if isinstance(atr, dict) else ""
+        boll_signal = boll.get("signal", "") if isinstance(boll, dict) else ""
+        if atr_signal == "波动剧烈" and boll_signal in ("收窄", "扩张"):
+            conflict_penalty = min(0.20, conflict_penalty + 0.05)
 
         normalized_score = (score - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
         normalized_score = max(0, min(1, normalized_score))
@@ -248,20 +274,34 @@ class StockAnalyzer:
 
         inflow_ratio = main_inflow / amount if amount else 0
 
-        # 修正：流出越多评分越低（M-01）
-        if inflow_ratio > 0.05:
+        market_cap = 0
+        if stock_info:
+            try:
+                mc = stock_info.get("总市值") or stock_info.get("流通市值") or 0
+                market_cap = float(mc) if mc else 0
+            except (TypeError, ValueError):
+                market_cap = 0
+
+        if market_cap > 500e8:
+            threshold_high, threshold_low = 0.01, 0.005
+        elif market_cap > 50e8:
+            threshold_high, threshold_low = 0.03, 0.015
+        else:
+            threshold_high, threshold_low = 0.05, 0.025
+
+        if inflow_ratio > threshold_high:
             score = 1.0
             trend = "inflow"
-        elif inflow_ratio > 0.02:
+        elif inflow_ratio > threshold_low:
             score = 0.7
             trend = "inflow"
         elif inflow_ratio > 0:
             score = 0.5
             trend = "inflow"
-        elif inflow_ratio > -0.02:
+        elif inflow_ratio > -threshold_low:
             score = 0.4
             trend = "outflow"
-        elif inflow_ratio > -0.05:
+        elif inflow_ratio > -threshold_high:
             score = 0.3
             trend = "outflow"
         else:
@@ -534,37 +574,28 @@ class StockAnalyzer:
 
         # M-07: 趋势持续性判断 - 基于历史评分
         history_df = data.get("history_data")
-        trend_persistence = "new"  # 默认：新出现趋势
+        trend_persistence = "new"
 
         if history_df is not None and len(history_df) >= 20:
-            from scripts.technical_indicators import calculate_all_indicators
+            from scripts.technical_indicators import calculate_macd
 
             recent_scores = []
-            lookback = min(10, len(history_df) - 5)
+            lookback = min(5, len(history_df) - 5)
+            step = max(1, lookback // 3)
 
-            for i in range(len(history_df) - lookback, len(history_df) - 1):
+            for i in range(len(history_df) - lookback, len(history_df) - 1, step):
                 window = history_df.iloc[max(0, i-30):i+1]
                 if len(window) >= 30:
-                    ind = calculate_all_indicators(window)
-                    if "error" not in ind:
-                        macd = ind.get("MACD", {}).get("signal", "")
-                        rsi = ind.get("RSI", {}).get("RSI(12)", {}).get("signal", "")
-                        kdj = ind.get("KDJ", {}).get("signal", "")
+                    closes = window["收盘"].values if "收盘" in window.columns else window["close"].values
+                    macd_result = calculate_macd(closes)
+                    macd_sig = macd_result.get("signal", "")
 
-                        s = 0.5
-                        if macd in ("金叉", "多头"):
-                            s += 0.2
-                        elif macd in ("死叉", "空头"):
-                            s -= 0.2
-                        if rsi == "超卖":
-                            s += 0.15
-                        elif rsi == "超买":
-                            s -= 0.15
-                        if kdj in ("金叉", "超卖"):
-                            s += 0.15
-                        elif kdj in ("死叉", "超买"):
-                            s -= 0.15
-                        recent_scores.append(s)
+                    s = 0.5
+                    if macd_sig in ("金叉", "金叉确认", "多头"):
+                        s += 0.2
+                    elif macd_sig in ("死叉", "死叉确认", "空头"):
+                        s -= 0.2
+                    recent_scores.append(s)
 
             if len(recent_scores) >= 5:
                 avg_recent = sum(recent_scores[-3:]) / 3
@@ -584,7 +615,10 @@ class StockAnalyzer:
         elif tech_score < 0.4:
             trend = "down"
 
+        trend_strength = abs(tech_score - 0.5) / 0.5 if tech_score != 0.5 else 0
+
         atr_mult = self.prediction_config.get("atr_multiplier", 1.5)
+        atr_mult = atr_mult * (0.8 + 0.4 * trend_strength)
 
         if trend_persistence == "strong":
             atr_mult *= 1.3

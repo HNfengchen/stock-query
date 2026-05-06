@@ -1,29 +1,51 @@
 import json
 import os
+import fcntl
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional
 
 DATA_DIR = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
 WATCHLIST_PATH = DATA_DIR / "watchlist.json"
+LOCK_PATH = DATA_DIR / "watchlist.lock"
 
 
 def _ensure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _acquire_lock():
+    _ensure_data_dir()
+    lock_fd = open(LOCK_PATH, "w")
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    return lock_fd
+
+
+def _release_lock(lock_fd):
+    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    lock_fd.close()
+
+
 def load_watchlist() -> List[Dict]:
     _ensure_data_dir()
     if not WATCHLIST_PATH.exists():
         return []
-    with open(WATCHLIST_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    lock_fd = _acquire_lock()
+    try:
+        with open(WATCHLIST_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    finally:
+        _release_lock(lock_fd)
 
 
 def save_watchlist(data: List[Dict]):
     _ensure_data_dir()
-    with open(WATCHLIST_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    lock_fd = _acquire_lock()
+    try:
+        with open(WATCHLIST_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    finally:
+        _release_lock(lock_fd)
 
 
 def add_to_watchlist(stock_code: str, stock_name: str, position_status: str, cost_price: Optional[float] = None) -> Dict:

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useStockStore } from '@/stores/stockStore'
 import StockInput from '@/components/StockInput.vue'
 import KlineChart from '@/components/KlineChart.vue'
@@ -10,7 +11,6 @@ import ReportPanel from '@/components/ReportPanel.vue'
 import type { AnalysisRequest } from '@/types'
 
 const route = useRoute()
-const router = useRouter()
 const store = useStockStore()
 
 const form = ref<AnalysisRequest>({
@@ -19,25 +19,57 @@ const form = ref<AnalysisRequest>({
   cost_price: null,
 })
 
-watch(() => route.query.code, (code) => {
-  if (code) {
-    form.value.stock_input = String(code)
-    handleAnalyze()
-  }
-}, { immediate: true })
+let lastAnalyzedCode = ''
+let lastAnalyzedPosition = ''
+let lastAnalyzedCost = ''
 
-async function handleAnalyze() {
+watch(
+  () => [route.query.code, route.query.position, route.query.cost] as const,
+  ([code, position, cost]) => {
+    if (!code) return
+    const sCode = String(code)
+    const sPosition = String(position ?? '')
+    const sCost = String(cost ?? '')
+    if (sCode === lastAnalyzedCode && sPosition === lastAnalyzedPosition && sCost === lastAnalyzedCost) return
+    lastAnalyzedCode = sCode
+    lastAnalyzedPosition = sPosition
+    lastAnalyzedCost = sCost
+    form.value.stock_input = sCode
+    form.value.position_status = (sPosition || '未持有') as '已持有' | '未持有'
+    form.value.cost_price = sCost ? parseFloat(sCost) : null
+    doAnalyze()
+  },
+  { immediate: true },
+)
+
+async function doAnalyze() {
   if (!form.value.stock_input.trim()) return
   try {
     await store.runAnalysis(form.value)
-    router.replace({ query: {} })
   } catch (e) {
     console.error(e)
   }
 }
 
-function addToWatchlist() {
-  store.addStock(form.value)
+function handleAnalyze() {
+  lastAnalyzedCode = form.value.stock_input
+  lastAnalyzedPosition = form.value.position_status
+  lastAnalyzedCost = String(form.value.cost_price ?? '')
+  doAnalyze()
+}
+
+async function addToWatchlist() {
+  if (!store.currentResult) return
+  try {
+    await store.addStock({
+      stock_input: store.currentResult.stock_code,
+      position_status: form.value.position_status,
+      cost_price: form.value.cost_price,
+    })
+    ElMessage.success('已加入历史列表')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '添加失败')
+  }
 }
 
 const emptyKline = {

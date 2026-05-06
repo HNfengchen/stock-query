@@ -17,8 +17,15 @@ function toggleCollapse() {
   emit('update:collapsed', !props.collapsed)
 }
 
-function analyzeStock(stockCode: string) {
-  router.push({ path: '/', query: { code: stockCode } })
+function analyzeStock(item: any) {
+  const query: Record<string, string> = { code: item.stock_code }
+  if (item.position_status) {
+    query.position = item.position_status
+  }
+  if (item.cost_price) {
+    query.cost = String(item.cost_price)
+  }
+  router.push({ path: '/', query })
 }
 
 async function removeStock(stockCode: string, event: Event) {
@@ -43,7 +50,7 @@ async function removeStock(stockCode: string, event: Event) {
         v-for="item in store.watchlist"
         :key="item.stock_code"
         class="watchlist-item"
-        @click="analyzeStock(item.stock_code)"
+        @click="analyzeStock(item)"
       >
         <div class="item-header">
           <span class="stock-code">{{ item.stock_code }}</span>
@@ -56,7 +63,7 @@ async function removeStock(stockCode: string, event: Event) {
           <span v-if="item.cost_price" class="cost-price">成本: {{ item.cost_price }}</span>
         </div>
         <div class="item-actions">
-          <el-button type="primary" size="small" text @click.stop="analyzeStock(item.stock_code)">
+          <el-button type="primary" size="small" text @click.stop="analyzeStock(item)">
             分析
           </el-button>
           <el-button type="danger" size="small" text @click.stop="removeStock(item.stock_code, $event)">
@@ -75,7 +82,7 @@ async function removeStock(stockCode: string, event: Event) {
         :key="item.stock_code"
         class="collapsed-item"
         :title="item.stock_code"
-        @click="analyzeStock(item.stock_code)"
+        @click="analyzeStock(item)"
       >
         <Document />
       </el-icon>

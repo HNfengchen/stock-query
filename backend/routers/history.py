@@ -8,7 +8,7 @@ from backend.services.history_service import (
     update_watchlist,
     delete_from_watchlist,
 )
-from backend.services.analysis_service import run_analysis
+from backend.services.analysis_service import get_fetcher
 
 router = APIRouter()
 
@@ -32,9 +32,8 @@ async def get_watchlist():
 @router.post("/watchlist")
 async def create_watchlist_item(req: WatchlistRequest):
     try:
-        result = run_analysis(req.stock_input, req.position_status, req.cost_price)
-        stock_code = result["stock_code"]
-        stock_name = result["stock_name"]
+        fetcher = get_fetcher()
+        stock_code, stock_name, _ = fetcher.resolve_stock_code(req.stock_input)
         item = add_to_watchlist(stock_code, stock_name, req.position_status, req.cost_price)
         return item
     except ValueError as e:

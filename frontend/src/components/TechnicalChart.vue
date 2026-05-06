@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -113,15 +113,7 @@ watch(() => props.data, (val) => {
     rsiOption.value = buildRsiOption(val)
     kdjOption.value = buildKdjOption(val)
   }
-}, { immediate: true, deep: true })
-
-onMounted(() => {
-  if (props.data && props.data.dates.length > 0) {
-    macdOption.value = buildMacdOption(props.data)
-    rsiOption.value = buildRsiOption(props.data)
-    kdjOption.value = buildKdjOption(props.data)
-  }
-})
+}, { immediate: true })
 </script>
 
 <template>
@@ -166,7 +158,7 @@ onMounted(() => {
   height: 200px;
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1400px) {
   .technical-charts {
     grid-template-columns: 1fr 1fr;
   }

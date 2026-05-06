@@ -2,10 +2,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict
 import traceback
-import json
-import numpy as np
 
 from backend.services.backtest_service import run_builtin_backtest, run_custom_backtest
+from backend.utils import sanitize_for_json
 
 router = APIRouter()
 
@@ -18,20 +17,6 @@ class BacktestRequest(BaseModel):
     algorithm_name: Optional[str] = None
 
 
-def _sanitize_for_json(obj):
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_sanitize_for_json(v) for v in obj]
-    if isinstance(obj, (np.bool_,)):
-        return bool(obj)
-    if isinstance(obj, float):
-        if obj != obj or obj == float('inf') or obj == float('-inf'):
-            return None
-        return obj
-    return obj
-
-
 @router.post("/backtest")
 async def backtest(req: BacktestRequest):
     try:
@@ -41,8 +26,7 @@ async def backtest(req: BacktestRequest):
             result = run_custom_backtest(req.stock_code, req.algorithm_code, req.algorithm_name or "custom")
         else:
             result = run_builtin_backtest(req.stock_code, req.params)
-        result = _sanitize_for_json(result)
-        return result
+        return sanitize_for_json(result)
     except HTTPException:
         raise
     except Exception as e:
@@ -56,8 +40,7 @@ async def backtest_custom(req: BacktestRequest):
         if not req.algorithm_code:
             raise HTTPException(status_code=400, detail="自定义算法需要提供 algorithm_code")
         result = run_custom_backtest(req.stock_code, req.algorithm_code, req.algorithm_name or "custom")
-        result = _sanitize_for_json(result)
-        return result
+        return sanitize_for_json(result)
     except HTTPException:
         raise
     except Exception as e:

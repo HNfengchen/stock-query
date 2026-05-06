@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { AnalysisResult, WatchlistItem, AnalysisRequest } from '@/types'
 import { analyzeStock, batchAnalyze } from '@/api/analysis'
-import { getWatchlist, addToWatchlist, removeFromWatchlist } from '@/api/history'
+import { getWatchlist, addToWatchlist, removeFromWatchlist, updateWatchlist } from '@/api/history'
 
 export const useStockStore = defineStore('stock', () => {
   const currentResult = ref<AnalysisResult | null>(null)
@@ -55,6 +55,15 @@ export const useStockStore = defineStore('stock', () => {
     watchlist.value = watchlist.value.filter(item => item.stock_code !== stockCode)
   }
 
+  async function updateStock(stockCode: string, data: { position_status?: string; cost_price?: number | null }) {
+    const item = await updateWatchlist(stockCode, data as any)
+    const idx = watchlist.value.findIndex(w => w.stock_code === stockCode)
+    if (idx >= 0) {
+      watchlist.value[idx] = { ...watchlist.value[idx], ...item }
+    }
+    return item
+  }
+
   function clearResult() {
     currentResult.value = null
   }
@@ -70,6 +79,7 @@ export const useStockStore = defineStore('stock', () => {
     loadWatchlist,
     addStock,
     removeStock,
+    updateStock,
     clearResult,
   }
 })

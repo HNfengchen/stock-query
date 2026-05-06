@@ -1,223 +1,317 @@
-# Stock Query - A股股票信息查询与分析工具
+# Stock Query - A股量化分析平台
 
-Stock Query 是一个功能完善的A股股票信息查询与分析工具，提供实时行情获取、技术指标计算、资金流向分析、智能交易信号生成等功能，并支持生成包含交互式图表的HTML分析报告。
+Stock Query 是一个功能完善的A股量化分析平台，提供实时行情获取、技术指标计算、资金流向分析、智能交易信号生成、回测验证和Web可视化界面。
 
 ## 功能特点
 
+### 核心分析
 - **多数据源支持**：集成 xtquant、efinance、AkShare、baostock 等多个数据源，自动切换保障数据获取稳定性
-- **实时行情数据**：获取股票基本信息、实时价格、成交量、换手率等行情数据
+- **技术指标计算**：MACD、RSI(6/12/24)、KDJ、MA、BOLL、ATR、量比
+- **智能分析建议**：综合技术面(45%)、资金面(30%)、市场情绪(25%)生成交易信号
+- **价格预测**：基于技术评分+ATR+趋势强度预测短期价格区间
 - **资金流向分析**：追踪主力资金、大单、中单、小单的流入流出情况
-- **技术指标计算**：
-  - MACD（指数平滑异同移动平均线）
-  - RSI（相对强弱指标）
-  - KDJ（随机指标）
-  - MA（移动平均线）
-  - BOLL（布林带）
-  - 量比指标
-- **智能分析建议**：综合技术面、资金面、市场情绪生成交易信号
-- **价格预测**：基于技术分析预测短期价格区间
-- **可视化报告**：生成包含 K 线图、技术指标图、资金流向图的交互式 HTML 报告
+
+### Web界面
+- **分析报告页**：K线图、技术指标图(MACD/RSI/KDJ)、资金流向图、交易信号面板
+- **回测中心**：内置策略回测+自定义算法编辑器，权益曲线与预测明细
+- **历史列表**：自选股管理，持仓状态与成本价跟踪
+- **响应式布局**：适配桌面端与移动端
+
+### 回测系统
+- **内置策略回测**：基于技术评分的预测区间回测，统计命中率与夏普比率
+- **自定义算法**：支持用户编写交易信号函数，沙箱安全执行
+- **交易成本模拟**：佣金0.025%+印花税0.05%+滑点0.1%
+
+### CLI命令行
+- 单股分析：`python -m scripts.cli 603956`
+- 批量回测：`python -m scripts.cli --backtest 603956`
+- HTML报告生成
 
 ## 项目结构
 
 ```
 stock-query/
-├── config/
-│   └── config.yaml          # 配置文件
-├── scripts/
-│   ├── __init__.py
-│   ├── cli.py               # 命令行入口
-│   ├── stock_query.py       # 核心数据获取模块
-│   ├── technical_indicators.py  # 技术指标计算
+├── backend/                        # 后端服务 (FastAPI)
+│   ├── app.py                      # 应用入口
+│   ├── routers/                    # API路由
+│   │   ├── analysis.py             # 分析接口 (含批量并发)
+│   │   ├── backtest.py             # 回测接口
+│   │   ├── history.py              # 自选股接口
+│   │   └── websocket.py            # WebSocket进度推送
+│   ├── services/                   # 业务逻辑
+│   │   ├── analysis_service.py     # 分析服务 (含缓存+单例)
+│   │   ├── backtest_service.py     # 回测服务 (含安全沙箱)
+│   │   └── history_service.py      # 自选股服务 (含文件锁)
+│   └── utils/
+│       └── __init__.py             # 共享序列化工具
+├── frontend/                       # 前端应用 (Vue 3 + TypeScript)
+│   ├── src/
+│   │   ├── views/                  # 页面组件
+│   │   │   ├── AnalysisView.vue    # 分析报告页
+│   │   │   ├── BacktestView.vue    # 回测中心页
+│   │   │   └── HistoryView.vue     # 自选股管理页
+│   │   ├── components/             # UI组件
+│   │   │   ├── KlineChart.vue      # K线图+成交量
+│   │   │   ├── TechnicalChart.vue  # MACD/RSI/KDJ三图
+│   │   │   ├── FundFlowChart.vue   # 资金流向图
+│   │   │   ├── ReportPanel.vue     # 信号面板
+│   │   │   ├── NavHeader.vue       # 导航栏
+│   │   │   ├── SideWatchlist.vue   # 侧边自选股
+│   │   │   └── StockInput.vue      # 股票输入
+│   │   ├── stores/                 # Pinia状态管理
+│   │   ├── api/                    # API调用模块
+│   │   └── types/                  # TypeScript类型定义
+│   └── vite.config.ts              # Vite配置 (含代理)
+├── scripts/                        # 核心分析引擎
+│   ├── cli.py                      # CLI入口
+│   ├── stock_query.py              # 命令行逻辑
+│   ├── technical_indicators.py     # 技术指标计算
 │   └── core/
-│       ├── __init__.py
-│       ├── data_fetcher.py  # 数据获取层
-│       ├── analyzer.py      # 分析逻辑层
-│       ├── report_generator.py  # 报告生成层
-│       └── xtquant_adapter.py   # xtquant适配器
-├── templates/
-│   └── report_template.html # HTML报告模板
-├── static/
-│   └── chart.umd.min.js     # 图表库
-├── output/
-│   └── reports/             # 报告输出目录
-├── evals/
-│   └── evals.json           # 评估配置
-├── README.md
-└── SKILL.md
+│       ├── data_fetcher.py         # 数据获取层
+│       ├── analyzer.py             # 分析逻辑层
+│       ├── backtest.py             # 回测引擎
+│       ├── report_generator.py     # 报告生成层
+│       └── database.py             # 数据库层
+├── config/
+│   └── config.yaml                 # 配置文件
+├── deploy/                         # 部署配置
+│   ├── install.sh                  # 一键部署脚本
+│   ├── stock-query-backend.service # systemd后端服务
+│   └── stock-query-frontend.service# systemd前端服务
+├── docs/                           # 文档
+├── start.sh                        # 启动脚本
+└── README.md
 ```
 
 ## 环境要求
 
 - Python 3.8+
-- Windows / Linux / macOS
+- Node.js 20+
+- npm 9+
+- Linux / Windows / macOS
 
-## 安装说明
+## 快速开始
 
-### 1. 克隆项目
-
-```bash
-git clone <repository-url>
-cd stock-query
-```
-
-### 2. 安装依赖
+### 1. 安装依赖
 
 ```bash
-pip install akshare efinance pandas numpy ta pyyaml jinja2
-```
+# Python依赖
+pip install -r backend/requirements.txt
+pip install pyyaml pandas numpy akshare efinance
 
-可选依赖（用于增强数据获取能力）：
-
-```bash
+# 可选依赖（增强数据获取）
 pip install xtquant baostock
+
+# 前端依赖
+cd frontend && npm install && cd ..
 ```
 
-## 使用方法
+### 2. 启动服务
 
-### 命令行使用
-
-基本用法：
+**方式一：启动脚本（推荐）**
 
 ```bash
-python -m scripts.cli <股票代码或名称>
+./start.sh start
 ```
 
-示例：
+**方式二：手动启动**
 
 ```bash
-# 使用股票名称查询
-python -m scripts.cli 威派格
+# 后端
+python -m uvicorn backend.app:app --host 0.0.0.0 --port 8002
 
-# 使用股票代码查询
+# 前端（新终端）
+cd frontend && npm run dev
+```
+
+**方式三：systemd开机自启动**
+
+```bash
+sudo bash deploy/install.sh
+```
+
+### 3. 访问界面
+
+浏览器打开 http://localhost:5173
+
+## 启动脚本
+
+`start.sh` 支持以下命令：
+
+```bash
+./start.sh start      # 启动前后端
+./start.sh stop       # 停止前后端
+./start.sh restart    # 重启前后端
+./start.sh status     # 查看运行状态
+./start.sh backend    # 仅启动后端
+./start.sh frontend   # 仅启动前端
+```
+
+环境变量配置：
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| BACKEND_PORT | 后端端口 | 8002 |
+| FRONTEND_PORT | 前端端口 | 5173 |
+| CORS_ORIGINS | 允许的前端源 | http://localhost:5173 |
+
+## 部署
+
+### systemd开机自启动
+
+```bash
+# 一键部署
+sudo bash deploy/install.sh
+
+# 手动管理
+sudo systemctl start stock-query-backend stock-query-frontend
+sudo systemctl stop stock-query-backend stock-query-frontend
+sudo systemctl status stock-query-backend stock-query-frontend
+
+# 查看日志
+journalctl -u stock-query-backend -f
+journalctl -u stock-query-frontend -f
+
+# 取消自启动
+sudo systemctl disable stock-query-backend stock-query-frontend
+```
+
+### 生产环境部署
+
+```bash
+# 构建前端
+cd frontend && npm run build
+
+# 使用nginx代理
+# 将 frontend/dist 目录部署到nginx
+# 将 /api 请求代理到后端 8002 端口
+```
+
+## API接口
+
+### 分析接口
+
+```
+POST /api/analysis
+Body: {"stock_input": "603956", "position_status": "未持有", "cost_price": null}
+Response: {stock_code, stock_name, analysis, trading_signal, price_prediction, position_strategy, indicators, charts}
+
+POST /api/analysis/batch
+Body: {"stocks": [{"stock_input": "603956"}, {"stock_input": "000001"}]}
+Response: {results: [...], errors: [...]}
+```
+
+### 回测接口
+
+```
+POST /api/backtest
+Body: {"stock_code": "603956", "mode": "builtin", "params": {"atr_multiplier": 1.5}}
+Response: {stock_code, statistics, predictions, equity_curve}
+
+POST /api/backtest/custom
+Body: {"stock_code": "603956", "algorithm_code": "def signal(df, ind): ..."}
+```
+
+### 自选股接口
+
+```
+GET    /api/watchlist
+POST   /api/watchlist
+PUT    /api/watchlist/{stock_code}
+DELETE /api/watchlist/{stock_code}
+```
+
+### 健康检查
+
+```
+GET /health
+```
+
+## 命令行使用
+
+```bash
+# 分析单只股票
 python -m scripts.cli 603956
 
-# 指定配置文件
+# 使用股票名称
+python -m scripts.cli 威派格
+
+# 回测
+python -m scripts.cli --backtest 603956
+
+# 指定配置
 python -m scripts.cli 威派格 --config config/config.yaml
 
 # 指定输出目录
 python -m scripts.cli 威派格 --output-dir ./my_reports
-
-# 不生成图表
-python -m scripts.cli 威派格 --no-charts
-```
-
-### 参数说明
-
-| 参数 | 简写 | 说明 | 默认值 |
-|------|------|------|--------|
-| stock | - | 股票代码或名称（必填） | - |
-| --config | -c | 配置文件路径 | config/config.yaml |
-| --output-dir | -o | 报告输出目录 | output/reports |
-| --output | -t | 输出格式（html/markdown） | html |
-| --no-charts | - | 不生成图表 | false |
-
-### Python API 使用
-
-```python
-from scripts.core.data_fetcher import DataFetcher
-from scripts.core.analyzer import StockAnalyzer
-from scripts.core.report_generator import ReportGenerator
-
-# 加载配置
-import yaml
-with open('config/config.yaml', 'r', encoding='utf-8') as f:
-    config = yaml.safe_load(f)
-
-# 获取数据
-fetcher = DataFetcher(config)
-data = fetcher.fetch_all_data('威派格')
-
-# 分析数据
-analyzer = StockAnalyzer(config)
-analysis = analyzer.generate_recommendation(data)
-
-# 生成报告
-generator = ReportGenerator(config)
-html = generator.generate_html_report(data, analysis)
-generator.save_report(html, data['stock_code'], './reports')
 ```
 
 ## 配置说明
 
-配置文件位于 `config/config.yaml`，主要配置项：
+配置文件位于 `config/config.yaml`：
 
 ```yaml
-# 数据获取配置
 data_fetcher:
-  max_retries: 3        # 最大重试次数
-  retry_delay: 1        # 重试间隔（秒）
-  request_timeout: 30   # 请求超时（秒）
+  max_retries: 3
+  retry_delay: 1
+  request_timeout: 30
 
-# 技术指标参数
 technical_indicators:
-  macd:
-    fast: 12            # 快线周期
-    slow: 26            # 慢线周期
-    signal: 9           # 信号线周期
-  rsi:
-    periods: [6, 12, 24]  # RSI周期
-  kdj:
-    n: 9                # RSV周期
-    m1: 3               # K值平滑周期
-    m2: 3               # D值平滑周期
+  macd: {fast: 12, slow: 26, signal: 9}
+  rsi: {periods: [6, 12, 24]}
+  kdj: {n: 9, m1: 3, m2: 3}
+  boll: {period: 20, std_dev: 2}
 
-# 分析参数
 analyzer:
-  weights:
-    technical: 0.5      # 技术面权重
-    fund_flow: 0.3      # 资金面权重
-    sentiment: 0.2      # 情绪面权重
-  thresholds:
-    strong_buy: 0.7     # 强烈买入阈值
-    buy: 0.5            # 买入阈值
-    hold: 0.3           # 持有阈值
+  weights: {technical: 0.45, fund_flow: 0.30, sentiment: 0.25}
+  thresholds: {strong_buy: 0.7, buy: 0.5, hold: 0.3}
 
-# 报告配置
-report:
-  default_format: html
-  include_charts: true
-  chart_height: 600
+prediction:
+  atr_multiplier: 1.5
+  price_range_days: 20
 ```
 
 ## 技术指标说明
 
-### MACD 指标
+### MACD
+- **金叉确认**：DIF上穿DEA且柱状图为正，强买入信号
+- **死叉确认**：DIF下穿DEA且柱状图为负，强卖出信号
+- **多头/空头**：DIF与DEA的位置关系判断趋势
 
-- **金叉**：DIF 上穿 DEA，通常为买入信号
-- **死叉**：DIF 下穿 DEA，通常为卖出信号
-- **多头**：DIF > DEA，趋势偏多
-- **空头**：DIF < DEA，趋势偏空
+### RSI（自适应阈值）
+- **超买/超卖**：基于60日分位数动态调整阈值（默认80/20）
+- **多周期背离**：RSI(6)与RSI(24)方向相反时产生背离信号
+- **偏强/偏弱**：中间区间的趋势判断
 
-### RSI 指标
+### KDJ
+- **金叉/死叉**：K线与D线的交叉信号
+- **超买/超卖**：K/D值超过80/低于20
 
-- **超买**：RSI > 80，可能面临回调
-- **超卖**：RSI < 20，可能存在反弹机会
-- **偏强**：RSI > 70，相对强势
-- **偏弱**：RSI < 30，相对弱势
+### BOLL
+- 使用样本标准差(ddof=1)，与主流行情软件一致
+- 上轨=中轨+2σ，下轨=中轨-2σ
 
-### KDJ 指标
+## 技术栈
 
-- **金叉**：K 上穿 D，通常为买入信号
-- **死叉**：K 下穿 D，通常为卖出信号
-- **超买**：K > 80 且 D > 80
-- **超卖**：K < 20 且 D < 20
-
-## 数据来源
-
-本项目数据来源于以下公开数据接口：
-
-- **xtquant**：迅投量化数据接口（需单独安装）
-- **efinance**：东方财富数据接口
-- **AkShare**：开源财经数据接口
-- **baostock**：证券宝数据接口
+| 层级 | 技术 |
+|------|------|
+| 前端框架 | Vue 3 + TypeScript + Vite |
+| UI组件 | Element Plus |
+| 图表 | ECharts (vue-echarts) |
+| 状态管理 | Pinia |
+| 后端框架 | FastAPI + Uvicorn |
+| 数据获取 | efinance + AkShare + baostock |
+| 数据处理 | Pandas + NumPy |
+| 部署 | systemd + nginx |
 
 ## 注意事项
 
 1. **数据时效性**：实时数据在交易时间内更新，非交易时间显示最后收盘数据
-2. **调用频率**：避免过于频繁的 API 调用，建议间隔 1 秒以上
+2. **调用频率**：避免过于频繁的API调用，建议间隔1秒以上
 3. **数据准确性**：数据来源于公开渠道，准确性请以官方数据为准
 4. **网络依赖**：需要稳定的网络连接以获取实时数据
+5. **交易成本**：回测权益曲线已包含佣金+印花税+滑点，更接近真实收益
+6. **安全限制**：自定义回测算法在受限沙箱中执行，禁止系统调用
 
 ## 免责声明
 

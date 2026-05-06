@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed } from 'vue'
 import type { AnalysisRequest } from '@/types'
 
 const props = defineProps<{
@@ -12,15 +12,10 @@ const emit = defineEmits<{
   (e: 'analyze'): void
 }>()
 
-const local = ref<AnalysisRequest>({ ...props.modelValue })
-
-watch(() => props.modelValue, (val) => {
-  local.value = { ...val }
-}, { deep: true })
-
-watch(local, (val) => {
-  emit('update:modelValue', val)
-}, { deep: true })
+const local = computed({
+  get: () => props.modelValue,
+  set: (val: AnalysisRequest) => emit('update:modelValue', val),
+})
 
 function onAnalyze() {
   emit('analyze')

@@ -1,0 +1,17 @@
+[Unit]
+Description=Stock Query Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=%PROJECT_DIR%
+ExecStart=%PYTHON_PATH% -m uvicorn backend.app:app --host 0.0.0.0 --port 8002 --workers 1
+Restart=always
+RestartSec=5
+Environment=PYTHONPATH=%PROJECT_DIR%
+Environment=PATH=%PATH_STR%
+Environment=CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+
+[Install]
+WantedBy=multi-user.target

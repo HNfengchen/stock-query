@@ -4,11 +4,11 @@ import { useBacktestStore } from '@/stores/backtestStore'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { LineChart, BarChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { LineChart, BarChart, ScatterChart, CustomChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent, MarkLineComponent } from 'echarts/components'
 import type { BacktestRequest } from '@/types'
 
-use([CanvasRenderer, LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent])
+use([CanvasRenderer, LineChart, BarChart, ScatterChart, CustomChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent])
 
 const store = useBacktestStore()
 
@@ -38,52 +38,204 @@ const customCode = ref(`def signal(df, indicators):
 `)
 
 const activeTab = ref('builtin')
+const currentPage = ref(1)
+const pageSize = ref(20)
 
-const equityOption = computed(() => {
-  if (!store.result?.equity_curve?.length) return {}
-  const dates = store.result.equity_curve.map(d => d.date)
-  const values = store.result.equity_curve.map(d => d.value)
+const priceCompareOption = computed(() => {
+  if (!store.result?.predictions?.length) return {}
+  const preds = store.result.predictions
+  const dates = preds.map(p => p.date)
+  const predictedLows = preds.map(p => p.predicted_low)
+  const predictedHighs = preds.map(p => p.predicted_high)
+  const actualPrices = preds.map(p => p.actual_price)
+  const rangeData = preds.map(p => [p.predicted_low, p.predicted_high])
+
   return {
     backgroundColor: 'transparent',
     tooltip: {
       trigger: 'axis',
       backgroundColor: 'rgba(20,27,45,0.95)',
       borderColor: 'rgba(0,212,170,0.3)',
-      textStyle: { color: '#e0e6ed' },
+      textStyle: { color: '#e0e6ed', fontSize: 11 },
       formatter: (params: any[]) => {
-        const p = params[0]
-        return `<div style="font-weight:600">${p.axisValue}</div><div>权益: ${p.value.toFixed(4)}</div>`
+        const idx = params[0]?.dataIndex
+        if (idx === undefined || idx < 0) return ''
+        const p = preds[idx]
+        if (!p) return ''
+        let html = `<div style="font-weight:600;margin-bottom:4px">${p.date}</div>`
+        html += `<div>预测趋势: <span style="color:${p.trend === 'up' ? '#00d4aa' : p.trend === 'down' ? '#ff4757' : '#8b92a8'}">${p.trend === 'up' ? '上涨' : p.trend === 'down' ? '下跌' : '震荡'}</span></div>`
+        html += `<div>预测区间: ${p.predicted_low.toFixed(2)} ~ ${p.predicted_high.toFixed(2)}</div>`
+        if (p.current_price != null) {
+          html += `<div>当日收盘: ${p.current_price.toFixed(2)}</div>`
+        }
+        if (p.actual_price != null) {
+          html += `<div>次日实际: <span style="color:#00a8e8;font-weight:600">${p.actual_price.toFixed(2)}</span></div>`
+          if (p.current_price != null) {
+            const chg = ((p.actual_price - p.current_price) / p.current_price * 100).toFixed(2)
+            html += `<div>涨跌幅: <span style="color:${parseFloat(chg) >= 0 ? '#00d4aa' : '#ff4757'}">${chg}%</span></div>`
+          }
+          html += `<div>命中: <span style="color:${p.hit ? '#00d4aa' : '#ff4757'}">${p.hit ? '是' : '否'}</span></div>`
+        }
+        return html
       },
     },
-    grid: { left: 56, right: 16, top: 24, bottom: 48 },
+    legend: {
+      data: ['预测区间', '实际价格'],
+      textStyle: { color: '#8b92a8', fontSize: 11 },
+      top: 4,
+    },
+    grid: { left: 60, right: 16, top: 36, bottom: 56 },
     xAxis: {
       type: 'category',
       data: dates,
-      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
-      axisLabel: { color: '#8b92a8', fontSize: 10, rotate: 45 },
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+      axisLabel: { color: '#8b92a8', fontSize: 9, rotate: 45 },
       axisTick: { show: false },
     },
     yAxis: {
+      scale: true,
       axisLine: { show: false },
-      axisLabel: { color: '#8b92a8', fontSize: 10, inside: true, margin: 0 },
-      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } },
+      axisLabel: { color: '#8b92a8', fontSize: 10, inside: false, margin: 8 },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)', type: 'dashed' } },
       axisTick: { show: false },
     },
-    series: [{
-      type: 'line',
-      data: values,
-      smooth: true,
-      lineStyle: { color: '#00d4aa', width: 2 },
-      areaStyle: {
-        color: {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: 'rgba(0,212,170,0.3)' },
-            { offset: 1, color: 'rgba(0,212,170,0)' },
-          ],
+    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+    series: [
+      {
+        name: '预测区间',
+        type: 'custom',
+        renderItem: (_params: any, api: any) => {
+          const x = api.coord([api.value(0), 0])[0]
+          const yLow = api.coord([0, api.value(1)])[1]
+          const yHigh = api.coord([0, api.value(2)])[1]
+          const width = 12
+          const hit = api.value(3)
+          return {
+            type: 'rect',
+            shape: { x: x - width / 2, y: yHigh, width, height: yLow - yHigh },
+            style: {
+              fill: hit ? 'rgba(0,212,170,0.25)' : 'rgba(255,71,87,0.25)',
+              stroke: hit ? '#00d4aa' : '#ff4757',
+              lineWidth: 1,
+            },
+          }
         },
+        data: preds.map((p, i) => [i, p.predicted_low, p.predicted_high, p.hit]),
+        z: 1,
       },
-      symbol: 'none',
+      {
+        name: '实际价格',
+        type: 'line',
+        data: actualPrices,
+        smooth: true,
+        lineStyle: { color: '#00a8e8', width: 2 },
+        symbol: 'circle',
+        symbolSize: 5,
+        itemStyle: { color: '#00a8e8', borderWidth: 0 },
+        z: 2,
+      },
+    ],
+  }
+})
+
+const trendAccuracyOption = computed(() => {
+  if (!store.result?.predictions?.length) return {}
+  const preds = store.result.predictions
+  const dates = preds.map(p => p.date)
+
+  const trendValues = preds.map(p => {
+    if (p.trend === 'up') return 1
+    if (p.trend === 'down') return -1
+    return 0
+  })
+
+  const actualTrendValues = preds.map(p => {
+    if (p.actual_price == null || p.current_price == null) return null
+    const change = (p.actual_price - p.current_price) / p.current_price
+    if (change > 0.005) return 1
+    if (change < -0.005) return -1
+    return 0
+  })
+
+  const matchData: number[] = []
+  for (let i = 0; i < preds.length; i++) {
+    if (actualTrendValues[i] === null) {
+      matchData.push(NaN)
+    } else {
+      matchData.push(trendValues[i] === actualTrendValues[i] ? 1 : 0)
+    }
+  }
+
+  const hitRate = matchData.filter(v => !isNaN(v))
+  const correctCount = hitRate.filter(v => v === 1).length
+  const totalValid = hitRate.length
+  const accuracyPct = totalValid > 0 ? (correctCount / totalValid * 100).toFixed(1) : '0'
+
+  return {
+    backgroundColor: 'transparent',
+    title: {
+      text: `趋势准确率: ${accuracyPct}%`,
+      textStyle: { color: '#e0e6ed', fontSize: 13, fontWeight: 600 },
+      left: 8,
+      top: 4,
+    },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(20,27,45,0.95)',
+      borderColor: 'rgba(0,212,170,0.3)',
+      textStyle: { color: '#e0e6ed', fontSize: 11 },
+      formatter: (params: any[]) => {
+        const idx = params[0]?.dataIndex
+        if (idx === undefined || idx < 0) return ''
+        const p = preds[idx]
+        if (!p) return ''
+        const trendMap: Record<string, string> = { up: '上涨', down: '下跌', neutral: '震荡' }
+        let html = `<div style="font-weight:600;margin-bottom:4px">${p.date}</div>`
+        html += `<div>预测: <span style="color:${p.trend === 'up' ? '#00d4aa' : p.trend === 'down' ? '#ff4757' : '#8b92a8'}">${trendMap[p.trend] || p.trend}</span></div>`
+        const actualVal = actualTrendValues[idx]
+        if (actualVal !== null && actualVal !== undefined) {
+          const actualName = actualVal === 1 ? '上涨' : actualVal === -1 ? '下跌' : '震荡'
+          const actualColor = actualVal === 1 ? '#00d4aa' : actualVal === -1 ? '#ff4757' : '#8b92a8'
+          html += `<div>实际: <span style="color:${actualColor}">${actualName}</span></div>`
+        }
+        const matchVal = matchData[idx]
+        if (matchVal !== undefined && !isNaN(matchVal)) {
+          html += `<div>正确: <span style="color:${matchVal ? '#00d4aa' : '#ff4757'}">${matchVal ? '是' : '否'}</span></div>`
+        }
+        return html
+      },
+    },
+    grid: { left: 40, right: 16, top: 36, bottom: 56 },
+    xAxis: {
+      type: 'category',
+      data: dates,
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+      axisLabel: { color: '#8b92a8', fontSize: 9, rotate: 45 },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      min: -0.5,
+      max: 1.5,
+      axisLine: { show: false },
+      axisLabel: {
+        color: '#8b92a8',
+        fontSize: 10,
+        formatter: (v: number) => v <= 0 ? '错误' : '正确',
+      },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)', type: 'dashed' } },
+      axisTick: { show: false },
+    },
+    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+    series: [{
+      type: 'bar',
+      data: matchData.map((v, i) => ({
+        value: isNaN(v) ? null : v,
+        itemStyle: {
+          color: v === 1 ? '#00d4aa' : v === 0 ? '#ff4757' : 'rgba(139,146,168,0.3)',
+          opacity: 0.7,
+        },
+      })),
+      barWidth: '60%',
     }],
   }
 })
@@ -108,10 +260,17 @@ async function runBacktest() {
 
 function exportCSV() {
   if (!store.result?.predictions?.length) return
-  const headers = ['日期', '趋势', '预测区间低', '预测区间高', '实际价', '是否命中']
-  const rows = store.result.predictions.map(p => [
-    p.date, p.trend, p.predicted_low, p.predicted_high, p.actual_price, p.hit ? '是' : '否',
-  ])
+  const headers = ['日期', '趋势', '预测区间低', '预测区间高', '当日收盘', '次日实际', '涨跌幅%', '是否命中']
+  const rows = store.result.predictions.map(p => {
+    const chg = (p.actual_price != null && p.current_price != null)
+      ? ((p.actual_price - p.current_price) / p.current_price * 100).toFixed(2)
+      : ''
+    return [
+      p.date, p.trend, p.predicted_low, p.predicted_high,
+      p.current_price ?? '', p.actual_price ?? '', chg,
+      p.hit ? '是' : '否',
+    ]
+  })
   const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
   const link = document.createElement('a')
@@ -126,7 +285,6 @@ function exportCSV() {
     <h2 class="page-title">回测中心</h2>
 
     <div class="backtest-layout">
-      <!-- 左侧配置 -->
       <div class="config-panel">
         <el-tabs v-model="activeTab" class="dark-tabs">
           <el-tab-pane label="内置策略" name="builtin">
@@ -162,7 +320,6 @@ function exportCSV() {
         </el-button>
       </div>
 
-      <!-- 右侧结果 -->
       <div class="result-panel">
         <div v-if="store.error" class="error-message">
           <el-icon><Warning /></el-icon>
@@ -197,32 +354,56 @@ function exportCSV() {
             </div>
           </div>
 
-          <div class="equity-chart">
+          <div class="chart-block">
             <div class="chart-header">
-              <span class="chart-title">权益曲线</span>
+              <span class="chart-title">预测区间 vs 实际价格</span>
               <el-button size="small" text @click="exportCSV">
                 <el-icon><Download /></el-icon> 导出CSV
               </el-button>
             </div>
-            <v-chart class="chart" :option="equityOption" autoresize />
+            <v-chart class="chart chart-lg" :option="priceCompareOption" autoresize />
+          </div>
+
+          <div class="chart-block">
+            <div class="chart-title">趋势预测准确性</div>
+            <v-chart class="chart" :option="trendAccuracyOption" autoresize />
           </div>
 
           <div class="predictions-table">
             <div class="chart-title">逐日预测明细</div>
-            <el-table :data="store.result.predictions.slice(0, 20)" size="small" class="dark-table">
-              <el-table-column prop="date" label="日期" width="120" />
-              <el-table-column prop="trend" label="趋势" width="80" />
-              <el-table-column label="预测区间" width="140">
+            <el-table :data="store.result.predictions.slice((currentPage - 1) * pageSize, currentPage * pageSize)" size="small" class="dark-table">
+              <el-table-column prop="date" label="日期" width="110" />
+              <el-table-column prop="trend" label="趋势" width="70">
+                <template #default="{ row }">
+                  <el-tag :type="row.trend === 'up' ? 'success' : row.trend === 'down' ? 'danger' : 'info'" size="small" effect="dark">
+                    {{ row.trend === 'up' ? '上涨' : row.trend === 'down' ? '下跌' : '震荡' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="预测区间" width="130">
                 <template #default="{ row }">
                   {{ (row.predicted_low ?? 0).toFixed(2) }} ~ {{ (row.predicted_high ?? 0).toFixed(2) }}
                 </template>
               </el-table-column>
-              <el-table-column prop="actual_price" label="实际价" width="100">
+              <el-table-column label="当日收盘" width="90">
+                <template #default="{ row }">
+                  {{ row.current_price != null ? row.current_price.toFixed(2) : '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="actual_price" label="次日实际" width="90">
                 <template #default="{ row }">
                   {{ row.actual_price != null ? row.actual_price.toFixed(2) : '-' }}
                 </template>
               </el-table-column>
-              <el-table-column prop="hit" label="命中" width="80">
+              <el-table-column label="涨跌幅" width="80">
+                <template #default="{ row }">
+                  <span v-if="row.actual_price != null && row.current_price != null" :style="{ color: ((row.actual_price - row.current_price) / row.current_price * 100) >= 0 ? '#00d4aa' : '#ff4757' }">
+                    {{ ((row.actual_price - row.current_price) / row.current_price * 100).toFixed(2) }}%
+                  </span>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="hit" label="命中" width="70">
                 <template #default="{ row }">
                   <el-tag :type="row.hit ? 'success' : 'danger'" size="small" effect="dark">
                     {{ row.hit ? '是' : '否' }}
@@ -230,6 +411,16 @@ function exportCSV() {
                 </template>
               </el-table-column>
             </el-table>
+            <div class="pagination-wrapper" v-if="store.result.predictions.length > pageSize">
+              <el-pagination
+                v-model:current-page="currentPage"
+                :page-size="pageSize"
+                :total="store.result.predictions.length"
+                layout="prev, pager, next"
+                background
+                small
+              />
+            </div>
           </div>
         </div>
 
@@ -346,7 +537,7 @@ function exportCSV() {
   color: #ff4757;
 }
 
-.equity-chart {
+.chart-block {
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid rgba(255, 255, 255, 0.04);
   border-radius: 12px;
@@ -370,7 +561,11 @@ function exportCSV() {
 
 .chart {
   width: 100%;
-  height: 300px;
+  height: 280px;
+}
+
+.chart-lg {
+  height: 360px;
 }
 
 .predictions-table {
@@ -378,6 +573,12 @@ function exportCSV() {
   border: 1px solid rgba(255, 255, 255, 0.04);
   border-radius: 12px;
   padding: 16px;
+}
+
+.pagination-wrapper {
+  margin-top: 16px;
+  display: flex;
+  justify-content: center;
 }
 
 .dark-table :deep(.el-table) {

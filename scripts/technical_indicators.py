@@ -52,7 +52,7 @@ def calculate_macd(
     signal_text = "数据不足"
     if len(dif) >= 5:
         dif_diff = dif.iloc[-1] - dea.iloc[-1]
-        avg_diff = (dif - dea).abs().tail(20).mean()
+        avg_diff = (dif - dea).abs().tail(10).mean()
         threshold = avg_diff * 0.3 if avg_diff else 0
 
         dif_rising = dif.iloc[-1] > dif.iloc[-2] > dif.iloc[-3]
@@ -139,13 +139,24 @@ def calculate_rsi(
         latest = round(rsi.iloc[-1], 2) if not pd.isna(rsi.iloc[-1]) else None
 
         if latest is not None:
-            if latest > 80:
+            if len(rsi) >= 60:
+                rsi_p80 = rsi.rolling(window=60).quantile(0.8).iloc[-1]
+                rsi_p20 = rsi.rolling(window=60).quantile(0.2).iloc[-1]
+                if not pd.isna(rsi_p80) and not pd.isna(rsi_p20):
+                    ob = rsi_p80
+                    os_val = rsi_p20
+                else:
+                    ob, os_val = 80, 20
+            else:
+                ob, os_val = 80, 20
+
+            if latest > ob:
                 signal = "超买"
-            elif latest < 20:
+            elif latest < os_val:
                 signal = "超卖"
-            elif latest > 70:
+            elif latest > (ob + 50) / 2:
                 signal = "偏强"
-            elif latest < 30:
+            elif latest < (os_val + 50) / 2:
                 signal = "偏弱"
             else:
                 signal = "正常"
@@ -213,10 +224,20 @@ def calculate_kdj(
 
     k = pd.Series([np.nan] * len(close), index=close.index)
     d = pd.Series([np.nan] * len(close), index=close.index)
-    k.iloc[0] = 50.0
-    d.iloc[0] = 50.0
 
-    for i in range(1, len(rsv)):
+    first_valid = rsv.first_valid_index()
+    if first_valid is not None:
+        k.iloc[first_valid] = rsv.iloc[first_valid]
+        d.iloc[first_valid] = rsv.iloc[first_valid]
+        start_idx = first_valid + 1
+    else:
+        k.iloc[0] = 50.0
+        d.iloc[0] = 50.0
+        start_idx = 1
+
+    for i in range(start_idx, len(rsv)):
+        if pd.isna(rsv.iloc[i]):
+            continue
         k.iloc[i] = (k.iloc[i - 1] * (m1 - 1) + rsv.iloc[i]) / m1
         d.iloc[i] = (d.iloc[i - 1] * (m2 - 1) + k.iloc[i]) / m2
 
@@ -308,7 +329,7 @@ def calculate_boll(
         }
 
     middle = closes.rolling(window=n).mean()
-    std = closes.rolling(window=n).std(ddof=0)
+    std = closes.rolling(window=n).std(ddof=1)
 
     upper = middle + k * std
     lower = middle - k * std
@@ -476,7 +497,7 @@ def calculate_volume_ratio(volume: Union[List, pd.Series], n: int = 5) -> Dict:
         return {"volume_ratio": None, "status": "数据不足"}
 
     today_volume = volumes.iloc[-1]
-    avg_volume = volumes.iloc[-n - 1 : -1].mean()
+    avg_volume = volumes.iloc[-n:].mean()
 
     if avg_volume > 0:
         vr = today_volume / avg_volume

@@ -1,0 +1,16 @@
+[Unit]
+Description=Stock Query Frontend (Vite Dev Server)
+After=network.target stock-query-backend.service
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=%PROJECT_DIR%/frontend
+ExecStart=%NPM_PATH% run dev -- --host 0.0.0.0 --port 5173
+Restart=always
+RestartSec=5
+Environment=PATH=%PATH_STR%
+Environment=VITE_BACKEND_PORT=8002
+
+[Install]
+WantedBy=multi-user.target
