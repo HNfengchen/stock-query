@@ -23,16 +23,32 @@ const form = ref<BacktestRequest>({
 
 const customCode = ref(`def signal(df, indicators):
     """
-    df: DataFrame - 历史K线数据
-    indicators: dict - 技术指标
+    df: DataFrame - K线数据，列名: opens, closes, highs, lows, volumes
+    indicators: dict - 技术指标，含 latest 和 signal 字段
     返回: 'buy' | 'sell' | 'hold'
     """
-    macd = indicators.get('MACD', {})
-    rsi = indicators.get('RSI', {}).get('RSI(12)', {})
+    if len(df) < 5:
+        return 'hold'
 
-    if macd.get('signal') == '金叉' and rsi.get('signal') != '超买':
+    closes = df['closes'].values
+    volumes = df['volumes'].values
+
+    last_close = closes[-1]
+    prev_close = closes[-2]
+    avg_vol_5 = sum(volumes[-5:]) / 5
+    last_vol = volumes[-1]
+
+    ma5 = sum(closes[-5:]) / 5
+    ma3 = sum(closes[-3:]) / 3
+
+    price_up = last_close > prev_close
+    vol_up = last_vol > avg_vol_5 * 1.2
+    above_ma5 = last_close > ma5
+    below_ma5 = last_close < ma5
+
+    if price_up and vol_up and above_ma5 and prev_close <= ma5:
         return 'buy'
-    elif macd.get('signal') == '死叉':
+    if last_close < ma3 and prev_close >= ma3:
         return 'sell'
     return 'hold'
 `)
