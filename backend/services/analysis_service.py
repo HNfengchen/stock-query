@@ -51,7 +51,7 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
             "kline": {"dates": [], "opens": [], "closes": [], "highs": [], "lows": [], "volumes": [],
                       "ma5": [], "ma10": [], "ma20": [], "ma60": [], "boll_upper": [], "boll_middle": [], "boll_lower": []},
             "technical": {"dates": [], "macd": [], "dif": [], "dea": [], "rsi6": [], "rsi12": [], "k": [], "d": [], "j": []},
-            "fund_flow": {"dates": [], "main_flow": [], "main_flow_ratio": [], "retail_flow": []},
+            "fund_flow": {"dates": [], "main_flow": [], "main_flow_ratio": [], "small_flow": [], "change_pct": []},
         }
 
     import pandas as pd
@@ -111,7 +111,8 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
     ff_dates = []
     ff_main_flow = []
     ff_main_flow_ratio = []
-    ff_retail_flow = []
+    ff_small_flow = []
+    ff_change_pct = []
     if fund_flow and isinstance(fund_flow, dict):
         hist = fund_flow.get("历史数据", [])
         if isinstance(hist, list):
@@ -119,7 +120,8 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
                 ff_dates.append(str(item.get("日期", ""))[:10])
                 ff_main_flow.append(clean_float(item.get("主力净流入")))
                 ff_main_flow_ratio.append(clean_float(item.get("主力净流入占比")))
-                ff_retail_flow.append(clean_float(item.get("小单净流入")))
+                ff_small_flow.append(clean_float(item.get("小单净流入", 0)))
+                ff_change_pct.append(clean_float(item.get("涨跌幅", 0)))
 
     return {
         "kline": {
@@ -131,7 +133,7 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
             "dates": dates, "macd": macd_vals, "dif": dif_vals, "dea": dea_vals,
             "rsi6": rsi6_vals, "rsi12": rsi12_vals, "k": k_vals, "d": d_vals, "j": j_vals,
         },
-        "fund_flow": {"dates": ff_dates, "main_flow": ff_main_flow, "main_flow_ratio": ff_main_flow_ratio, "retail_flow": ff_retail_flow},
+        "fund_flow": {"dates": ff_dates, "main_flow": ff_main_flow, "main_flow_ratio": ff_main_flow_ratio, "small_flow": ff_small_flow, "change_pct": ff_change_pct},
     }
 
 

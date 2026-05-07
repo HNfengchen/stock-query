@@ -3,22 +3,99 @@
 *::after {
   box-sizing: border-box;
   margin: 0;
-  font-weight: normal;
+  padding: 0;
+}
+
+:root {
+  --bg-primary: #121212;
+  --bg-secondary: #1a1a1a;
+  --bg-card: #1e1e1e;
+  --bg-hover: #262626;
+  --bg-elevated: #2a2a2a;
+
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-default: rgba(255, 255, 255, 0.08);
+  --border-active: rgba(38, 166, 154, 0.4);
+
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.60);
+  --text-muted: rgba(255, 255, 255, 0.38);
+  --text-disabled: rgba(255, 255, 255, 0.22);
+
+  --color-up: #26a69a;
+  --color-up-dim: rgba(38, 166, 154, 0.15);
+  --color-down: #ef5350;
+  --color-down-dim: rgba(239, 83, 80, 0.15);
+  --color-accent: #42a5f5;
+  --color-warn: #ffa726;
+  --color-gold: #ffd54f;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 20px rgba(38, 166, 154, 0.1);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  --transition-fast: 0.15s ease;
+  --transition-base: 0.25s ease;
+  --transition-slow: 0.4s ease;
 }
 
 body {
   min-height: 100vh;
-  color: #e0e6ed;
-  background: #0a0e1a;
-  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  line-height: 1.5;
   font-family:
+    'SF Pro Display',
     'PingFang SC',
     'Microsoft YaHei',
-    'Helvetica Neue',
-    Arial,
+    -apple-system,
+    BlinkMacSystemFont,
     sans-serif;
   font-size: 14px;
+  font-weight: 400;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Number font for financial data */
+.font-mono {
+  font-family:
+    'SF Mono',
+    'JetBrains Mono',
+    'Fira Code',
+    'Consolas',
+    monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Selection */
+::selection {
+  background: rgba(0, 212, 170, 0.2);
+  color: var(--text-primary);
 }

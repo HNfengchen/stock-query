@@ -7,13 +7,6 @@
     "added_at": "2026-05-07T01:20:19.183550"
   },
   {
-    "stock_code": "000630",
-    "stock_name": "铜陵有色",
-    "position_status": "未持有",
-    "cost_price": null,
-    "added_at": "2026-05-07T02:26:23.390380"
-  },
-  {
     "stock_code": "601515",
     "stock_name": "衢州东峰",
     "position_status": "未持有",
@@ -47,5 +40,12 @@
     "position_status": "未持有",
     "cost_price": null,
     "added_at": "2026-05-07T02:42:55.882032"
+  },
+  {
+    "stock_code": "000630",
+    "stock_name": "铜陵有色",
+    "position_status": "未持有",
+    "cost_price": null,
+    "added_at": "2026-05-07T23:18:47.337445"
   }
 ]

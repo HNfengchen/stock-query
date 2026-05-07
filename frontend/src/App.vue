@@ -27,9 +27,9 @@ const sidebarCollapsed = ref(false)
 }
 
 body {
-  font-family: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
-  background: #0a0e1a;
-  color: #e0e6ed;
+  font-family: 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
 .app-container {
@@ -46,16 +46,16 @@ body {
 
 .content-area {
   flex: 1;
-  margin-left: 280px;
+  margin-left: 260px;
   transition: margin-left 0.3s ease;
-  padding: 24px;
+  padding: 20px;
   overflow-y: auto;
-  background: #0f1419;
-  min-height: calc(100vh - 64px);
+  background: var(--bg-primary);
+  min-height: calc(100vh - 56px);
 }
 
 .content-area.sidebar-collapsed {
-  margin-left: 64px;
+  margin-left: 56px;
 }
 
 @media (max-width: 768px) {

@@ -92,7 +92,8 @@ export interface FundFlowData {
   dates: string[]
   main_flow: number[]
   main_flow_ratio: number[]
-  retail_flow: number[]
+  small_flow: number[]
+  change_pct: number[]
 }
 
 export interface AnalysisResult {

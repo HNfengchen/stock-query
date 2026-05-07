@@ -10,29 +10,236 @@
 
 a {
   text-decoration: none;
-  color: #00d4aa;
-  transition: 0.3s;
+  color: var(--color-accent);
+  transition: var(--transition-fast);
 }
 
 a:hover {
-  color: #00e8bc;
+  color: var(--color-up);
 }
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* Element Plus dark theme overrides */
+.el-dialog {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border-default) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-lg) !important;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+.el-dialog__title {
+  color: var(--text-primary) !important;
+  font-weight: 600;
 }
 
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
+.el-dialog__header {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 20px 24px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+.el-dialog__body {
+  padding: 24px;
+}
+
+.el-dialog__footer {
+  border-top: 1px solid var(--border-subtle);
+  padding: 16px 24px;
+}
+
+.el-form-item__label {
+  color: var(--text-secondary) !important;
+  font-weight: 500;
+}
+
+.el-input__wrapper {
+  background: var(--bg-secondary) !important;
+  box-shadow: inset 0 0 0 1px var(--border-default) !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.el-input__wrapper.is-focus {
+  box-shadow: inset 0 0 0 1px var(--border-active) !important;
+}
+
+.el-input__inner {
+  color: var(--text-primary) !important;
+}
+
+.el-input__inner::placeholder {
+  color: var(--text-muted) !important;
+}
+
+.el-select .el-input__wrapper {
+  background: var(--bg-secondary) !important;
+}
+
+.el-textarea__inner {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-default) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.el-button--primary {
+  background: linear-gradient(135deg, var(--color-up) 0%, #00897b 100%) !important;
+  border: none !important;
+  font-weight: 600;
+  transition: var(--transition-base);
+}
+
+.el-button--primary:hover {
+  background: linear-gradient(135deg, #4db6ac 0%, #26a69a 100%) !important;
+  box-shadow: 0 4px 16px rgba(0, 212, 170, 0.3) !important;
+  transform: translateY(-1px);
+}
+
+.el-tag--success {
+  background: var(--color-up-dim) !important;
+  border-color: rgba(0, 212, 170, 0.2) !important;
+  color: var(--color-up) !important;
+}
+
+.el-tag--danger {
+  background: var(--color-down-dim) !important;
+  border-color: rgba(255, 71, 87, 0.2) !important;
+  color: var(--color-down) !important;
+}
+
+.el-tag--info {
+  background: rgba(148, 163, 184, 0.1) !important;
+  border-color: rgba(148, 163, 184, 0.15) !important;
+  color: var(--text-secondary) !important;
+}
+
+.el-progress-bar__outer {
+  background: var(--bg-secondary) !important;
+}
+
+.el-progress-bar__inner {
+  background: linear-gradient(90deg, var(--color-up), var(--color-accent)) !important;
+}
+
+/* Table dark styling */
+.dark-table {
+  background: transparent !important;
+  --el-table-bg-color: transparent !important;
+  --el-table-tr-bg-color: transparent !important;
+  --el-table-header-bg-color: var(--bg-secondary) !important;
+  --el-table-row-hover-bg-color: var(--bg-hover) !important;
+  --el-table-border-color: var(--border-subtle) !important;
+  --el-table-text-color: var(--text-primary) !important;
+  --el-table-header-text-color: var(--text-secondary) !important;
+  --el-fill-color-lighter: var(--bg-secondary) !important;
+}
+
+.dark-table .el-table__header-wrapper th {
+  background: var(--bg-secondary) !important;
+  color: var(--text-secondary) !important;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-default) !important;
+}
+
+.dark-table .el-table__body-wrapper td {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
+
+.dark-table .el-table__row:hover td {
+  background: var(--bg-hover) !important;
+}
+
+.dark-table .el-table__inner-wrapper::before {
+  background-color: var(--border-subtle) !important;
+}
+
+.dark-table .el-table__empty-block {
+  background: transparent !important;
+}
+
+.dark-table .el-table__body-wrapper {
+  background: transparent !important;
+}
+
+.dark-table .el-table__header-wrapper {
+  background: transparent !important;
+}
+
+/* Pagination dark */
+.el-pagination {
+  --el-pagination-bg-color: transparent !important;
+  --el-pagination-text-color: var(--text-secondary) !important;
+  --el-pagination-button-bg-color: var(--bg-secondary) !important;
+  --el-pagination-hover-color: var(--color-up) !important;
+}
+
+.el-pagination .btn-prev,
+.el-pagination .btn-next,
+.el-pagination .el-pager li {
+  background: var(--bg-secondary) !important;
+  color: var(--text-secondary) !important;
+  border-radius: var(--radius-sm);
+}
+
+.el-pagination .el-pager li.is-active {
+  background: var(--color-up) !important;
+  color: #fff !important;
+}
+
+/* Card component */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  transition: var(--transition-base);
+}
+
+.card:hover {
+  border-color: var(--border-active);
+  box-shadow: var(--shadow-glow);
+}
+
+/* Section title */
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 16px;
+  padding-left: 12px;
+  border-left: 3px solid var(--color-up);
+}
+
+/* Price display */
+.price-up {
+  color: var(--color-up);
+}
+
+.price-down {
+  color: var(--color-down);
+}
+
+/* Glow text */
+.glow-text {
+  text-shadow: 0 0 10px rgba(0, 212, 170, 0.3);
+}
+
+/* Gradient border */
+.gradient-border {
+  position: relative;
+}
+
+.gradient-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(0, 212, 170, 0.3), rgba(0, 168, 232, 0.1));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
 }

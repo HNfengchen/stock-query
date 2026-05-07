@@ -27,6 +27,7 @@ function openAddDialog() {
 }
 
 async function confirmAdd() {
+  if (!newStock.value.stock_input.trim()) return
   try {
     await store.addStock(newStock.value)
     dialogVisible.value = false
@@ -35,22 +36,10 @@ async function confirmAdd() {
   }
 }
 
-async function confirmRemove(stockCode: string) {
-  try {
-    await store.removeStock(stockCode)
-  } catch (e) {
-    console.error(e)
-  }
-}
-
 function analyzeStock(item: any) {
   const query: Record<string, string> = { code: item.stock_code }
-  if (item.position_status) {
-    query.position = item.position_status
-  }
-  if (item.cost_price) {
-    query.cost = String(item.cost_price)
-  }
+  if (item.position_status) query.position = item.position_status
+  if (item.cost_price) query.cost = String(item.cost_price)
   router.push({ path: '/', query })
 }
 
@@ -71,17 +60,27 @@ async function confirmEdit() {
     console.error(e)
   }
 }
+
+async function removeStock(stockCode: string) {
+  try {
+    await store.removeStock(stockCode)
+  } catch (e) {
+    console.error(e)
+  }
+}
 </script>
 
 <template>
   <div class="history-view">
     <div class="page-header">
-      <h2>历史股票管理</h2>
-      <div class="header-actions">
-        <el-button @click="openAddDialog">
-          <el-icon><Plus /></el-icon> 添加股票
-        </el-button>
+      <div class="header-title">
+        <el-icon><Collection /></el-icon>
+        <span>历史股票</span>
       </div>
+      <el-button type="primary" size="small" class="add-btn" @click="openAddDialog">
+        <el-icon><Plus /></el-icon>
+        <span>添加股票</span>
+      </el-button>
     </div>
 
     <div class="stock-grid">
@@ -89,24 +88,36 @@ async function confirmEdit() {
         v-for="item in store.watchlist"
         :key="item.stock_code"
         class="stock-card"
-        @click="openEdit(item)"
+        @click="analyzeStock(item)"
       >
-        <div class="card-header">
-          <span class="card-code">{{ item.stock_code }}</span>
-          <span class="card-name">{{ item.stock_name }}</span>
-        </div>
-        <div class="card-info">
-          <el-tag :type="item.position_status === '已持有' ? 'success' : 'info'" size="small">
+        <div class="card-top">
+          <div class="stock-info">
+            <span class="stock-code font-mono">{{ item.stock_code }}</span>
+            <span class="stock-name">{{ item.stock_name }}</span>
+          </div>
+          <el-tag
+            :type="item.position_status === '已持有' ? 'success' : 'info'"
+            size="small"
+            effect="dark"
+            class="status-tag"
+          >
             {{ item.position_status }}
           </el-tag>
-          <span v-if="item.cost_price" class="card-cost">成本: {{ item.cost_price }}</span>
-          <span v-else class="card-cost">成本: -</span>
+        </div>
+        <div v-if="item.cost_price" class="card-cost">
+          <span class="cost-label">成本价</span>
+          <span class="cost-value font-mono">{{ item.cost_price.toFixed(2) }}</span>
         </div>
         <div class="card-actions">
-          <el-button type="primary" size="small" text @click.stop="analyzeStock(item)">
-            分析
+          <el-button type="primary" size="small" text class="action-btn" @click.stop="analyzeStock(item)">
+            <el-icon><TrendCharts /></el-icon>
+            <span>分析</span>
           </el-button>
-          <el-button type="danger" size="small" text @click.stop="confirmRemove(item.stock_code)">
+          <el-button size="small" text class="action-btn edit" @click.stop="openEdit(item)">
+            <el-icon><Edit /></el-icon>
+            <span>编辑</span>
+          </el-button>
+          <el-button type="danger" size="small" text class="action-btn delete" @click.stop="removeStock(item.stock_code)">
             <el-icon><Delete /></el-icon>
           </el-button>
         </div>
@@ -115,15 +126,15 @@ async function confirmEdit() {
 
     <div v-if="store.watchlist.length === 0" class="empty-state">
       <el-icon class="empty-icon"><DocumentDelete /></el-icon>
-      <h3>暂无历史股票</h3>
-      <p>点击右上角添加股票开始追踪</p>
+      <span class="empty-text">暂无历史股票</span>
+      <el-button type="primary" size="small" @click="openAddDialog">添加第一只股票</el-button>
     </div>
 
-    <!-- 添加股票对话框 -->
-    <el-dialog v-model="dialogVisible" title="添加股票" width="400px" class="dark-dialog">
-      <el-form label-position="top">
-        <el-form-item label="股票代码/名称">
-          <el-input v-model="newStock.stock_input" placeholder="如 603956" />
+    <!-- 添加对话框 -->
+    <el-dialog v-model="dialogVisible" title="添加股票" width="420px" class="dark-dialog">
+      <el-form label-width="80px">
+        <el-form-item label="股票代码">
+          <el-input v-model="newStock.stock_input" placeholder="输入股票代码或名称" />
         </el-form-item>
         <el-form-item label="持仓状态">
           <el-select v-model="newStock.position_status">
@@ -142,8 +153,8 @@ async function confirmEdit() {
     </el-dialog>
 
     <!-- 编辑对话框 -->
-    <el-dialog v-model="editDialogVisible" title="编辑股票" width="400px" class="dark-dialog">
-      <el-form v-if="editingStock" label-position="top">
+    <el-dialog v-model="editDialogVisible" title="编辑股票" width="420px" class="dark-dialog">
+      <el-form label-width="80px" v-if="editingStock">
         <el-form-item label="股票代码">
           <el-input v-model="editingStock.stock_code" disabled />
         </el-form-item>
@@ -173,77 +184,157 @@ async function confirmEdit() {
 
 .page-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
   margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.page-header h2 {
-  font-size: 22px;
-  font-weight: 600;
-  color: #e0e6ed;
-}
-
-.header-actions {
+.header-title {
   display: flex;
-  gap: 12px;
+  align-items: center;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.header-title .el-icon {
+  font-size: 22px;
+  color: var(--color-up);
+}
+
+.add-btn {
+  background: linear-gradient(135deg, var(--color-up) 0%, #00897b 100%) !important;
+  border: none !important;
+  font-weight: 600;
 }
 
 .stock-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
 }
 
 .stock-card {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   padding: 20px;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: var(--transition-base);
+  position: relative;
+  overflow: hidden;
+}
+
+.stock-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--color-up), var(--color-accent));
+  opacity: 0;
+  transition: var(--transition-base);
 }
 
 .stock-card:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(0, 212, 170, 0.3);
+  border-color: var(--border-active);
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-md);
 }
 
-.card-header {
+.stock-card:hover::before {
+  opacity: 1;
+}
+
+.card-top {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
   margin-bottom: 12px;
 }
 
-.card-code {
-  font-size: 18px;
-  font-weight: 700;
-  color: #00d4aa;
-}
-
-.card-name {
-  font-size: 14px;
-  color: #8b92a8;
-}
-
-.card-info {
+.stock-info {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stock-code {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.stock-name {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.status-tag {
+  font-size: 10px;
+  height: 20px;
+  padding: 0 8px;
 }
 
 .card-cost {
-  font-size: 13px;
-  color: #f0a030;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.cost-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.cost-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-warn);
 }
 
 .card-actions {
   display: flex;
   gap: 4px;
+  opacity: 0;
+  transition: var(--transition-fast);
+}
+
+.stock-card:hover .card-actions {
+  opacity: 1;
+}
+
+.action-btn {
+  padding: 4px 10px;
+  height: 28px;
+  font-size: 12px;
+}
+
+.action-btn.edit {
+  color: var(--text-secondary) !important;
+}
+
+.action-btn.edit:hover {
+  color: var(--text-primary) !important;
+  background: var(--bg-hover) !important;
+}
+
+.action-btn.delete {
+  color: var(--text-muted) !important;
+}
+
+.action-btn.delete:hover {
+  color: var(--color-down) !important;
+  background: rgba(255, 71, 87, 0.1) !important;
 }
 
 .empty-state {
@@ -251,54 +342,26 @@ async function confirmEdit() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 80px 20px;
-  color: #8b92a8;
-  text-align: center;
+  padding: 100px 20px;
+  gap: 16px;
+  color: var(--text-muted);
 }
 
 .empty-icon {
   font-size: 48px;
-  margin-bottom: 16px;
-  color: rgba(0, 212, 170, 0.3);
+  opacity: 0.3;
 }
 
-.empty-state h3 {
-  font-size: 18px;
-  color: #e0e6ed;
-  margin-bottom: 8px;
+.empty-text {
+  font-size: 14px;
 }
 
-.dialog-hint {
-  font-size: 13px;
-  color: #8b92a8;
-  margin-bottom: 12px;
-}
-
-.dark-dialog :deep(.el-dialog) {
-  background: #1a1f2e;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.dark-dialog :deep(.el-dialog__title) {
-  color: #e0e6ed;
-}
-
-.dark-dialog :deep(.el-form-item__label) {
-  color: #8b92a8;
-}
-
-.dark-dialog :deep(.el-input__wrapper) {
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
-}
-
-.dark-dialog :deep(.el-input__inner) {
-  color: #e0e6ed;
-}
-
-.dark-dialog :deep(.el-textarea__inner) {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.1);
-  color: #e0e6ed;
+@media (max-width: 768px) {
+  .stock-grid {
+    grid-template-columns: 1fr;
+  }
+  .card-actions {
+    opacity: 1;
+  }
 }
 </style>

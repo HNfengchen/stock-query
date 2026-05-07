@@ -245,6 +245,11 @@ def get_stock_info(stock_code: str) -> Dict:
                 "成交量": "成交量",
                 "成交额": "成交额",
                 "换手率": "换手率",
+                "量比": "量比",
+                "市盈率-动态": "市盈率-动态",
+                "市净率": "市净率",
+                "总市值": "总市值",
+                "流通市值": "流通市值",
             }
 
             for dest_key, src_key in mapping.items():
@@ -253,9 +258,15 @@ def get_stock_info(stock_code: str) -> Dict:
                     if val is not None and not pd.isna(val):
                         info[dest_key] = val
 
-            pe_val = s.get("市盈率-动态")
-            if pe_val is not None and not pd.isna(pe_val):
-                info["市盈率-动态"] = pe_val
+            if "振幅" not in info or info.get("振幅") is None:
+                high_val = info.get("最高") or s.get("最高")
+                low_val = info.get("最低") or s.get("最低")
+                pre_close = info.get("昨收") or s.get("昨收")
+                if high_val and low_val and pre_close and pre_close != 0:
+                    try:
+                        info["振幅"] = round((float(high_val) - float(low_val)) / float(pre_close) * 100, 2)
+                    except (ValueError, TypeError):
+                        pass
     except Exception as e:
         print(f"efinance 获取实时行情失败: {e}")
 
@@ -335,13 +346,17 @@ def get_fund_flow(stock_code: str) -> Dict:
             fund_flow["涨跌幅"] = latest.get("涨跌幅", "N/A")
 
             history = []
-            for _, row in df.tail(10).iterrows():
+            for _, row in df.tail(30).iterrows():
                 history.append(
                     {
                         "日期": row.get("日期", "N/A"),
                         "主力净流入": row.get("主力净流入", 0),
+                        "小单净流入": row.get("小单净流入", 0),
+                        "中单净流入": row.get("中单净流入", 0),
+                        "大单净流入": row.get("大单净流入", 0),
+                        "超大单净流入": row.get("超大单净流入", 0),
                         "主力净流入占比": row.get("主力净流入占比", 0),
-                        "涨跌幅": row.get("涨跌幅", "N/A"),
+                        "涨跌幅": row.get("涨跌幅", 0),
                     }
                 )
             fund_flow["历史数据"] = history

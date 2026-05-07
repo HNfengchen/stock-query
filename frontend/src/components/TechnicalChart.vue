@@ -3,11 +3,18 @@ import { ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { LineChart, BarChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent } from 'echarts/components'
+import { BarChart, LineChart } from 'echarts/charts'
+import {
+  GridComponent, TooltipComponent, LegendComponent,
+  DataZoomComponent, MarkLineComponent,
+} from 'echarts/components'
 import type { TechnicalChartData } from '@/types'
 
-use([CanvasRenderer, LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent])
+use([
+  CanvasRenderer, BarChart, LineChart,
+  GridComponent, TooltipComponent, LegendComponent,
+  DataZoomComponent, MarkLineComponent,
+])
 
 const props = defineProps<{ data: TechnicalChartData }>()
 
@@ -15,49 +22,84 @@ const macdOption = ref<any>({})
 const rsiOption = ref<any>({})
 const kdjOption = ref<any>({})
 
-const gridBase = { left: 50, right: 12, top: 32, bottom: 20 }
-const axisLabelStyle = { color: '#8b92a8', fontSize: 9, inside: true, margin: 0 }
-const splitLineStyle = { lineStyle: { color: 'rgba(255,255,255,0.04)', type: 'dashed' } }
-const xAxisBase = (data: string[]) => ({
-  type: 'category' as const,
-  data,
-  axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
-  axisLabel: { color: '#8b92a8', fontSize: 9, showMaxLabel: true },
-  axisTick: { show: false },
-})
-const tooltipBase = {
-  trigger: 'axis' as const,
-  backgroundColor: 'rgba(20, 27, 45, 0.95)',
-  borderColor: 'rgba(0, 212, 170, 0.3)',
-  textStyle: { color: '#e0e6ed', fontSize: 11 },
-}
-const legendBase = (data: string[]) => ({
-  data,
-  textStyle: { color: '#8b92a8', fontSize: 10 },
-  top: 4,
-  itemGap: 8,
-  itemWidth: 12,
-  itemHeight: 8,
-})
-
 function buildMacdOption(data: TechnicalChartData) {
   return {
     backgroundColor: 'transparent',
-    tooltip: tooltipBase,
-    legend: legendBase(['DIF', 'DEA', 'MACD']),
-    grid: gridBase,
-    xAxis: xAxisBase(data.dates),
+    animation: true,
+    animationDuration: 300,
+    title: {
+      text: 'MACD',
+      textStyle: { color: '#64748b', fontSize: 11, fontWeight: 600 },
+      left: 8,
+      top: 4,
+    },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {
+        type: 'cross',
+        crossStyle: { color: 'rgba(148, 163, 184, 0.2)', type: 'dashed' },
+      },
+      backgroundColor: 'rgba(10, 14, 26, 0.95)',
+      borderColor: 'rgba(0, 212, 170, 0.2)',
+      borderWidth: 1,
+      padding: [10, 14],
+      textStyle: { color: '#f1f5f9', fontSize: 11, fontFamily: 'SF Mono, JetBrains Mono, monospace' },
+      extraCssText: 'box-shadow: 0 8px 32px rgba(0,0,0,0.4); border-radius: 8px;',
+    },
+    legend: {
+      data: ['MACD', 'DIF', 'DEA'],
+      textStyle: { color: '#475569', fontSize: 10 },
+      top: 4,
+      right: 8,
+      itemGap: 12,
+      itemWidth: 14,
+      itemHeight: 2,
+      icon: 'roundRect',
+    },
+    grid: { left: 48, right: 16, top: 36, bottom: 28, containLabel: false },
+    xAxis: {
+      type: 'category',
+      data: data.dates,
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+      axisLabel: { color: '#475569', fontSize: 9, showMaxLabel: true },
+      axisTick: { show: false },
+      boundaryGap: true,
+    },
     yAxis: {
       axisLine: { show: false },
-      axisLabel: axisLabelStyle,
-      splitLine: splitLineStyle,
+      axisLabel: { color: '#475569', fontSize: 9, inside: true, margin: 0 },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.02)', type: [4, 4] } },
       axisTick: { show: false },
     },
-    dataZoom: [{ type: 'inside', start: 50, end: 100 }],
+    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     series: [
-      { name: 'DIF', type: 'line', data: data.dif, smooth: true, lineStyle: { color: '#00a8e8', width: 1.5 }, symbol: 'none' },
-      { name: 'DEA', type: 'line', data: data.dea, smooth: true, lineStyle: { color: '#f0a030', width: 1.5 }, symbol: 'none' },
-      { name: 'MACD', type: 'bar', data: data.macd, itemStyle: { color: (p: any) => (p.value ?? 0) >= 0 ? '#00d4aa' : '#ff4757', opacity: 0.7 } },
+      {
+        name: 'MACD',
+        type: 'bar',
+        data: data.macd,
+        itemStyle: {
+          color: (p: any) => (p.value ?? 0) >= 0 ? 'rgba(0, 212, 170, 0.5)' : 'rgba(255, 71, 87, 0.5)',
+          borderRadius: [1, 1, 0, 0],
+        },
+        barWidth: '50%',
+        barMaxWidth: 12,
+      },
+      {
+        name: 'DIF',
+        type: 'line',
+        data: data.dif,
+        smooth: true,
+        lineStyle: { color: '#ffa726', width: 1.5 },
+        symbol: 'none',
+      },
+      {
+        name: 'DEA',
+        type: 'line',
+        data: data.dea,
+        smooth: true,
+        lineStyle: { color: '#42a5f5', width: 1.5 },
+        symbol: 'none',
+      },
     ],
   }
 }
@@ -65,21 +107,104 @@ function buildMacdOption(data: TechnicalChartData) {
 function buildRsiOption(data: TechnicalChartData) {
   return {
     backgroundColor: 'transparent',
-    tooltip: tooltipBase,
-    legend: legendBase(['RSI(6)', 'RSI(12)']),
-    grid: gridBase,
-    xAxis: xAxisBase(data.dates),
+    animation: true,
+    animationDuration: 300,
+    title: {
+      text: 'RSI',
+      textStyle: { color: '#64748b', fontSize: 11, fontWeight: 600 },
+      left: 8,
+      top: 4,
+    },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(10, 14, 26, 0.95)',
+      borderColor: 'rgba(0, 212, 170, 0.2)',
+      borderWidth: 1,
+      padding: [10, 14],
+      textStyle: { color: '#f1f5f9', fontSize: 11, fontFamily: 'SF Mono, JetBrains Mono, monospace' },
+      extraCssText: 'box-shadow: 0 8px 32px rgba(0,0,0,0.4); border-radius: 8px;',
+    },
+    legend: {
+      data: ['RSI(6)', 'RSI(12)'],
+      textStyle: { color: '#475569', fontSize: 10 },
+      top: 4,
+      right: 8,
+      itemGap: 12,
+      itemWidth: 14,
+      itemHeight: 2,
+      icon: 'roundRect',
+    },
+    grid: { left: 40, right: 16, top: 36, bottom: 28, containLabel: false },
+    xAxis: {
+      type: 'category',
+      data: data.dates,
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+      axisLabel: { color: '#475569', fontSize: 9, showMaxLabel: true },
+      axisTick: { show: false },
+      boundaryGap: true,
+    },
     yAxis: {
-      min: 0, max: 100,
+      min: 0,
+      max: 100,
       axisLine: { show: false },
-      axisLabel: axisLabelStyle,
-      splitLine: splitLineStyle,
+      axisLabel: { color: '#475569', fontSize: 9, inside: true, margin: 0 },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.02)', type: [4, 4] } },
       axisTick: { show: false },
     },
-    dataZoom: [{ type: 'inside', start: 50, end: 100 }],
+    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     series: [
-      { name: 'RSI(6)', type: 'line', data: data.rsi6, smooth: true, lineStyle: { color: '#00d4aa', width: 1.5 }, symbol: 'none' },
-      { name: 'RSI(12)', type: 'line', data: data.rsi12, smooth: true, lineStyle: { color: '#a855f7', width: 1.5 }, symbol: 'none' },
+      {
+        name: 'RSI(6)',
+        type: 'line',
+        data: data.rsi6,
+        smooth: true,
+        lineStyle: { color: '#26a69a', width: 1.5 },
+        symbol: 'none',
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(0, 212, 170, 0.1)' },
+              { offset: 1, color: 'rgba(0, 212, 170, 0)' },
+            ],
+          },
+        },
+      },
+      {
+        name: 'RSI(12)',
+        type: 'line',
+        data: data.rsi12,
+        smooth: true,
+        lineStyle: { color: '#a855f7', width: 1.5 },
+        symbol: 'none',
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(168, 85, 247, 0.1)' },
+              { offset: 1, color: 'rgba(168, 85, 247, 0)' },
+            ],
+          },
+        },
+      },
+      {
+        name: '超买线',
+        type: 'line',
+        data: data.dates.map(() => 70),
+        lineStyle: { color: 'rgba(255, 71, 87, 0.3)', width: 1, type: [4, 4] },
+        symbol: 'none',
+        silent: true,
+      },
+      {
+        name: '超卖线',
+        type: 'line',
+        data: data.dates.map(() => 30),
+        lineStyle: { color: 'rgba(0, 212, 170, 0.3)', width: 1, type: [4, 4] },
+        symbol: 'none',
+        silent: true,
+      },
     ],
   }
 }
@@ -87,22 +212,74 @@ function buildRsiOption(data: TechnicalChartData) {
 function buildKdjOption(data: TechnicalChartData) {
   return {
     backgroundColor: 'transparent',
-    tooltip: tooltipBase,
-    legend: legendBase(['K', 'D', 'J']),
-    grid: gridBase,
-    xAxis: xAxisBase(data.dates),
+    animation: true,
+    animationDuration: 300,
+    title: {
+      text: 'KDJ',
+      textStyle: { color: '#64748b', fontSize: 11, fontWeight: 600 },
+      left: 8,
+      top: 4,
+    },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(10, 14, 26, 0.95)',
+      borderColor: 'rgba(0, 212, 170, 0.2)',
+      borderWidth: 1,
+      padding: [10, 14],
+      textStyle: { color: '#f1f5f9', fontSize: 11, fontFamily: 'SF Mono, JetBrains Mono, monospace' },
+      extraCssText: 'box-shadow: 0 8px 32px rgba(0,0,0,0.4); border-radius: 8px;',
+    },
+    legend: {
+      data: ['K', 'D', 'J'],
+      textStyle: { color: '#475569', fontSize: 10 },
+      top: 4,
+      right: 8,
+      itemGap: 12,
+      itemWidth: 14,
+      itemHeight: 2,
+      icon: 'roundRect',
+    },
+    grid: { left: 40, right: 16, top: 36, bottom: 28, containLabel: false },
+    xAxis: {
+      type: 'category',
+      data: data.dates,
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+      axisLabel: { color: '#475569', fontSize: 9, showMaxLabel: true },
+      axisTick: { show: false },
+      boundaryGap: true,
+    },
     yAxis: {
-      min: 0, max: 100,
       axisLine: { show: false },
-      axisLabel: axisLabelStyle,
-      splitLine: splitLineStyle,
+      axisLabel: { color: '#475569', fontSize: 9, inside: true, margin: 0 },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.02)', type: [4, 4] } },
       axisTick: { show: false },
     },
-    dataZoom: [{ type: 'inside', start: 50, end: 100 }],
+    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     series: [
-      { name: 'K', type: 'line', data: data.k, smooth: true, lineStyle: { color: '#00d4aa', width: 1.5 }, symbol: 'none' },
-      { name: 'D', type: 'line', data: data.d, smooth: true, lineStyle: { color: '#f0a030', width: 1.5 }, symbol: 'none' },
-      { name: 'J', type: 'line', data: data.j, smooth: true, lineStyle: { color: '#ff4757', width: 1.5 }, symbol: 'none' },
+      {
+        name: 'K',
+        type: 'line',
+        data: data.k,
+        smooth: true,
+        lineStyle: { color: '#ffa726', width: 1.5 },
+        symbol: 'none',
+      },
+      {
+        name: 'D',
+        type: 'line',
+        data: data.d,
+        smooth: true,
+        lineStyle: { color: '#42a5f5', width: 1.5 },
+        symbol: 'none',
+      },
+      {
+        name: 'J',
+        type: 'line',
+        data: data.j,
+        smooth: true,
+        lineStyle: { color: '#ef5350', width: 1.5 },
+        symbol: 'none',
+      },
     ],
   }
 }
@@ -117,57 +294,59 @@ watch(() => props.data, (val) => {
 </script>
 
 <template>
-  <div class="technical-charts">
-    <div class="chart-card">
-      <div class="chart-title">MACD</div>
-      <v-chart class="chart" :option="macdOption" autoresize />
-    </div>
-    <div class="chart-card">
-      <div class="chart-title">RSI</div>
-      <v-chart class="chart" :option="rsiOption" autoresize />
-    </div>
-    <div class="chart-card">
-      <div class="chart-title">KDJ</div>
-      <v-chart class="chart" :option="kdjOption" autoresize />
+  <div class="technical-chart">
+    <div class="chart-row">
+      <div class="chart-cell">
+        <v-chart class="chart" :option="macdOption" autoresize />
+      </div>
+      <div class="chart-cell">
+        <v-chart class="chart" :option="rsiOption" autoresize />
+      </div>
+      <div class="chart-cell">
+        <v-chart class="chart" :option="kdjOption" autoresize />
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.technical-charts {
+.technical-chart {
+  width: 100%;
+}
+
+.chart-row {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  gap: 12px;
 }
 
-.chart-card {
-  min-width: 0;
+.chart-cell {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 8px;
+  transition: var(--transition-fast);
 }
 
-.chart-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #e0e6ed;
-  margin-bottom: 6px;
-  padding-left: 8px;
-  border-left: 3px solid #00d4aa;
+.chart-cell:hover {
+  border-color: var(--border-active);
 }
 
 .chart {
   width: 100%;
-  height: 200px;
+  height: 220px;
 }
 
-@media (max-width: 1400px) {
-  .technical-charts {
-    grid-template-columns: 1fr 1fr;
+@media (max-width: 1200px) {
+  .chart-row {
+    grid-template-columns: 1fr;
+  }
+  .chart {
+    height: 200px;
   }
 }
 
 @media (max-width: 768px) {
-  .technical-charts {
-    grid-template-columns: 1fr;
-  }
   .chart {
     height: 180px;
   }

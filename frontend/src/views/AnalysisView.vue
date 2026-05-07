@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useStockStore } from '@/stores/stockStore'
@@ -72,6 +72,44 @@ async function addToWatchlist() {
   }
 }
 
+const si = computed(() => store.currentResult?.stock_info || {} as Record<string, any>)
+
+const changePct = computed(() => {
+  const v = Number(si.value['涨跌幅'])
+  return isNaN(v) ? null : v
+})
+
+const changeAmt = computed(() => {
+  const v = Number(si.value['涨跌额'])
+  return isNaN(v) ? null : v
+})
+
+function fmtNum(val: any, decimals: number = 2): string {
+  if (val === null || val === undefined || val === 'N/A') return '-'
+  const num = Number(val)
+  if (isNaN(num)) return String(val)
+  return num.toFixed(decimals)
+}
+
+function fmtMarketCap(val: any): string {
+  if (val === null || val === undefined || val === 'N/A') return '-'
+  const num = Number(val)
+  if (isNaN(num)) return String(val)
+  if (Math.abs(num) >= 1000000000000) return (num / 1000000000000).toFixed(2) + '万亿'
+  if (Math.abs(num) >= 100000000) return (num / 100000000).toFixed(2) + '亿'
+  if (Math.abs(num) >= 10000) return (num / 10000).toFixed(2) + '万'
+  return num.toFixed(2)
+}
+
+function fmtVolume(val: any): string {
+  if (val === null || val === undefined || val === 'N/A') return '-'
+  const num = Number(val)
+  if (isNaN(num)) return String(val)
+  if (Math.abs(num) >= 100000000) return (num / 100000000).toFixed(2) + '亿'
+  if (Math.abs(num) >= 10000) return (num / 10000).toFixed(2) + '万'
+  return num.toFixed(0)
+}
+
 const emptyKline = {
   dates: [], opens: [], closes: [], highs: [], lows: [], volumes: [],
   ma5: [], ma10: [], ma20: [], ma60: [], boll_upper: [], boll_middle: [], boll_lower: [],
@@ -82,7 +120,7 @@ const emptyTechnical = {
 }
 
 const emptyFundFlow = {
-  dates: [], main_flow: [], main_flow_ratio: [], retail_flow: [],
+  dates: [], main_flow: [], main_flow_ratio: [], small_flow: [], change_pct: [],
 }
 </script>
 
@@ -91,46 +129,138 @@ const emptyFundFlow = {
     <StockInput v-model="form" :loading="store.loading" @analyze="handleAnalyze" />
 
     <div v-if="store.loading" class="loading-state">
-      <el-icon class="loading-icon"><Loading /></el-icon>
-      <span>正在分析中，请稍候...</span>
+      <div class="loading-spinner">
+        <div class="spinner-ring" />
+        <div class="spinner-ring" />
+        <div class="spinner-ring" />
+      </div>
+      <span class="loading-text">正在分析中...</span>
     </div>
 
     <div v-else-if="store.hasResult && store.currentResult" class="result-container">
-      <div class="result-header">
-        <div class="stock-title">
-          <span class="stock-code">{{ store.currentResult.stock_code }}</span>
-          <span class="stock-name">{{ store.currentResult.stock_name }}</span>
-          <span class="stock-price" v-if="store.currentResult.price_prediction?.current">
-            ¥{{ store.currentResult.price_prediction.current.toFixed(2) }}
-          </span>
+      <div class="stock-header">
+        <div class="header-top">
+          <div class="stock-info">
+            <div class="stock-main">
+              <span class="stock-name">{{ store.currentResult.stock_name }}</span>
+              <span class="stock-code">{{ store.currentResult.stock_code }}</span>
+            </div>
+            <div v-if="store.currentResult.price_prediction?.current" class="stock-price-row">
+              <span class="current-price font-mono">
+                {{ store.currentResult.price_prediction.current.toFixed(2) }}
+              </span>
+              <span class="price-unit">CNY</span>
+              <span
+                v-if="changePct !== null"
+                class="price-change"
+                :class="changePct >= 0 ? 'up' : 'down'"
+              >
+                {{ changePct >= 0 ? '+' : '' }}{{ changePct.toFixed(2) }}%
+                <template v-if="changeAmt !== null">
+                  ({{ changeAmt >= 0 ? '+' : '' }}{{ changeAmt.toFixed(2) }})
+                </template>
+              </span>
+            </div>
+          </div>
+          <el-button
+            type="primary"
+            size="small"
+            text
+            class="add-btn"
+            @click="addToWatchlist"
+          >
+            <el-icon><Plus /></el-icon>
+            <span>加入列表</span>
+          </el-button>
         </div>
-        <el-button type="primary" size="small" text @click="addToWatchlist">
-          <el-icon><Plus /></el-icon> 加入历史列表
-        </el-button>
+
+        <div class="metrics-grid">
+          <div class="metric-item">
+            <span class="metric-label">今开</span>
+            <span class="metric-value font-mono">{{ fmtNum(si['今开']) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">昨收</span>
+            <span class="metric-value font-mono">{{ fmtNum(si['昨收']) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">最高</span>
+            <span class="metric-value font-mono up">{{ fmtNum(si['最高']) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">最低</span>
+            <span class="metric-value font-mono down">{{ fmtNum(si['最低']) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">振幅</span>
+            <span class="metric-value font-mono">{{ fmtNum(si['振幅']) }}%</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">换手率</span>
+            <span class="metric-value font-mono">{{ fmtNum(si['换手率']) }}%</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">成交额</span>
+            <span class="metric-value font-mono">{{ fmtVolume(si['成交额']) }}</span>
+          </div>
+          <div class="metric-divider" />
+          <div class="metric-item">
+            <span class="metric-label">市盈率(动)</span>
+            <span class="metric-value font-mono">{{ fmtNum(si['市盈率-动态']) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">市净率</span>
+            <span class="metric-value font-mono">{{ fmtNum(si['市净率']) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">总市值</span>
+            <span class="metric-value font-mono">{{ fmtMarketCap(si['总市值']) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">流通市值</span>
+            <span class="metric-value font-mono">{{ fmtMarketCap(si['流通市值']) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">所属行业</span>
+            <span class="metric-value industry">{{ si['所属行业'] || '-' }}</span>
+          </div>
+        </div>
       </div>
 
-      <div class="info-section">
+      <div class="report-section">
         <ReportPanel :result="store.currentResult" />
       </div>
 
-      <div class="charts-section">
-        <div class="chart-block">
-          <div class="chart-block-title">K线图</div>
+      <div class="charts-grid">
+        <div class="chart-card chart-main">
+          <div class="chart-header">
+            <span class="chart-title">K 线走势</span>
+            <div class="chart-legend">
+              <span class="legend-item up"><span class="legend-dot" />涨</span>
+              <span class="legend-item down"><span class="legend-dot" />跌</span>
+            </div>
+          </div>
           <KlineChart :data="store.currentResult.charts?.kline || emptyKline" />
         </div>
-        <div class="chart-block">
-          <div class="chart-block-title">技术指标</div>
+        <div class="chart-card">
+          <div class="chart-header">
+            <span class="chart-title">技术指标</span>
+          </div>
           <TechnicalChart :data="store.currentResult.charts?.technical || emptyTechnical" />
         </div>
-        <div class="chart-block">
-          <div class="chart-block-title">资金流向</div>
+        <div class="chart-card">
+          <div class="chart-header">
+            <span class="chart-title">资金流向</span>
+          </div>
           <FundFlowChart :data="store.currentResult.charts?.fund_flow || emptyFundFlow" />
         </div>
       </div>
     </div>
 
     <div v-else class="empty-state">
-      <el-icon class="empty-icon"><TrendCharts /></el-icon>
+      <div class="empty-icon">
+        <el-icon><TrendCharts /></el-icon>
+      </div>
       <h3>输入股票代码开始分析</h3>
       <p>支持股票代码或名称搜索，如 603956 或 威派格</p>
     </div>
@@ -148,87 +278,268 @@ const emptyFundFlow = {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 80px 20px;
-  color: #8b92a8;
-  gap: 16px;
+  padding: 100px 20px;
+  gap: 20px;
 }
 
-.loading-icon {
-  font-size: 48px;
+.loading-spinner {
+  position: relative;
+  width: 48px;
+  height: 48px;
+}
+
+.spinner-ring {
+  position: absolute;
+  border: 2px solid transparent;
+  border-top-color: var(--color-up);
+  border-radius: 50%;
   animation: spin 1s linear infinite;
-  color: #00d4aa;
+}
+
+.spinner-ring:nth-child(1) {
+  inset: 0;
+  animation-duration: 1.2s;
+}
+
+.spinner-ring:nth-child(2) {
+  inset: 6px;
+  border-top-color: var(--color-accent);
+  animation-duration: 0.9s;
+  animation-direction: reverse;
+}
+
+.spinner-ring:nth-child(3) {
+  inset: 12px;
+  border-top-color: var(--color-warn);
+  animation-duration: 0.6s;
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 
+.loading-text {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
 .result-container {
-  animation: fadeIn 0.5s ease;
+  animation: fadeIn 0.4s ease;
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(20px); }
+  from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-.result-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-  padding: 0 4px;
-}
-
-.stock-title {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.stock-code {
-  font-size: 24px;
-  font-weight: 700;
-  color: #00d4aa;
-}
-
-.stock-name {
-  font-size: 18px;
-  color: #8b92a8;
-}
-
-.stock-price {
-  font-size: 20px;
-  font-weight: 600;
-  color: #e0e6ed;
-  margin-left: 8px;
-}
-
-.info-section {
-  margin-bottom: 24px;
-}
-
-.charts-section {
+.stock-header {
   display: flex;
   flex-direction: column;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 16px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stock-info {
+  display: flex;
+  align-items: center;
   gap: 24px;
 }
 
-.chart-block {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
-  padding: 20px;
+.stock-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.chart-block-title {
-  font-size: 14px;
+.stock-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.stock-code {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'JetBrains Mono', monospace;
+}
+
+.stock-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.current-price {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--color-up);
+  letter-spacing: -0.03em;
+}
+
+.price-unit {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.price-change {
+  font-size: 13px;
   font-weight: 600;
-  color: #e0e6ed;
-  margin-bottom: 16px;
-  padding-left: 10px;
-  border-left: 3px solid #00d4aa;
+  margin-left: 4px;
+}
+
+.price-change.up {
+  color: var(--color-up);
+}
+
+.price-change.down {
+  color: var(--color-down);
+}
+
+.add-btn {
+  color: var(--color-up) !important;
+  font-weight: 500;
+}
+
+.add-btn:hover {
+  color: #4db6ac !important;
+  background: rgba(0, 212, 170, 0.08) !important;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 0;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 12px;
+}
+
+.metric-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.metric-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.metric-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.metric-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.metric-value.up {
+  color: var(--color-up);
+}
+
+.metric-value.down {
+  color: var(--color-down);
+}
+
+.metric-value.industry {
+  font-size: 12px;
+  color: var(--color-accent);
+  font-family: inherit;
+}
+
+.metric-divider {
+  grid-column: 1 / -1;
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 4px 0;
+}
+
+.report-section {
+  margin-bottom: 20px;
+}
+
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.chart-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  transition: var(--transition-base);
+}
+
+.chart-card:hover {
+  border-color: var(--border-active);
+}
+
+.chart-main {
+  min-height: 480px;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.chart-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.03em;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 12px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.legend-item.up .legend-dot {
+  background: var(--color-up);
+}
+
+.legend-item.down .legend-dot {
+  background: var(--color-down);
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
 }
 
 .empty-state {
@@ -237,41 +548,52 @@ const emptyFundFlow = {
   align-items: center;
   justify-content: center;
   padding: 120px 20px;
-  color: #8b92a8;
+  color: var(--text-muted);
   text-align: center;
 }
 
 .empty-icon {
-  font-size: 64px;
-  margin-bottom: 24px;
-  color: rgba(0, 212, 170, 0.3);
+  font-size: 56px;
+  margin-bottom: 20px;
+  color: rgba(0, 212, 170, 0.2);
 }
 
 .empty-state h3 {
-  font-size: 20px;
-  color: #e0e6ed;
+  font-size: 18px;
+  color: var(--text-secondary);
   margin-bottom: 8px;
+  font-weight: 600;
 }
 
 .empty-state p {
-  font-size: 14px;
+  font-size: 13px;
 }
 
 @media (max-width: 768px) {
-  .result-header {
+  .header-top {
     flex-direction: column;
     gap: 12px;
     align-items: flex-start;
   }
-  .stock-title {
-    flex-wrap: wrap;
+  .stock-info {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
   }
-  .chart-block {
-    padding: 12px;
-    border-radius: 12px;
+  .current-price {
+    font-size: 24px;
   }
-  .charts-section {
-    gap: 16px;
+  .metrics-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .chart-main {
+    min-height: 360px;
+  }
+}
+
+@media (max-width: 480px) {
+  .metrics-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 </style>

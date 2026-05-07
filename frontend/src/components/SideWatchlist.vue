@@ -41,9 +41,14 @@ async function removeStock(stockCode: string, event: Event) {
 <template>
   <aside class="sidebar" :class="{ collapsed }">
     <div class="sidebar-header">
-      <el-icon class="watchlist-icon"><Collection /></el-icon>
-      <span v-if="!collapsed" class="sidebar-title">历史股票</span>
-      <el-icon class="collapse-btn" @click="toggleCollapse"><Fold v-if="!collapsed" /><Expand v-else /></el-icon>
+      <div class="header-title" v-if="!collapsed">
+        <el-icon class="header-icon"><Collection /></el-icon>
+        <span>关注列表</span>
+      </div>
+      <el-icon class="collapse-btn" @click="toggleCollapse">
+        <Fold v-if="!collapsed" />
+        <Expand v-else />
+      </el-icon>
     </div>
     <div v-if="!collapsed" class="watchlist-content">
       <div
@@ -52,52 +57,78 @@ async function removeStock(stockCode: string, event: Event) {
         class="watchlist-item"
         @click="analyzeStock(item)"
       >
-        <div class="item-header">
-          <span class="stock-code">{{ item.stock_code }}</span>
-          <span class="stock-name">{{ item.stock_name }}</span>
-        </div>
-        <div class="item-info">
-          <el-tag :type="item.position_status === '已持有' ? 'success' : 'info'" size="small">
-            {{ item.position_status }}
-          </el-tag>
-          <span v-if="item.cost_price" class="cost-price">成本: {{ item.cost_price }}</span>
+        <div class="item-main">
+          <div class="item-top">
+            <span class="stock-code">{{ item.stock_code }}</span>
+            <el-tag
+              :type="item.position_status === '已持有' ? 'success' : 'info'"
+              size="small"
+              effect="dark"
+              class="status-tag"
+            >
+              {{ item.position_status }}
+            </el-tag>
+          </div>
+          <div class="item-bottom">
+            <span class="stock-name">{{ item.stock_name }}</span>
+            <span v-if="item.cost_price" class="cost-price">
+              成本 {{ item.cost_price.toFixed(2) }}
+            </span>
+          </div>
         </div>
         <div class="item-actions">
-          <el-button type="primary" size="small" text @click.stop="analyzeStock(item)">
-            分析
+          <el-button
+            type="primary"
+            size="small"
+            text
+            class="action-btn analyze"
+            @click.stop="analyzeStock(item)"
+          >
+            <el-icon><TrendCharts /></el-icon>
           </el-button>
-          <el-button type="danger" size="small" text @click.stop="removeStock(item.stock_code, $event)">
+          <el-button
+            type="danger"
+            size="small"
+            text
+            class="action-btn delete"
+            @click.stop="removeStock(item.stock_code, $event)"
+          >
             <el-icon><Delete /></el-icon>
           </el-button>
         </div>
       </div>
       <div v-if="store.watchlist.length === 0" class="empty-state">
-        <el-icon><DocumentDelete /></el-icon>
-        <span>暂无股票</span>
+        <el-icon class="empty-icon"><DocumentDelete /></el-icon>
+        <span class="empty-text">暂无关注股票</span>
       </div>
     </div>
     <div v-else class="collapsed-icons">
-      <el-icon
-        v-for="item in store.watchlist.slice(0, 8)"
+      <el-tooltip
+        v-for="item in store.watchlist.slice(0, 10)"
         :key="item.stock_code"
-        class="collapsed-item"
-        :title="item.stock_code"
-        @click="analyzeStock(item)"
+        :content="`${item.stock_code} ${item.stock_name}`"
+        placement="right"
+        effect="dark"
       >
-        <Document />
-      </el-icon>
+        <div
+          class="collapsed-item"
+          @click="analyzeStock(item)"
+        >
+          <span class="collapsed-code">{{ item.stock_code.slice(-4) }}</span>
+        </div>
+      </el-tooltip>
     </div>
   </aside>
 </template>
 
 <style scoped>
 .sidebar {
-  width: 280px;
-  background: #141b2d;
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  width: 260px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-subtle);
   position: fixed;
   left: 0;
-  top: 64px;
+  top: 56px;
   bottom: 0;
   z-index: 100;
   transition: width 0.3s ease;
@@ -107,98 +138,150 @@ async function removeStock(stockCode: string, event: Event) {
 }
 
 .sidebar.collapsed {
-  width: 64px;
+  width: 56px;
 }
 
 .sidebar-header {
-  height: 56px;
+  height: 48px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 0 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  gap: 12px;
-}
-
-.watchlist-icon {
-  font-size: 20px;
-  color: #00d4aa;
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
 
-.sidebar-title {
-  font-size: 16px;
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
   font-weight: 600;
-  color: #e0e6ed;
-  flex: 1;
+  color: var(--text-secondary);
+}
+
+.header-icon {
+  font-size: 16px;
+  color: var(--color-up);
 }
 
 .collapse-btn {
-  font-size: 18px;
-  color: #8b92a8;
+  font-size: 14px;
+  color: var(--text-muted);
   cursor: pointer;
-  transition: color 0.3s;
-  flex-shrink: 0;
+  transition: var(--transition-fast);
+  padding: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .collapse-btn:hover {
-  color: #e0e6ed;
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .watchlist-content {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 8px;
 }
 
 .watchlist-item {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 12px;
-  margin-bottom: 8px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: var(--transition-fast);
+  border: 1px solid transparent;
+  margin-bottom: 4px;
 }
 
 .watchlist-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(0, 212, 170, 0.3);
-  transform: translateX(4px);
+  background: var(--bg-hover);
+  border-color: var(--border-default);
 }
 
-.item-header {
+.watchlist-item:hover .item-actions {
+  opacity: 1;
+}
+
+.item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.item-top {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .stock-code {
   font-size: 14px;
   font-weight: 700;
-  color: #00d4aa;
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'JetBrains Mono', monospace;
+  letter-spacing: -0.02em;
 }
 
-.stock-name {
-  font-size: 13px;
-  color: #8b92a8;
+.status-tag {
+  font-size: 10px;
+  height: 18px;
+  padding: 0 6px;
 }
 
-.item-info {
+.item-bottom {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+}
+
+.stock-name {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cost-price {
-  font-size: 12px;
-  color: #f0a030;
+  font-size: 11px;
+  color: var(--color-warn);
+  font-family: 'SF Mono', 'JetBrains Mono', monospace;
+  flex-shrink: 0;
 }
 
 .item-actions {
   display: flex;
-  gap: 4px;
+  gap: 2px;
+  opacity: 0;
+  transition: var(--transition-fast);
+}
+
+.action-btn {
+  padding: 4px;
+  height: 24px;
+  width: 24px;
+}
+
+.action-btn.analyze {
+  color: var(--color-up);
+}
+
+.action-btn.analyze:hover {
+  color: #4db6ac;
+  background: rgba(0, 212, 170, 0.1);
+}
+
+.action-btn.delete {
+  color: var(--text-muted);
+}
+
+.action-btn.delete:hover {
+  color: var(--color-down);
+  background: rgba(255, 71, 87, 0.1);
 }
 
 .empty-state {
@@ -207,34 +290,50 @@ async function removeStock(stockCode: string, event: Event) {
   align-items: center;
   justify-content: center;
   padding: 40px 20px;
-  color: #8b92a8;
-  gap: 12px;
+  color: var(--text-muted);
+  gap: 8px;
 }
 
-.empty-state .el-icon {
-  font-size: 32px;
+.empty-icon {
+  font-size: 28px;
+  opacity: 0.3;
+}
+
+.empty-text {
+  font-size: 12px;
 }
 
 .collapsed-icons {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 12px 0;
-  gap: 12px;
+  padding: 8px 0;
+  gap: 4px;
 }
 
 .collapsed-item {
-  font-size: 20px;
-  color: #8b92a8;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  padding: 8px;
-  border-radius: 8px;
-  transition: all 0.3s;
+  transition: var(--transition-fast);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
 }
 
 .collapsed-item:hover {
-  background: rgba(0, 212, 170, 0.1);
-  color: #00d4aa;
+  background: var(--bg-hover);
+  border-color: var(--border-active);
+}
+
+.collapsed-code {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-family: 'SF Mono', 'JetBrains Mono', monospace;
 }
 
 @media (max-width: 768px) {

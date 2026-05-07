@@ -45,58 +45,56 @@ const priceCompareOption = computed(() => {
   if (!store.result?.predictions?.length) return {}
   const preds = store.result.predictions
   const dates = preds.map(p => p.date)
-  const predictedLows = preds.map(p => p.predicted_low)
-  const predictedHighs = preds.map(p => p.predicted_high)
   const actualPrices = preds.map(p => p.actual_price)
-  const rangeData = preds.map(p => [p.predicted_low, p.predicted_high])
 
   return {
     backgroundColor: 'transparent',
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(20,27,45,0.95)',
-      borderColor: 'rgba(0,212,170,0.3)',
-      textStyle: { color: '#e0e6ed', fontSize: 11 },
+      backgroundColor: 'rgba(10, 14, 26, 0.95)',
+      borderColor: 'rgba(0, 212, 170, 0.2)',
+      textStyle: { color: '#f1f5f9', fontSize: 11 },
       formatter: (params: any[]) => {
         const idx = params[0]?.dataIndex
         if (idx === undefined || idx < 0) return ''
         const p = preds[idx]
         if (!p) return ''
-        let html = `<div style="font-weight:600;margin-bottom:4px">${p.date}</div>`
-        html += `<div>预测趋势: <span style="color:${p.trend === 'up' ? '#00d4aa' : p.trend === 'down' ? '#ff4757' : '#8b92a8'}">${p.trend === 'up' ? '上涨' : p.trend === 'down' ? '下跌' : '震荡'}</span></div>`
-        html += `<div>预测区间: ${p.predicted_low.toFixed(2)} ~ ${p.predicted_high.toFixed(2)}</div>`
+        let html = `<div style="font-weight:600;margin-bottom:6px">${p.date}</div>`
+        html += `<div>预测趋势: <span style="color:${p.trend === 'up' ? 'var(--color-up)' : p.trend === 'down' ? 'var(--color-down)' : 'var(--text-muted)'}">${p.trend === 'up' ? '上涨' : p.trend === 'down' ? '下跌' : '震荡'}</span></div>`
+        html += `<div>预测区间: <span class="font-mono">${p.predicted_low.toFixed(2)} ~ ${p.predicted_high.toFixed(2)}</span></div>`
         if (p.current_price != null) {
-          html += `<div>当日收盘: ${p.current_price.toFixed(2)}</div>`
+          html += `<div>当日收盘: <span class="font-mono">${p.current_price.toFixed(2)}</span></div>`
         }
         if (p.actual_price != null) {
-          html += `<div>次日实际: <span style="color:#00a8e8;font-weight:600">${p.actual_price.toFixed(2)}</span></div>`
+          html += `<div>次日实际: <span style="color:var(--color-accent);font-weight:600">${p.actual_price.toFixed(2)}</span></div>`
           if (p.current_price != null) {
             const chg = ((p.actual_price - p.current_price) / p.current_price * 100).toFixed(2)
-            html += `<div>涨跌幅: <span style="color:${parseFloat(chg) >= 0 ? '#00d4aa' : '#ff4757'}">${chg}%</span></div>`
+            html += `<div>涨跌幅: <span style="color:${parseFloat(chg) >= 0 ? 'var(--color-up)' : 'var(--color-down)'}">${chg}%</span></div>`
           }
-          html += `<div>命中: <span style="color:${p.hit ? '#00d4aa' : '#ff4757'}">${p.hit ? '是' : '否'}</span></div>`
+          html += `<div>命中: <span style="color:${p.hit ? 'var(--color-up)' : 'var(--color-down)'}">${p.hit ? '是' : '否'}</span></div>`
         }
         return html
       },
     },
     legend: {
       data: ['预测区间', '实际价格'],
-      textStyle: { color: '#8b92a8', fontSize: 11 },
+      textStyle: { color: 'var(--text-muted)', fontSize: 11 },
       top: 4,
     },
-    grid: { left: 60, right: 16, top: 36, bottom: 56 },
+    grid: { left: 56, right: 16, top: 40, bottom: 56 },
     xAxis: {
       type: 'category',
       data: dates,
-      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
-      axisLabel: { color: '#8b92a8', fontSize: 9, rotate: 45 },
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+      axisLabel: { color: '#475569', fontSize: 9, rotate: 45, fontFamily: 'SF Mono, JetBrains Mono, monospace' },
       axisTick: { show: false },
+      boundaryGap: true,
     },
     yAxis: {
       scale: true,
       axisLine: { show: false },
-      axisLabel: { color: '#8b92a8', fontSize: 10, inside: false, margin: 8 },
-      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)', type: 'dashed' } },
+      axisLabel: { color: '#475569', fontSize: 10, inside: false, margin: 8, fontFamily: 'SF Mono, JetBrains Mono, monospace' },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)', type: [4, 4] } },
       axisTick: { show: false },
     },
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
@@ -114,8 +112,8 @@ const priceCompareOption = computed(() => {
             type: 'rect',
             shape: { x: x - width / 2, y: yHigh, width, height: yLow - yHigh },
             style: {
-              fill: hit ? 'rgba(0,212,170,0.25)' : 'rgba(255,71,87,0.25)',
-              stroke: hit ? '#00d4aa' : '#ff4757',
+              fill: hit ? 'rgba(0, 212, 170, 0.2)' : 'rgba(255, 71, 87, 0.2)',
+              stroke: hit ? 'var(--color-up)' : 'var(--color-down)',
               lineWidth: 1,
             },
           }
@@ -128,10 +126,10 @@ const priceCompareOption = computed(() => {
         type: 'line',
         data: actualPrices,
         smooth: true,
-        lineStyle: { color: '#00a8e8', width: 2 },
+        lineStyle: { color: 'var(--color-accent)', width: 2 },
         symbol: 'circle',
         symbolSize: 5,
-        itemStyle: { color: '#00a8e8', borderWidth: 0 },
+        itemStyle: { color: 'var(--color-accent)', borderWidth: 0 },
         z: 2,
       },
     ],
@@ -175,15 +173,15 @@ const trendAccuracyOption = computed(() => {
     backgroundColor: 'transparent',
     title: {
       text: `趋势准确率: ${accuracyPct}%`,
-      textStyle: { color: '#e0e6ed', fontSize: 13, fontWeight: 600 },
+      textStyle: { color: 'var(--text-primary)', fontSize: 13, fontWeight: 600 },
       left: 8,
       top: 4,
     },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(20,27,45,0.95)',
-      borderColor: 'rgba(0,212,170,0.3)',
-      textStyle: { color: '#e0e6ed', fontSize: 11 },
+      backgroundColor: 'rgba(10, 14, 26, 0.95)',
+      borderColor: 'rgba(0, 212, 170, 0.2)',
+      textStyle: { color: '#f1f5f9', fontSize: 11 },
       formatter: (params: any[]) => {
         const idx = params[0]?.dataIndex
         if (idx === undefined || idx < 0) return ''
@@ -191,38 +189,40 @@ const trendAccuracyOption = computed(() => {
         if (!p) return ''
         const trendMap: Record<string, string> = { up: '上涨', down: '下跌', neutral: '震荡' }
         let html = `<div style="font-weight:600;margin-bottom:4px">${p.date}</div>`
-        html += `<div>预测: <span style="color:${p.trend === 'up' ? '#00d4aa' : p.trend === 'down' ? '#ff4757' : '#8b92a8'}">${trendMap[p.trend] || p.trend}</span></div>`
+        html += `<div>预测: <span style="color:${p.trend === 'up' ? 'var(--color-up)' : p.trend === 'down' ? 'var(--color-down)' : 'var(--text-muted)'}">${trendMap[p.trend] || p.trend}</span></div>`
         const actualVal = actualTrendValues[idx]
         if (actualVal !== null && actualVal !== undefined) {
           const actualName = actualVal === 1 ? '上涨' : actualVal === -1 ? '下跌' : '震荡'
-          const actualColor = actualVal === 1 ? '#00d4aa' : actualVal === -1 ? '#ff4757' : '#8b92a8'
+          const actualColor = actualVal === 1 ? 'var(--color-up)' : actualVal === -1 ? 'var(--color-down)' : 'var(--text-muted)'
           html += `<div>实际: <span style="color:${actualColor}">${actualName}</span></div>`
         }
         const matchVal = matchData[idx]
         if (matchVal !== undefined && !isNaN(matchVal)) {
-          html += `<div>正确: <span style="color:${matchVal ? '#00d4aa' : '#ff4757'}">${matchVal ? '是' : '否'}</span></div>`
+          html += `<div>正确: <span style="color:${matchVal ? 'var(--color-up)' : 'var(--color-down)'}">${matchVal ? '是' : '否'}</span></div>`
         }
         return html
       },
     },
-    grid: { left: 40, right: 16, top: 36, bottom: 56 },
+    grid: { left: 40, right: 16, top: 40, bottom: 56 },
     xAxis: {
       type: 'category',
       data: dates,
-      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
-      axisLabel: { color: '#8b92a8', fontSize: 9, rotate: 45 },
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+      axisLabel: { color: '#475569', fontSize: 9, rotate: 45, fontFamily: 'SF Mono, JetBrains Mono, monospace' },
       axisTick: { show: false },
+      boundaryGap: true,
     },
     yAxis: {
       min: -0.5,
       max: 1.5,
       axisLine: { show: false },
       axisLabel: {
-        color: '#8b92a8',
+        color: '#475569',
         fontSize: 10,
+        fontFamily: 'SF Mono, JetBrains Mono, monospace',
         formatter: (v: number) => v <= 0 ? '错误' : '正确',
       },
-      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)', type: 'dashed' } },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)', type: [4, 4] } },
       axisTick: { show: false },
     },
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
@@ -231,7 +231,7 @@ const trendAccuracyOption = computed(() => {
       data: matchData.map((v, i) => ({
         value: isNaN(v) ? null : v,
         itemStyle: {
-          color: v === 1 ? '#00d4aa' : v === 0 ? '#ff4757' : 'rgba(139,146,168,0.3)',
+          color: v === 1 ? 'var(--color-up)' : v === 0 ? 'var(--color-down)' : 'var(--text-disabled)',
           opacity: 0.7,
         },
       })),
@@ -282,7 +282,12 @@ function exportCSV() {
 
 <template>
   <div class="backtest-view">
-    <h2 class="page-title">回测中心</h2>
+    <div class="page-header">
+      <div class="header-title">
+        <el-icon><DataAnalysis /></el-icon>
+        <span>回测中心</span>
+      </div>
+    </div>
 
     <div class="backtest-layout">
       <div class="config-panel">
@@ -316,7 +321,8 @@ function exportCSV() {
           </el-tab-pane>
         </el-tabs>
         <el-button type="primary" class="run-btn" :loading="store.loading" @click="runBacktest">
-          <el-icon><VideoPlay /></el-icon> 开始回测
+          <el-icon><VideoPlay /></el-icon>
+          <span>开始回测</span>
         </el-button>
       </div>
 
@@ -330,35 +336,36 @@ function exportCSV() {
           <div class="stats-grid">
             <div class="stat-card">
               <span class="stat-label">Day1命中率</span>
-              <span class="stat-value">{{ (store.result.statistics.day1_accuracy * 100).toFixed(1) }}%</span>
+              <span class="stat-value font-mono">{{ (store.result.statistics.day1_accuracy * 100).toFixed(1) }}%</span>
             </div>
             <div class="stat-card">
               <span class="stat-label">Day2命中率</span>
-              <span class="stat-value">{{ (store.result.statistics.day2_accuracy * 100).toFixed(1) }}%</span>
+              <span class="stat-value font-mono">{{ (store.result.statistics.day2_accuracy * 100).toFixed(1) }}%</span>
             </div>
             <div class="stat-card">
               <span class="stat-label">Day1趋势准确率</span>
-              <span class="stat-value">{{ (store.result.statistics.day1_trend_accuracy * 100).toFixed(1) }}%</span>
+              <span class="stat-value font-mono">{{ (store.result.statistics.day1_trend_accuracy * 100).toFixed(1) }}%</span>
             </div>
             <div class="stat-card">
               <span class="stat-label">Day2趋势准确率</span>
-              <span class="stat-value">{{ (store.result.statistics.day2_trend_accuracy * 100).toFixed(1) }}%</span>
+              <span class="stat-value font-mono">{{ (store.result.statistics.day2_trend_accuracy * 100).toFixed(1) }}%</span>
             </div>
             <div class="stat-card">
               <span class="stat-label">夏普比率</span>
-              <span class="stat-value">{{ store.result.statistics.sharpe_ratio.toFixed(2) }}</span>
+              <span class="stat-value font-mono">{{ store.result.statistics.sharpe_ratio.toFixed(2) }}</span>
             </div>
             <div class="stat-card">
               <span class="stat-label">最大回撤</span>
-              <span class="stat-value loss">{{ (store.result.statistics.max_drawdown * 100).toFixed(1) }}%</span>
+              <span class="stat-value loss font-mono">{{ (store.result.statistics.max_drawdown * 100).toFixed(1) }}%</span>
             </div>
           </div>
 
           <div class="chart-block">
             <div class="chart-header">
               <span class="chart-title">预测区间 vs 实际价格</span>
-              <el-button size="small" text @click="exportCSV">
-                <el-icon><Download /></el-icon> 导出CSV
+              <el-button size="small" text class="export-btn" @click="exportCSV">
+                <el-icon><Download /></el-icon>
+                <span>导出CSV</span>
               </el-button>
             </div>
             <v-chart class="chart chart-lg" :option="priceCompareOption" autoresize />
@@ -397,7 +404,7 @@ function exportCSV() {
               </el-table-column>
               <el-table-column label="涨跌幅" width="80">
                 <template #default="{ row }">
-                  <span v-if="row.actual_price != null && row.current_price != null" :style="{ color: ((row.actual_price - row.current_price) / row.current_price * 100) >= 0 ? '#00d4aa' : '#ff4757' }">
+                  <span v-if="row.actual_price != null && row.current_price != null" :style="{ color: ((row.actual_price - row.current_price) / row.current_price * 100) >= 0 ? 'var(--color-up)' : 'var(--color-down)' }">
                     {{ ((row.actual_price - row.current_price) / row.current_price * 100).toFixed(2) }}%
                   </span>
                   <span v-else>-</span>
@@ -440,24 +447,41 @@ function exportCSV() {
   margin: 0 auto;
 }
 
-.page-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #e0e6ed;
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.header-title .el-icon {
+  font-size: 22px;
+  color: var(--color-up);
 }
 
 .backtest-layout {
   display: grid;
   grid-template-columns: 380px 1fr;
-  gap: 24px;
+  gap: 20px;
 }
 
 .config-panel {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   padding: 20px;
+  height: fit-content;
 }
 
 .config-form {
@@ -465,24 +489,32 @@ function exportCSV() {
 }
 
 .code-editor :deep(.el-textarea__inner) {
-  font-family: 'Fira Code', 'Consolas', monospace;
+  font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 13px;
   line-height: 1.6;
-  background: rgba(0, 0, 0, 0.3);
-  border-color: rgba(255, 255, 255, 0.1);
-  color: #e0e6ed;
+  background: var(--bg-secondary);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
 }
 
 .run-btn {
   width: 100%;
-  background: linear-gradient(135deg, #00d4aa 0%, #00a8e8 100%);
-  border: none;
+  background: linear-gradient(135deg, var(--color-up) 0%, var(--color-accent) 100%) !important;
+  border: none !important;
   font-weight: 600;
   height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: var(--transition-base);
 }
 
 .run-btn:hover {
-  background: linear-gradient(135deg, #00e8bc 0%, #00b8f8 100%);
+  background: linear-gradient(135deg, #4db6ac 0%, #1e88e5 100%) !important;
+  box-shadow: 0 4px 16px rgba(0, 212, 170, 0.3) !important;
+  transform: translateY(-1px);
 }
 
 .result-panel {
@@ -494,16 +526,16 @@ function exportCSV() {
   align-items: center;
   gap: 12px;
   padding: 20px;
-  background: rgba(255, 71, 87, 0.1);
-  border: 1px solid rgba(255, 71, 87, 0.3);
-  border-radius: 12px;
-  color: #ff4757;
+  background: var(--color-down-dim);
+  border: 1px solid rgba(255, 71, 87, 0.2);
+  border-radius: var(--radius-md);
+  color: var(--color-down);
 }
 
 .result-content {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 .stats-grid {
@@ -513,35 +545,47 @@ function exportCSV() {
 }
 
 .stat-card {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  transition: var(--transition-fast);
+}
+
+.stat-card:hover {
+  border-color: var(--border-active);
 }
 
 .stat-label {
-  font-size: 12px;
-  color: #8b92a8;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 .stat-value {
   font-size: 20px;
   font-weight: 700;
-  color: #00d4aa;
+  color: var(--color-up);
+  letter-spacing: -0.02em;
 }
 
 .stat-value.loss {
-  color: #ff4757;
+  color: var(--color-down);
 }
 
 .chart-block {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   padding: 16px;
+  transition: var(--transition-fast);
+}
+
+.chart-block:hover {
+  border-color: var(--border-active);
 }
 
 .chart-header {
@@ -549,14 +593,27 @@ function exportCSV() {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .chart-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  color: #e0e6ed;
-  padding-left: 8px;
-  border-left: 3px solid #00d4aa;
+  color: var(--text-secondary);
+  padding-left: 10px;
+  border-left: 3px solid var(--color-up);
+  letter-spacing: 0.02em;
+}
+
+.export-btn {
+  color: var(--text-muted) !important;
+  font-size: 12px;
+}
+
+.export-btn:hover {
+  color: var(--color-up) !important;
+  background: rgba(0, 212, 170, 0.08) !important;
 }
 
 .chart {
@@ -569,9 +626,9 @@ function exportCSV() {
 }
 
 .predictions-table {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   padding: 16px;
 }
 
@@ -581,56 +638,48 @@ function exportCSV() {
   justify-content: center;
 }
 
-.dark-table :deep(.el-table) {
-  background: transparent;
-}
-
-.dark-table :deep(.el-table__header-wrapper th) {
-  background: rgba(255, 255, 255, 0.03);
-  color: #8b92a8;
-}
-
-.dark-table :deep(.el-table__row) {
-  background: transparent;
-  color: #e0e6ed;
-}
-
-.dark-table :deep(.el-table__row:hover td) {
-  background: rgba(255, 255, 255, 0.03);
-}
-
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 120px 20px;
-  color: #8b92a8;
+  color: var(--text-muted);
   text-align: center;
 }
 
 .empty-icon {
-  font-size: 64px;
-  margin-bottom: 24px;
-  color: rgba(0, 212, 170, 0.3);
+  font-size: 56px;
+  margin-bottom: 20px;
+  color: rgba(0, 212, 170, 0.2);
 }
 
 .empty-state h3 {
-  font-size: 20px;
-  color: #e0e6ed;
+  font-size: 18px;
+  color: var(--text-secondary);
   margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.empty-state p {
+  font-size: 13px;
 }
 
 .dark-tabs :deep(.el-tabs__item) {
-  color: #8b92a8;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 .dark-tabs :deep(.el-tabs__item.is-active) {
-  color: #00d4aa;
+  color: var(--color-up);
 }
 
 .dark-tabs :deep(.el-tabs__active-bar) {
-  background-color: #00d4aa;
+  background-color: var(--color-up);
+}
+
+.dark-tabs :deep(.el-tabs__nav-wrap::after) {
+  background-color: var(--border-subtle);
 }
 
 @media (max-width: 1200px) {

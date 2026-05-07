@@ -18,8 +18,22 @@ function navigate(path: string) {
 <template>
   <header class="nav-header">
     <div class="logo-section">
-      <el-icon class="logo-icon"><TrendCharts /></el-icon>
-      <span class="logo-text">StockQuery</span>
+      <div class="logo-icon">
+        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+          <rect width="32" height="32" rx="8" fill="url(#logoGrad)" opacity="0.15"/>
+          <path d="M8 22L14 14L18 18L24 8" stroke="url(#logoGrad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs>
+            <linearGradient id="logoGrad" x1="0" y1="0" x2="32" y2="32">
+              <stop stop-color="#26a69a"/>
+              <stop offset="1" stop-color="#42a5f5"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div class="logo-text">
+        <span class="logo-main">StockQuery</span>
+        <span class="logo-sub">量化分析系统</span>
+      </div>
     </div>
     <nav class="nav-menu">
       <div
@@ -29,28 +43,32 @@ function navigate(path: string) {
         :class="{ active: route.name === item.name }"
         @click="navigate(item.path)"
       >
-        <el-icon><component :is="item.icon" /></el-icon>
-        <span>{{ item.label }}</span>
+        <el-icon class="nav-icon"><component :is="item.icon" /></el-icon>
+        <span class="nav-label">{{ item.label }}</span>
+        <div v-if="route.name === item.name" class="nav-indicator" />
       </div>
     </nav>
     <div class="nav-right">
-      <el-icon class="theme-icon"><Moon /></el-icon>
+      <div class="market-status">
+        <span class="status-dot" />
+        <span class="status-text">交易中</span>
+      </div>
     </div>
   </header>
 </template>
 
 <style scoped>
 .nav-header {
-  height: 64px;
-  background: linear-gradient(135deg, #1a1f2e 0%, #0f1419 100%);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  height: 56px;
+  background: rgba(10, 14, 26, 0.85);
+  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
-  padding: 0 32px;
+  padding: 0 24px;
   position: sticky;
   top: 0;
   z-index: 1000;
-  backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px) saturate(1.2);
 }
 
 .logo-section {
@@ -61,47 +79,83 @@ function navigate(path: string) {
 }
 
 .logo-icon {
-  font-size: 28px;
-  color: #00d4aa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .logo-text {
-  font-size: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.logo-main {
+  font-size: 16px;
   font-weight: 700;
-  background: linear-gradient(135deg, #00d4aa 0%, #00a8e8 100%);
+  background: linear-gradient(135deg, var(--color-up) 0%, var(--color-accent) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  letter-spacing: -0.02em;
+}
+
+.logo-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+  letter-spacing: 0.08em;
 }
 
 .nav-menu {
   display: flex;
-  gap: 8px;
+  gap: 4px;
   flex: 1;
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 20px;
-  border-radius: 8px;
+  padding: 8px 18px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.3s ease;
-  color: #8b92a8;
-  font-size: 14px;
+  transition: var(--transition-base);
+  color: var(--text-muted);
+  font-size: 13px;
   font-weight: 500;
 }
 
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: #e0e6ed;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .nav-item.active {
-  background: rgba(0, 212, 170, 0.1);
-  color: #00d4aa;
-  box-shadow: 0 0 20px rgba(0, 212, 170, 0.1);
+  color: var(--color-up);
+  background: rgba(0, 212, 170, 0.06);
+}
+
+.nav-icon {
+  font-size: 16px;
+}
+
+.nav-label {
+  position: relative;
+  z-index: 1;
+}
+
+.nav-indicator {
+  position: absolute;
+  bottom: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--color-up), var(--color-accent));
+  border-radius: 1px;
+  box-shadow: 0 0 8px rgba(0, 212, 170, 0.4);
 }
 
 .nav-right {
@@ -110,25 +164,47 @@ function navigate(path: string) {
   gap: 16px;
 }
 
-.theme-icon {
-  font-size: 20px;
-  color: #8b92a8;
-  cursor: pointer;
-  transition: color 0.3s;
+.market-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(0, 212, 170, 0.08);
+  border: 1px solid rgba(0, 212, 170, 0.15);
+  border-radius: 20px;
 }
 
-.theme-icon:hover {
-  color: #e0e6ed;
+.status-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--color-up);
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(0, 212, 170, 0.5);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.status-text {
+  font-size: 11px;
+  color: var(--color-up);
+  font-weight: 600;
 }
 
 @media (max-width: 768px) {
   .nav-header {
     padding: 0 16px;
   }
-  .logo-text {
+  .logo-sub {
     display: none;
   }
-  .nav-item span {
+  .nav-label {
+    display: none;
+  }
+  .market-status {
     display: none;
   }
 }
