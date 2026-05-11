@@ -25,6 +25,7 @@ class StockAnalyzer:
         self.weights = config.get("analyzer", {}).get("weights", {})
         self.thresholds = config.get("analyzer", {}).get("thresholds", {})
         self.prediction_config = config.get("analyzer", {}).get("price_prediction", {})
+        self.validation_config = config.get("analyzer", {}).get("validation", {})
 
     def analyze_technical(self, indicators: Dict, current_price: float = 0) -> Dict:
         """分析技术指标"""

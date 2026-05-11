@@ -10,6 +10,28 @@ def _analyzer():
                 "weights": {"technical": 0.5, "fund_flow": 0.3, "sentiment": 0.2},
                 "thresholds": {"strong_buy": 0.7, "buy": 0.5, "hold": 0.3},
                 "price_prediction": {"atr_multiplier": 1.5},
+                "validation": {
+                    "score_thresholds": {
+                        "technical_bullish": 0.65,
+                        "technical_bearish": 0.35,
+                        "fund_bullish": 0.6,
+                        "fund_bearish": 0.4,
+                        "sentiment_bullish": 0.6,
+                        "sentiment_bearish": 0.4,
+                    },
+                    "vote_thresholds": {
+                        "bullish_consensus_margin": 3,
+                        "bearish_consensus_margin": 2,
+                    },
+                    "confidence_weights": {
+                        "signal": 0.4,
+                        "agreement": 0.6,
+                    },
+                    "conflict_penalty": {
+                        "per_conflict": 0.1,
+                        "max": 0.3,
+                    },
+                },
             }
         }
     )
@@ -533,6 +555,28 @@ def test_strong_buy_does_not_force_up_prediction_when_only_rsi_signal_overheated
     )
 
     assert prediction["day1"]["trend"] == "neutral"
+
+
+def test_validation_config_loaded():
+    """验证 validation 配置被正确加载到 analyzer"""
+    analyzer = _analyzer()
+    vcfg = analyzer.validation_config
+    assert "score_thresholds" in vcfg
+    assert "vote_thresholds" in vcfg
+    assert "confidence_weights" in vcfg
+    assert "conflict_penalty" in vcfg
+    assert vcfg["score_thresholds"]["technical_bullish"] == 0.65
+    assert vcfg["vote_thresholds"]["bullish_consensus_margin"] == 3
+    assert vcfg["confidence_weights"]["signal"] == 0.4
+    assert vcfg["conflict_penalty"]["per_conflict"] == 0.1
+
+
+def test_validation_config_fallback():
+    """验证缺少字段时回退到默认值"""
+    empty_config = {"analyzer": {"validation": {}}}
+    a = StockAnalyzer(empty_config)
+    vcfg = a.validation_config
+    assert vcfg == {}
 
 
 def test_strong_buy_does_not_force_up_prediction_when_only_kdj_overheated():
