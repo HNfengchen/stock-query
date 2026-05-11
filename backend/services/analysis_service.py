@@ -174,6 +174,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     price_prediction = analysis.get("price_prediction", {})
     position_strategy = analysis.get("position_strategy", {})
     analysis_data = analysis.get("analysis", {})
+    validation = analysis.get("validation", {})
 
     result = {
         "stock_code": stock_code,
@@ -190,11 +191,14 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
             "score": clean_float(trading_signal.get("score", 0)),
             "signal": trading_signal.get("signal", "hold"),
             "signal_text": trading_signal.get("signal_text", "持有"),
+            "reason": trading_signal.get("reason", ""),
         },
         "price_prediction": {
             "current": clean_float(price_prediction.get("current")),
             "support": clean_float(price_prediction.get("support")),
             "resistance": clean_float(price_prediction.get("resistance")),
+            "validation_confidence": clean_float(price_prediction.get("validation_confidence")),
+            "validation_note": price_prediction.get("validation_note", ""),
             "day1": {
                 "target_low": clean_float(price_prediction.get("day1", {}).get("target_low")),
                 "target_high": clean_float(price_prediction.get("day1", {}).get("target_high")),
@@ -210,6 +214,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
         },
         "indicators": _clean_indicators(indicators),
         "position_strategy": clean_nested(position_strategy),
+        "validation": clean_nested(validation),
         "stock_info": {k: clean_float(v) for k, v in info.items()},
         "charts": charts,
     }

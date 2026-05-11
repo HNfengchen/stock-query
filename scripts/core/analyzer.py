@@ -500,6 +500,220 @@ class StockAnalyzer:
             "signal_text": signal_text_map.get(signal, "观望"),
         }
 
+    def _safe_score(self, value, default: float = 0.5) -> float:
+        """安全读取 0-1 区间评分"""
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return default
+        if pd.isna(score):
+            return default
+        return max(0.0, min(1.0, score))
+
+    def _latest_indicator_value(self, value, default=None):
+        """安全读取指标最新值"""
+        if value is None:
+            return default
+        try:
+            if hasattr(value, "iloc"):
+                value = value.iloc[-1]
+            if pd.isna(value):
+                return default
+            return value
+        except (IndexError, TypeError, ValueError):
+            return default
+
+    def cross_validate_analysis(
+        self,
+        analysis: Dict,
+        price_prediction: Dict,
+        indicators: Dict,
+        trading_signal: Optional[Dict] = None,
+        position_status: str = "未持有",
+        current_price: float = 0,
+    ) -> Dict:
+        """
+        对分析结论进行交叉验证，返回可解释的一致性、风控与行动门控结果。
+
+        参数:
+            analysis: 技术、资金、情绪分析结果
+            price_prediction: 价格预测结果
+            indicators: 技术指标结果
+            trading_signal: 交易信号结果
+            position_status: 持仓状态
+            current_price: 当前价格
+
+        返回:
+            dict: 交叉验证结果
+        """
+        trading_signal = trading_signal or {}
+        supporting_factors = []
+        opposing_factors = []
+        conflicts = []
+
+        technical_score = self._safe_score(
+            analysis.get("technical", {}).get("score"), default=0.5
+        )
+        fund_flow = analysis.get("fund_flow", {})
+        fund_score = self._safe_score(fund_flow.get("score"), default=0.5)
+        sentiment_score = self._safe_score(
+            analysis.get("sentiment", {}).get("score"), default=0.5
+        )
+        signal_score = self._safe_score(trading_signal.get("score"), default=0.5)
+
+        bullish_votes = 0
+        bearish_votes = 0
+
+        if technical_score >= 0.65:
+            bullish_votes += 1
+            supporting_factors.append("技术评分偏强")
+        elif technical_score <= 0.35:
+            bearish_votes += 1
+            opposing_factors.append("技术评分偏弱")
+
+        fund_trend = fund_flow.get("trend", "neutral")
+        if fund_score >= 0.6 or fund_trend == "inflow":
+            bullish_votes += 1
+            supporting_factors.append("资金流入支持")
+        elif fund_score <= 0.4 or fund_trend == "outflow":
+            bearish_votes += 1
+            opposing_factors.append("资金流出压制")
+
+        if sentiment_score >= 0.6:
+            bullish_votes += 1
+            supporting_factors.append("市场情绪偏暖")
+        elif sentiment_score <= 0.4:
+            bearish_votes += 1
+            opposing_factors.append("市场情绪偏弱")
+
+        prediction_trends = [
+            price_prediction.get("day1", {}).get("trend"),
+            price_prediction.get("day2", {}).get("trend"),
+        ]
+        up_predictions = prediction_trends.count("up")
+        down_predictions = prediction_trends.count("down")
+        if up_predictions >= 2:
+            bullish_votes += 1
+            supporting_factors.append("短线价格预测向上")
+        elif down_predictions >= 1:
+            bearish_votes += 1
+            opposing_factors.append("短线价格预测承压")
+
+        macd_signal = indicators.get("MACD", {}).get("signal", "")
+        if macd_signal in ("金叉", "金叉确认", "多头"):
+            bullish_votes += 1
+            supporting_factors.append(f"MACD{macd_signal}")
+        elif macd_signal in ("死叉", "死叉确认", "空头"):
+            bearish_votes += 1
+            opposing_factors.append(f"MACD{macd_signal}")
+
+        kdj_signal = indicators.get("KDJ", {}).get("signal", "")
+        if kdj_signal in ("金叉", "超卖"):
+            bullish_votes += 1
+            supporting_factors.append(f"KDJ{kdj_signal}")
+        elif kdj_signal in ("死叉", "超买"):
+            bearish_votes += 1
+            opposing_factors.append(f"KDJ{kdj_signal}")
+
+        rsi_12 = indicators.get("RSI", {}).get("RSI(12)", {})
+        if isinstance(rsi_12, dict):
+            rsi_latest = self._latest_indicator_value(rsi_12.get("latest"))
+            rsi_signal = rsi_12.get("signal", "")
+        else:
+            rsi_latest = self._latest_indicator_value(rsi_12)
+            rsi_signal = ""
+        try:
+            rsi_value = float(rsi_latest) if rsi_latest is not None else None
+            if rsi_value is not None and rsi_value >= 70:
+                bearish_votes += 1
+                opposing_factors.append("RSI接近超买")
+            elif rsi_value is not None and rsi_value <= 30:
+                bullish_votes += 1
+                supporting_factors.append("RSI接近超卖反弹区")
+            elif rsi_signal == "偏强":
+                bullish_votes += 1
+                supporting_factors.append("RSI偏强")
+            elif rsi_signal == "偏弱":
+                bearish_votes += 1
+                opposing_factors.append("RSI偏弱")
+        except (TypeError, ValueError):
+            pass
+
+        boll_latest = indicators.get("BOLL", {}).get("latest", {})
+        if isinstance(boll_latest, dict) and current_price:
+            upper = self._latest_indicator_value(boll_latest.get("upper"))
+            lower = self._latest_indicator_value(boll_latest.get("lower"))
+            try:
+                upper = float(upper) if upper is not None else None
+                lower = float(lower) if lower is not None else None
+                if upper is not None and current_price >= upper:
+                    bearish_votes += 1
+                    opposing_factors.append("价格接近布林上轨")
+                elif lower is not None and current_price <= lower:
+                    bullish_votes += 1
+                    supporting_factors.append("价格接近布林下轨")
+            except (TypeError, ValueError):
+                pass
+
+        if technical_score >= 0.65 and (fund_score <= 0.4 or fund_trend == "outflow"):
+            conflicts.append("技术偏强但资金未确认")
+        if signal_score >= 0.7 and down_predictions > 0:
+            conflicts.append("交易信号偏强但价格预测转弱")
+        if signal_score < 0.5 and bullish_votes >= 3:
+            conflicts.append("多项指标偏多但综合信号未确认")
+
+        if bullish_votes >= bearish_votes + 3:
+            direction_consensus = "bullish"
+        elif bearish_votes >= bullish_votes + 2:
+            direction_consensus = "bearish"
+        else:
+            direction_consensus = "mixed"
+
+        conflict_penalty = min(0.3, len(conflicts) * 0.1)
+        agreement_total = bullish_votes + bearish_votes
+        agreement_ratio = (
+            max(bullish_votes, bearish_votes) / agreement_total
+            if agreement_total > 0
+            else 0.5
+        )
+        confidence = (signal_score * 0.4) + (agreement_ratio * 0.6) - conflict_penalty
+        confidence = round(max(0.0, min(1.0, confidence)), 3)
+
+        if conflicts or direction_consensus == "mixed":
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+        if len(conflicts) >= 2 or direction_consensus == "bearish":
+            risk_level = "high"
+
+        signal = trading_signal.get("signal", "hold")
+        if position_status == "未持有":
+            if signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= 0.7:
+                action_gate = "allow_buy"
+            else:
+                action_gate = "avoid_buy"
+        elif direction_consensus == "bearish" and risk_level == "high":
+            action_gate = "reduce_position"
+        else:
+            action_gate = "hold_position"
+
+        validation_note = (
+            f"方向{direction_consensus}，置信度{confidence:.3f}，风险{risk_level}。"
+            f"支持因素{len(supporting_factors)}项，反对因素{len(opposing_factors)}项，"
+            f"冲突{len(conflicts)}项。"
+        )
+
+        return {
+            "direction_consensus": direction_consensus,
+            "action_gate": action_gate,
+            "risk_level": risk_level,
+            "confidence": confidence,
+            "supporting_factors": supporting_factors,
+            "opposing_factors": opposing_factors,
+            "conflicts": conflicts,
+            "validation_note": validation_note,
+        }
+
     def get_limit_pct(self, stock_code: str, stock_name: str = "") -> float:
         """根据股票代码和名称获取涨跌停比例
 
@@ -518,7 +732,13 @@ class StockAnalyzer:
         else:
             return 0.10
 
-    def predict_price_range(self, data: Dict, indicators: Dict, stock_code: str = "") -> Dict:
+    def predict_price_range(
+        self,
+        data: Dict,
+        indicators: Dict,
+        stock_code: str = "",
+        trading_signal: Dict = None,
+    ) -> Dict:
         """预测价格区间（含未来两天预测，涨跌停校验）"""
         analyzer_logger.info("=" * 50)
         analyzer_logger.info("开始价格预测...")
@@ -632,6 +852,35 @@ class StockAnalyzer:
             trend = "up"
         elif tech_score < 0.4:
             trend = "down"
+
+        trading_signal = trading_signal or {}
+        signal_name = trading_signal.get("signal", "")
+        signal_score = self._safe_score(trading_signal.get("score"), default=0.5)
+        rsi_12_data = indicators.get("RSI", {}).get("RSI(12)", {})
+        rsi_12_signal = rsi_12_data.get("signal", "") if isinstance(rsi_12_data, dict) else ""
+        rsi_12_value = None
+        if isinstance(rsi_12_data, dict):
+            rsi_12_value = rsi_12_data.get("latest")
+        else:
+            rsi_12_value = rsi_12_data
+        rsi_12_value = self._latest_indicator_value(rsi_12_value)
+        kdj_signal_for_risk = (
+            indicators.get("KDJ", {}).get("signal", "")
+            if isinstance(indicators.get("KDJ"), dict)
+            else ""
+        )
+        has_overheat_risk = (
+            rsi_12_signal == "超买"
+            or (rsi_12_value is not None and rsi_12_value >= 70)
+            or kdj_signal_for_risk == "超买"
+        )
+
+        if signal_name in ("strong_buy", "buy") and tech_score >= 0.5 and not has_overheat_risk:
+            trend = "up"
+        elif signal_name in ("sell", "watch") and tech_score <= 0.5:
+            trend = "down"
+        elif signal_score >= 0.7 and tech_score >= 0.5 and not has_overheat_risk:
+            trend = "up"
 
         trend_strength = abs(tech_score - 0.5) / 0.5 if tech_score != 0.5 else 0
 
@@ -843,21 +1092,35 @@ class StockAnalyzer:
         }
 
         trading_signal = self.generate_trading_signal(analysis, position_status)
-        price_prediction = self.predict_price_range(all_data, indicators, stock_code)
+        price_prediction = self.predict_price_range(
+            all_data, indicators, stock_code, trading_signal
+        )
+        validation = self.cross_validate_analysis(
+            analysis,
+            price_prediction,
+            indicators,
+            trading_signal,
+            position_status,
+            current_price,
+        )
+        trading_signal["reason"] = validation.get("validation_note", "")
+        price_prediction["validation_confidence"] = validation.get("confidence", 0.5)
+        price_prediction["validation_note"] = validation.get("validation_note", "")
 
         if position_status == "已持有":
             position_strategy = self.generate_position_strategy(
-                all_data, indicators, current_price, cost_price, trading_signal
+                all_data, indicators, current_price, cost_price, trading_signal, validation
             )
         else:
             position_strategy = self.generate_buy_strategy(
-                all_data, indicators, current_price, trading_signal
+                all_data, indicators, current_price, trading_signal, validation
             )
 
         return {
             "analysis": analysis,
             "trading_signal": trading_signal,
             "price_prediction": price_prediction,
+            "validation": validation,
             "indicators": indicators,
             "position_strategy": position_strategy,
             "position_status": position_status,
@@ -870,8 +1133,10 @@ class StockAnalyzer:
         current_price: float,
         cost_price: float = None,
         trading_signal: Dict = None,
+        validation: Dict = None,
     ) -> Dict:
         """生成持仓策略（已持有时使用）"""
+        validation = validation or {}
         history_df = all_data.get("history_data")
 
         if cost_price:
@@ -950,9 +1215,15 @@ class StockAnalyzer:
             stop_price = current_price * (1 + stop_loss_pct / 100)
 
         signal_name = trading_signal.get("signal", "hold") if trading_signal else "hold"
+        action_gate = validation.get("action_gate", "")
+        direction_consensus = validation.get("direction_consensus", "")
 
-        if signal_name == "sell":
+        if action_gate in ("reduce", "reduce_position") or signal_name == "sell":
             position_adjust = "建议减仓"
+        elif validation and direction_consensus != "bullish":
+            position_adjust = "继续持有，等待趋势确认"
+        elif signal_name in ("strong_buy", "buy") and direction_consensus and direction_consensus != "bullish":
+            position_adjust = "继续持有，等待趋势确认"
         elif signal_name == "strong_buy":
             position_adjust = "可考虑加仓"
         elif rsi_value and rsi_value > 80:
@@ -976,6 +1247,8 @@ class StockAnalyzer:
             "stop_loss_pct": stop_loss_pct,
             "position_adjust": position_adjust,
             "cost_provided": cost_price is not None,
+            "validation_note": validation.get("validation_note", ""),
+            "validation_risk_level": validation.get("risk_level", ""),
             "reason": self._generate_position_reason(
                 macd_signal, rsi_value, kdj_signal, price_change
             ),
@@ -1005,9 +1278,15 @@ class StockAnalyzer:
         return "; ".join(reasons) if reasons else "无明显信号"
 
     def generate_buy_strategy(
-        self, all_data: Dict, indicators: Dict, current_price: float, trading_signal: Dict = None
+        self,
+        all_data: Dict,
+        indicators: Dict,
+        current_price: float,
+        trading_signal: Dict = None,
+        validation: Dict = None,
     ) -> Dict:
         """生成买入策略（未持有时使用）"""
+        validation = validation or {}
         history_df = all_data.get("history_data")
 
         macd = indicators.get("MACD", {})
@@ -1017,9 +1296,19 @@ class StockAnalyzer:
 
         macd_signal = macd.get("signal", "")
         rsi_data = rsi.get("RSI(12)", {})
-        rsi_value = rsi_data.get("latest") if isinstance(rsi_data, dict) else None
-        if rsi_value is None and hasattr(rsi_data.get("series"), "iloc"):
-            rsi_value = rsi_data.get("series").iloc[-1]
+        if isinstance(rsi_data, dict):
+            rsi_value = rsi_data.get("latest")
+            series = rsi_data.get("series")
+            if rsi_value is None and hasattr(series, "iloc"):
+                rsi_value = series.iloc[-1]
+        else:
+            rsi_value = rsi_data
+        if hasattr(rsi_value, "iloc"):
+            rsi_value = rsi_value.iloc[-1]
+        try:
+            rsi_value = float(rsi_value) if rsi_value is not None else None
+        except (TypeError, ValueError):
+            rsi_value = None
         kdj_signal = kdj.get("signal", "") if isinstance(kdj, dict) else ""
 
         # 统一使用新格式访问BOLL
@@ -1051,11 +1340,28 @@ class StockAnalyzer:
         elif isinstance(atr, (int, float)):
             atr_value = float(atr)
 
+        signal_name = trading_signal.get("signal", "hold") if trading_signal else "hold"
+        action_gate = validation.get("action_gate", "")
+        validation_risk_level = validation.get("risk_level", "")
         buy_timing = "不建议买入"
         total_score = trading_signal.get("score", 0) if trading_signal else 0
-        if tech_score >= 0.7 or total_score >= 0.7:
+        if validation and action_gate != "allow_buy":
+            if signal_name in ("strong_buy", "buy"):
+                buy_timing = "等待确认"
+            else:
+                buy_timing = "不建议买入"
+        elif validation_risk_level == "high" or action_gate == "avoid_buy":
+            if signal_name in ("strong_buy", "buy"):
+                buy_timing = "等待确认"
+            else:
+                buy_timing = "不建议买入"
+        elif signal_name == "strong_buy" and validation_risk_level != "high":
             buy_timing = "建议买入"
-        elif total_score >= 0.5:
+        elif signal_name == "buy" and validation_risk_level != "high":
+            buy_timing = "可考虑买入"
+        elif validation_risk_level != "high" and (tech_score >= 0.7 or total_score >= 0.7):
+            buy_timing = "建议买入"
+        elif validation_risk_level != "high" and total_score >= 0.5:
             buy_timing = "可考虑买入"
         elif macd_signal in ("金叉", "金叉确认", "多头"):
             buy_timing = "建议买入"
@@ -1102,7 +1408,9 @@ class StockAnalyzer:
             "buy_timing": buy_timing,
             "position_size_pct": round(position_size, 1),
             "stop_loss_price": round(risk_price, 2),
+            "validation_note": validation.get("validation_note", ""),
             "risk_level": risk_level,
+            "validation_risk_level": validation.get("risk_level", ""),
             "risk_control": self._generate_risk_control(
                 macd_signal, rsi_value, kdj_signal, upper, lower
             ),

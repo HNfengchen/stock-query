@@ -25,6 +25,7 @@ export interface TradingSignal {
   score: number
   signal: string
   signal_text: string
+  reason?: string
 }
 
 export interface PricePredictionDay {
@@ -40,6 +41,19 @@ export interface PricePrediction {
   resistance: number | null
   day1: PricePredictionDay
   day2: PricePredictionDay
+  validation_confidence?: number | null
+  validation_note?: string
+}
+
+export interface AnalysisValidation {
+  direction_consensus: string
+  confidence: number
+  risk_level: string
+  action_gate: string
+  supporting_factors: string[]
+  opposing_factors: string[]
+  conflicts: string[]
+  validation_note: string
 }
 
 export interface PositionStrategyHeld {
@@ -112,6 +126,7 @@ export interface AnalysisResult {
   }
   trading_signal: TradingSignal
   price_prediction: PricePrediction
+  validation?: AnalysisValidation
   indicators: Record<string, any>
   position_strategy: PositionStrategyHeld | PositionStrategyNotHeld | Record<string, any>
   stock_info: Record<string, any>
