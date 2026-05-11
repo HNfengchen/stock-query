@@ -318,7 +318,7 @@ function exportCSV() {
                   <el-input-number v-model="form.params!.atr_multiplier" :precision="1" :step="0.1" :min="0.1" />
                 </el-form-item>
                 <el-form-item label="回看天数">
-                  <el-input-number v-model="form.params!.lookback_days" :step="5" :min="10" :max="252" />
+                  <el-input-number v-model="form.params!.lookback_days" :step="5" :min="30" :max="252" />
                 </el-form-item>
               </el-form>
             </div>

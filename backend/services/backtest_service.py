@@ -19,12 +19,54 @@ def get_history_data(stock_code: str, days: int = 120) -> pd.DataFrame:
     return fetcher.fetch_history_data(stock_code, days)
 
 
-def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict:
-    df = get_history_data(stock_code, days=120)
-    if df is None or df.empty or len(df) < 70:
-        raise ValueError(f"无法获取 {stock_code} 的足够历史数据")
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return default
+        return numeric
+    except (TypeError, ValueError):
+        return default
 
-    atr_multiplier = (params or {}).get("atr_multiplier", 1.5)
+
+def _parse_lookback_days(value) -> int:
+    if value is None:
+        return 60
+    if isinstance(value, bool):
+        raise ValueError("回看天数必须是整数")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        raise ValueError("回看天数必须是整数")
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+        raise ValueError("回看天数必须是整数")
+    raise ValueError("回看天数必须是整数")
+
+
+def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict:
+    params = params or {}
+    try:
+        atr_multiplier = float(params.get("atr_multiplier", 1.5))
+    except (TypeError, ValueError):
+        raise ValueError("ATR乘数必须是有效数字")
+
+    lookback_days = _parse_lookback_days(params.get("lookback_days", 60))
+
+    if not 30 <= lookback_days <= 252:
+        raise ValueError("回看天数必须在 30 到 252 之间")
+
+    history_days = max(120, lookback_days + 10)
+    df = get_history_data(stock_code, days=history_days)
+    minimum_rows = lookback_days + 10
+    if df is None or df.empty or len(df) < minimum_rows:
+        raise ValueError(f"无法获取 {stock_code} 的足够历史数据")
 
     backtester = Backtester(atr_multiplier=atr_multiplier, stock_code=stock_code)
 
@@ -34,38 +76,62 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
         df_sorted = df_sorted.sort_values("日期")
         df_sorted = df_sorted.set_index("日期")
 
-    all_predictions = backtester.calculate_predictions(df_sorted)
+    all_predictions = backtester.calculate_predictions(
+        df_sorted, lookback_days=lookback_days
+    )
     if not all_predictions:
         raise ValueError("数据量不足，无法回测")
 
     stats = backtester.evaluate_predictions(all_predictions)
+    if not isinstance(stats, dict):
+        stats = {}
 
     equity_curve = []
     equity = 1.0
-    prev_trend = None
     position_size = 0.3
     commission_rate = 0.00025
     stamp_duty_rate = 0.0005
     slippage = 0.001
+    # 当前使用简化总成本率，后续可按买卖方向拆分手续费和印花税。
     total_cost_rate = commission_rate + stamp_duty_rate + slippage
+    previous_position = 0.0
+    daily_returns = []
+    total_turnover = 0.0
+    total_cost = 0.0
+    trades = 0
+    profitable_day_count = 0
 
     for p in all_predictions:
-        current = p.get("current_price", 0)
-        actual = p.get("actual_day1")
+        current = _safe_float(p.get("current_price"))
+        actual_value = p.get("actual_day1")
+        actual = _safe_float(actual_value) if actual_value is not None else None
         trend = p.get("trend", "neutral")
+        target_position = position_size if trend == "up" else 0.0
+        turnover = abs(target_position - previous_position)
+        cost = turnover * total_cost_rate
+        price_return = 0.0
 
         if actual is not None and current > 0:
-            ret = (actual - current) / current
-            if trend != prev_trend:
-                cost = abs(ret) * position_size * total_cost_rate
-                equity *= (1 + ret * position_size - cost)
-            else:
-                equity *= (1 + ret * position_size)
-            prev_trend = trend
+            price_return = (actual - current) / current
+
+        daily_return = target_position * price_return - cost
+        equity *= (1 + daily_return)
+        previous_position = target_position
+        daily_returns.append(daily_return)
+        total_turnover += turnover
+        total_cost += cost
+        if turnover > 0:
+            trades += 1
+        if daily_return > 0:
+            profitable_day_count += 1
 
         equity_curve.append({
             "date": str(p.get("date", ""))[:10],
             "value": round(equity, 4),
+            "position": round(float(target_position), 4),
+            "daily_return": round(float(daily_return), 4),
+            "turnover": round(float(turnover), 4),
+            "cost": round(float(cost), 4),
         })
 
     prediction_rows = []
@@ -80,16 +146,14 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
         prediction_rows.append({
             "date": str(p.get("date", ""))[:10],
             "trend": trend,
-            "predicted_low": round(float(day1.get("low", 0)), 2),
-            "predicted_high": round(float(day1.get("high", 0)), 2),
-            "actual_price": round(float(actual), 2) if actual is not None else None,
-            "current_price": round(float(current), 2) if current is not None else None,
+            "predicted_low": round(_safe_float(day1.get("low")), 2),
+            "predicted_high": round(_safe_float(day1.get("high")), 2),
+            "actual_price": round(_safe_float(actual), 2) if actual is not None else None,
+            "current_price": round(_safe_float(current), 2) if current is not None else None,
             "hit": hit,
         })
 
-    returns = [(equity_curve[i]["value"] - equity_curve[i - 1]["value"]) / equity_curve[i - 1]["value"]
-               for i in range(1, len(equity_curve)) if equity_curve[i - 1]["value"] > 0]
-    sharpe = (np.mean(returns) / np.std(returns) * np.sqrt(252)) if returns and np.std(returns) > 0 else 0
+    sharpe = (np.mean(daily_returns) / np.std(daily_returns) * np.sqrt(252)) if daily_returns and np.std(daily_returns) > 0 else 0
 
     max_dd = 0
     peak = 1.0
@@ -104,16 +168,30 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
     result = {
         "stock_code": stock_code,
         "statistics": {
-            "day1_accuracy": round(float(stats.get("day1_hit_rate", 0)) / 100, 4),
-            "day2_accuracy": round(float(stats.get("day2_hit_rate", 0)) / 100, 4),
-            "day1_trend_accuracy": round(float(stats.get("day1_trend_accuracy", 0)) / 100, 4),
-            "day2_trend_accuracy": round(float(stats.get("day2_trend_accuracy", 0)) / 100, 4),
+            "day1_accuracy": round(_safe_float(stats.get("day1_hit_rate")) / 100, 4),
+            "day2_accuracy": round(_safe_float(stats.get("day2_hit_rate")) / 100, 4),
+            "day1_trend_accuracy": round(_safe_float(stats.get("day1_trend_accuracy")) / 100, 4),
+            "day2_trend_accuracy": round(_safe_float(stats.get("day2_trend_accuracy")) / 100, 4),
             "sharpe_ratio": round(float(sharpe), 4),
             "max_drawdown": round(float(-max_dd), 4),
-            "total_predictions": stats.get("total_predictions", 0),
+            "total_predictions": int(_safe_float(stats.get("total_predictions"))),
+            "mean_width_pct": round(_safe_float(stats.get("mean_width_pct")), 4),
+            "median_width_pct": round(_safe_float(stats.get("median_width_pct")), 4),
+            "midpoint_mae_pct": round(_safe_float(stats.get("midpoint_mae_pct")), 4),
+            "coverage_width_score": round(_safe_float(stats.get("coverage_width_score")), 4),
+            "total_return": round(float(equity - 1), 4),
+            "total_cost": round(float(total_cost), 4),
+            "turnover": round(float(total_turnover), 4),
+            "trades": trades,
+            # win_rate 表示正收益预测日占比，不是闭合交易胜率。
+            "win_rate": round(float(profitable_day_count / len(daily_returns)), 4) if daily_returns else 0,
         },
         "predictions": prediction_rows,
         "equity_curve": equity_curve,
+        "effective_params": {
+            "atr_multiplier": atr_multiplier,
+            "lookback_days": lookback_days,
+        },
     }
 
     return sanitize_for_json(result)

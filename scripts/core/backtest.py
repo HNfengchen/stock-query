@@ -241,6 +241,8 @@ class Backtester:
         day2_in_range = 0
         day2_correct_trend = 0
         total = len(predictions)
+        width_pct_values = []
+        midpoint_mae_pct_values = []
 
         for p in predictions:
             current = p["current_price"]
@@ -248,25 +250,35 @@ class Backtester:
             day1_low = p["day1"]["low"]
             actual_day1 = p["actual_day1"]
 
+            if current and current > 0 and day1_high is not None and day1_low is not None:
+                width_pct = (day1_high - day1_low) / current
+                if width_pct >= 0:
+                    width_pct_values.append(width_pct)
+                    if actual_day1 is not None:
+                        midpoint = (day1_high + day1_low) / 2
+                        midpoint_mae_pct_values.append(abs(actual_day1 - midpoint) / current)
+
             day2_high = p["day2"]["high"]
             day2_low = p["day2"]["low"]
             actual_day2 = p["actual_day2"]
 
             trend = p["trend"]
 
-            if actual_day1 is not None:
+            if actual_day1 is not None and day1_low is not None and day1_high is not None:
                 if day1_low <= actual_day1 <= day1_high:
                     day1_in_range += 1
+            if actual_day1 is not None and current is not None and current > 0:
                 if trend == "up" and actual_day1 > current:
                     day1_correct_trend += 1
                 elif trend == "down" and actual_day1 < current:
                     day1_correct_trend += 1
-                elif trend == "neutral" and current > 0 and abs(actual_day1 - current) / current < 0.02:
+                elif trend == "neutral" and abs(actual_day1 - current) / current < 0.02:
                     day1_correct_trend += 1
 
-            if actual_day2 is not None:
+            if actual_day2 is not None and day2_low is not None and day2_high is not None:
                 if day2_low <= actual_day2 <= day2_high:
                     day2_in_range += 1
+            if actual_day2 is not None and current is not None and current > 0:
                 if p.get("day2_trend") == "up" and actual_day2 > current:
                     day2_correct_trend += 1
                 elif p.get("day2_trend") == "down" and actual_day2 < current:
@@ -276,6 +288,10 @@ class Backtester:
         day2_hits = day2_in_range / total if total > 0 else 0
         day1_trend_acc = day1_correct_trend / total if total > 0 else 0
         day2_trend_acc = day2_correct_trend / total if total > 0 else 0
+        mean_width_pct = float(np.mean(width_pct_values)) if width_pct_values else 0.0
+        median_width_pct = float(np.median(width_pct_values)) if width_pct_values else 0.0
+        midpoint_mae_pct = float(np.mean(midpoint_mae_pct_values)) if midpoint_mae_pct_values else 0.0
+        coverage_width_score = day1_hits - mean_width_pct
 
         return {
             "total_predictions": total,
@@ -283,6 +299,10 @@ class Backtester:
             "day2_hit_rate": round(day2_hits * 100, 1),
             "day1_trend_accuracy": round(day1_trend_acc * 100, 1),
             "day2_trend_accuracy": round(day2_trend_acc * 100, 1),
+            "mean_width_pct": round(mean_width_pct, 4),
+            "median_width_pct": round(median_width_pct, 4),
+            "midpoint_mae_pct": round(midpoint_mae_pct, 4),
+            "coverage_width_score": round(coverage_width_score, 4),
             "predictions": predictions[-20:] if len(predictions) > 20 else predictions,
         }
 

@@ -135,6 +135,10 @@ export interface BacktestRequest {
 
 export interface BacktestResult {
   stock_code: string
+  effective_params?: {
+    atr_multiplier: number
+    lookback_days: number
+  }
   statistics: {
     day1_accuracy: number
     day2_accuracy: number
@@ -142,19 +146,33 @@ export interface BacktestResult {
     day2_trend_accuracy: number
     sharpe_ratio: number
     max_drawdown: number
+    total_predictions?: number
+    mean_width_pct?: number
+    median_width_pct?: number
+    midpoint_mae_pct?: number
+    coverage_width_score?: number
+    total_return?: number
+    total_cost?: number
+    turnover?: number
+    trades?: number
+    win_rate?: number
   }
   predictions: Array<{
     date: string
     trend: string
     predicted_low: number
     predicted_high: number
-    actual_price: number
+    actual_price: number | null
     current_price: number | null
     hit: boolean
   }>
   equity_curve: Array<{
     date: string
     value: number
+    position?: number
+    daily_return?: number
+    turnover?: number
+    cost?: number
   }>
 }
 

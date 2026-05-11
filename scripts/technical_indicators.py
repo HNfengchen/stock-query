@@ -497,7 +497,7 @@ def calculate_volume_ratio(volume: Union[List, pd.Series], n: int = 5) -> Dict:
         return {"volume_ratio": None, "status": "数据不足"}
 
     today_volume = volumes.iloc[-1]
-    avg_volume = volumes.iloc[-n:].mean()
+    avg_volume = volumes.iloc[-n - 1 : -1].mean()
 
     if avg_volume > 0:
         vr = today_volume / avg_volume
