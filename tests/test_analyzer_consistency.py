@@ -579,7 +579,7 @@ def test_validation_config_fallback():
     assert vcfg == {}
 
 
-def test_cross_validate_uses_config_thresholds(analyzer):
+def test_cross_validate_uses_config_thresholds():
     """验证不同的 config 值产生不同的 cross_validate 结果"""
     base_analysis = {"technical": {"score": 0.7}, "fund_flow": {"score": 0.7, "trend": "inflow"}, "sentiment": {"score": 0.7}}
     base_prediction = {"day1": {"trend": "up"}, "day2": {"trend": "up"}}
@@ -587,7 +587,7 @@ def test_cross_validate_uses_config_thresholds(analyzer):
     base_signal = {"signal": "strong_buy", "score": 0.9}
 
     # 严格 config：较高门槛
-    strict_result = analyzer.cross_validate_analysis(
+    strict_result = _analyzer().cross_validate_analysis(
         base_analysis, base_prediction, base_indicators, base_signal, "未持有", 100
     )
 
@@ -618,7 +618,7 @@ def test_cross_validate_uses_config_thresholds(analyzer):
     assert risk_order.get(loose_result["risk_level"], 1) <= risk_order.get(strict_result["risk_level"], 1)
 
 
-def test_cross_validate_uses_config_vote_margins(analyzer):
+def test_cross_validate_uses_config_vote_margins():
     """验证不同的投票门槛影响 direction_consensus"""
     from scripts.core.analyzer import StockAnalyzer
 
@@ -642,7 +642,7 @@ def test_cross_validate_uses_config_vote_margins(analyzer):
         analysis, prediction, indicators, signal, "未持有", 100
     )
     # 极低多头门槛下，方向应为 bullish 或 mixed
-    assert low_result["direction_consensus"] in ("bullish", "mixed")
+    assert low_result["direction_consensus"] == "bullish"
 
 
 def test_strong_buy_does_not_force_up_prediction_when_only_kdj_overheated():
