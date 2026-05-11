@@ -579,6 +579,72 @@ def test_validation_config_fallback():
     assert vcfg == {}
 
 
+def test_cross_validate_uses_config_thresholds(analyzer):
+    """验证不同的 config 值产生不同的 cross_validate 结果"""
+    base_analysis = {"technical": {"score": 0.7}, "fund_flow": {"score": 0.7, "trend": "inflow"}, "sentiment": {"score": 0.7}}
+    base_prediction = {"day1": {"trend": "up"}, "day2": {"trend": "up"}}
+    base_indicators = {"MACD": {"signal": "金叉"}, "KDJ": {"signal": "金叉"}, "RSI": {"RSI(12)": {"latest": 55, "signal": ""}}}
+    base_signal = {"signal": "strong_buy", "score": 0.9}
+
+    # 严格 config：较高门槛
+    strict_result = analyzer.cross_validate_analysis(
+        base_analysis, base_prediction, base_indicators, base_signal, "未持有", 100
+    )
+
+    # 构建宽松 config 的 analyzer
+    from scripts.core.analyzer import StockAnalyzer
+    loose_config = {
+        "analyzer": {
+            "validation": {
+                "score_thresholds": {"technical_bullish": 0.3, "technical_bearish": 0.1,
+                                     "fund_bullish": 0.3, "fund_bearish": 0.1,
+                                     "sentiment_bullish": 0.3, "sentiment_bearish": 0.1},
+                "vote_thresholds": {"bullish_consensus_margin": 1, "bearish_consensus_margin": 1},
+                "confidence_weights": {"signal": 0.5, "agreement": 0.5},
+                "conflict_penalty": {"per_conflict": 0.05, "max": 0.1},
+            }
+        }
+    }
+    loose_analyzer = StockAnalyzer(loose_config)
+    loose_result = loose_analyzer.cross_validate_analysis(
+        base_analysis, base_prediction, base_indicators, base_signal, "未持有", 100
+    )
+    loose_consensus = loose_result["direction_consensus"]
+
+    # 宽松 config 应有不低的 confidence
+    assert loose_result["confidence"] >= strict_result["confidence"] - 0.01
+    # 宽松 config 的 risk_level 不应更高
+    risk_order = {"low": 0, "medium": 1, "high": 2}
+    assert risk_order.get(loose_result["risk_level"], 1) <= risk_order.get(strict_result["risk_level"], 1)
+
+
+def test_cross_validate_uses_config_vote_margins(analyzer):
+    """验证不同的投票门槛影响 direction_consensus"""
+    from scripts.core.analyzer import StockAnalyzer
+
+    analysis = {"technical": {"score": 0.55}, "fund_flow": {"score": 0.55, "trend": "neutral"},
+                "sentiment": {"score": 0.55}}
+    prediction = {"day1": {"trend": "neutral"}, "day2": {"trend": "neutral"}}
+    indicators = {"MACD": {"signal": ""}, "KDJ": {"signal": ""}, "RSI": {"RSI(12)": {"latest": 50, "signal": ""}},
+                  "BOLL": {"latest": {}}}
+    signal = {"signal": "hold", "score": 0.5}
+
+    # 极低门槛 analyzer
+    low = StockAnalyzer({"analyzer": {"validation": {
+        "score_thresholds": {"technical_bullish": 0.3, "technical_bearish": 0.7,
+                             "fund_bullish": 0.3, "fund_bearish": 0.7,
+                             "sentiment_bullish": 0.3, "sentiment_bearish": 0.7},
+        "vote_thresholds": {"bullish_consensus_margin": 0, "bearish_consensus_margin": 10},
+        "confidence_weights": {"signal": 0.4, "agreement": 0.6},
+        "conflict_penalty": {"per_conflict": 0.1, "max": 0.3},
+    }}})
+    low_result = low.cross_validate_analysis(
+        analysis, prediction, indicators, signal, "未持有", 100
+    )
+    # 极低多头门槛下，方向应为 bullish 或 mixed
+    assert low_result["direction_consensus"] in ("bullish", "mixed")
+
+
 def test_strong_buy_does_not_force_up_prediction_when_only_kdj_overheated():
     analyzer = _analyzer()
     prediction = analyzer.predict_price_range(

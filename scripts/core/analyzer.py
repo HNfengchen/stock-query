@@ -548,6 +548,24 @@ class StockAnalyzer:
             dict: 交叉验证结果
         """
         trading_signal = trading_signal or {}
+        vcfg = self.validation_config
+        st = vcfg.get("score_thresholds", {})
+        vt = vcfg.get("vote_thresholds", {})
+        cw = vcfg.get("confidence_weights", {})
+        cp = vcfg.get("conflict_penalty", {})
+
+        tech_bullish = st.get("technical_bullish", 0.65)
+        tech_bearish = st.get("technical_bearish", 0.35)
+        fund_bullish = st.get("fund_bullish", 0.6)
+        fund_bearish = st.get("fund_bearish", 0.4)
+        sentiment_bullish = st.get("sentiment_bullish", 0.6)
+        sentiment_bearish = st.get("sentiment_bearish", 0.4)
+        bullish_margin = vt.get("bullish_consensus_margin", 3)
+        bearish_margin = vt.get("bearish_consensus_margin", 2)
+        signal_weight = cw.get("signal", 0.4)
+        agreement_weight = cw.get("agreement", 0.6)
+        per_conflict_penalty = cp.get("per_conflict", 0.1)
+        max_conflict_penalty = cp.get("max", 0.3)
         supporting_factors = []
         opposing_factors = []
         conflicts = []
@@ -565,25 +583,25 @@ class StockAnalyzer:
         bullish_votes = 0
         bearish_votes = 0
 
-        if technical_score >= 0.65:
+        if technical_score >= tech_bullish:
             bullish_votes += 1
             supporting_factors.append("技术评分偏强")
-        elif technical_score <= 0.35:
+        elif technical_score <= tech_bearish:
             bearish_votes += 1
             opposing_factors.append("技术评分偏弱")
 
         fund_trend = fund_flow.get("trend", "neutral")
-        if fund_score >= 0.6 or fund_trend == "inflow":
+        if fund_score >= fund_bullish or fund_trend == "inflow":
             bullish_votes += 1
             supporting_factors.append("资金流入支持")
-        elif fund_score <= 0.4 or fund_trend == "outflow":
+        elif fund_score <= fund_bearish or fund_trend == "outflow":
             bearish_votes += 1
             opposing_factors.append("资金流出压制")
 
-        if sentiment_score >= 0.6:
+        if sentiment_score >= sentiment_bullish:
             bullish_votes += 1
             supporting_factors.append("市场情绪偏暖")
-        elif sentiment_score <= 0.4:
+        elif sentiment_score <= sentiment_bearish:
             bearish_votes += 1
             opposing_factors.append("市场情绪偏弱")
 
@@ -656,28 +674,28 @@ class StockAnalyzer:
             except (TypeError, ValueError):
                 pass
 
-        if technical_score >= 0.65 and (fund_score <= 0.4 or fund_trend == "outflow"):
+        if technical_score >= tech_bullish and (fund_score <= fund_bearish or fund_trend == "outflow"):
             conflicts.append("技术偏强但资金未确认")
         if signal_score >= 0.7 and down_predictions > 0:
             conflicts.append("交易信号偏强但价格预测转弱")
         if signal_score < 0.5 and bullish_votes >= 3:
             conflicts.append("多项指标偏多但综合信号未确认")
 
-        if bullish_votes >= bearish_votes + 3:
+        if bullish_votes >= bearish_votes + bullish_margin:
             direction_consensus = "bullish"
-        elif bearish_votes >= bullish_votes + 2:
+        elif bearish_votes >= bullish_votes + bearish_margin:
             direction_consensus = "bearish"
         else:
             direction_consensus = "mixed"
 
-        conflict_penalty = min(0.3, len(conflicts) * 0.1)
+        conflict_penalty = min(max_conflict_penalty, len(conflicts) * per_conflict_penalty)
         agreement_total = bullish_votes + bearish_votes
         agreement_ratio = (
             max(bullish_votes, bearish_votes) / agreement_total
             if agreement_total > 0
             else 0.5
         )
-        confidence = (signal_score * 0.4) + (agreement_ratio * 0.6) - conflict_penalty
+        confidence = (signal_score * signal_weight) + (agreement_ratio * agreement_weight) - conflict_penalty
         confidence = round(max(0.0, min(1.0, confidence)), 3)
 
         if conflicts or direction_consensus == "mixed":
