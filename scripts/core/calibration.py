@@ -1,9 +1,7 @@
 """交叉验证阈值校准模块"""
 
 from copy import deepcopy
-from typing import Optional
 
-import pandas as pd
 import yaml
 
 
@@ -106,7 +104,7 @@ def evaluate_validation_config(
     )
 
     return {
-        "accuracy": correct_trend / total,
+        "accuracy": correct_consensus / total,
         "trend_accuracy": correct_trend / total,
         "consistency": correct_when_has_consensus / (has_consensus or 1),
         "total_predictions": total,
@@ -166,7 +164,6 @@ class ValidationCalibrator:
     def _scan_single_param(
         self,
         param_name: str,
-        param_path: list,
         base_overrides: dict,
         current_value,
         scan_values: list,
@@ -221,7 +218,7 @@ class ValidationCalibrator:
 
         for param_name, (path, current_val, scan_values) in self.SCAN_PARAMS.items():
             scan_result = self._scan_single_param(
-                param_name, path, current_overrides, current_val, scan_values, evaluate_fn
+                param_name, current_overrides, current_val, scan_values, evaluate_fn
             )
             param_sensitivity[param_name] = scan_result
 

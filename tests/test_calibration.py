@@ -28,7 +28,6 @@ def test_single_param_scan_returns_sensitivity():
     cb = ValidationCalibrator({}, [])
     scan_results = cb._scan_single_param(
         param_name="technical_bullish",
-        param_path=["score_thresholds", "technical_bullish"],
         base_overrides={},
         current_value=0.65,
         scan_values=[0.5, 0.65, 0.8],
