@@ -70,12 +70,25 @@ def update_watchlist(stock_code: str, position_status: Optional[str] = None, cos
         if item["stock_code"] == stock_code:
             if position_status is not None:
                 item["position_status"] = position_status
+                if position_status == "未持有":
+                    item["cost_price"] = None
             if cost_price is not None:
                 item["cost_price"] = cost_price
             item["updated_at"] = datetime.now().isoformat()
             save_watchlist(wl)
             return item
     raise ValueError(f"{stock_code} 不在列表中")
+
+
+def update_signal_cache(stock_code: str, position_status: str, trading_signal: Dict):
+    wl = load_watchlist()
+    for item in wl:
+        if item["stock_code"] == stock_code:
+            item["cached_signal"] = trading_signal.get("signal_text", "")
+            item["cached_signal_score"] = trading_signal.get("score", 0)
+            item["cached_signal_time"] = datetime.now().isoformat()
+            save_watchlist(wl)
+            return
 
 
 def delete_from_watchlist(stock_code: str):

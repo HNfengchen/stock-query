@@ -48,6 +48,19 @@ function openEdit(item: any) {
   editDialogVisible.value = true
 }
 
+function onEditPositionChange() {
+  if (editingStock.value?.position_status === '未持有') {
+    editingStock.value.cost_price = null
+  }
+}
+
+function getSignalClass(signal: string): string {
+  if (!signal) return ''
+  if (['强烈买入', '强烈加仓', '买入', '加仓', '建议买入'].includes(signal)) return 'signal-bull'
+  if (['减仓', '卖出', '回避'].includes(signal)) return 'signal-bear'
+  return 'signal-neutral'
+}
+
 async function confirmEdit() {
   if (!editingStock.value) return
   try {
@@ -104,9 +117,20 @@ async function removeStock(stockCode: string) {
             {{ item.position_status }}
           </el-tag>
         </div>
-        <div v-if="item.cost_price" class="card-cost">
+        <div v-if="item.position_status === '已持有' && item.cost_price" class="card-cost">
           <span class="cost-label">成本价</span>
           <span class="cost-value font-mono">{{ item.cost_price.toFixed(2) }}</span>
+        </div>
+        <div v-if="item.cached_signal" class="card-signal">
+          <span
+            class="signal-badge"
+            :class="getSignalClass(item.cached_signal)"
+          >
+            {{ item.cached_signal }}
+          </span>
+          <span v-if="item.cached_signal_score" class="signal-score font-mono">
+            {{ item.cached_signal_score.toFixed(2) }}
+          </span>
         </div>
         <div class="card-actions">
           <el-button type="primary" size="small" text class="action-btn" @click.stop="analyzeStock(item)">
@@ -159,7 +183,7 @@ async function removeStock(stockCode: string) {
           <el-input v-model="editingStock.stock_code" disabled />
         </el-form-item>
         <el-form-item label="持仓状态">
-          <el-select v-model="editingStock.position_status">
+          <el-select v-model="editingStock.position_status" @change="onEditPositionChange">
             <el-option label="未持有" value="未持有" />
             <el-option label="已持有" value="已持有" />
           </el-select>
@@ -285,10 +309,45 @@ async function removeStock(stockCode: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   padding: 8px 12px;
   background: var(--bg-secondary);
   border-radius: var(--radius-sm);
+}
+
+.card-signal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.signal-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.signal-badge.signal-bull {
+  background: rgba(38, 166, 154, 0.15);
+  color: var(--color-up);
+}
+
+.signal-badge.signal-bear {
+  background: rgba(239, 83, 80, 0.15);
+  color: var(--color-down);
+}
+
+.signal-badge.signal-neutral {
+  background: rgba(255, 167, 38, 0.15);
+  color: var(--color-warn);
+}
+
+.signal-score {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .cost-label {

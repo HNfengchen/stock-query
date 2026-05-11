@@ -217,6 +217,13 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     result = deep_clean_nan(result)
     _result_cache[cache_key] = (result, now)
     _cleanup_cache()
+
+    try:
+        from backend.services.history_service import update_signal_cache
+        update_signal_cache(stock_code, position_status, result.get("trading_signal", {}))
+    except Exception:
+        pass
+
     return result
 
 

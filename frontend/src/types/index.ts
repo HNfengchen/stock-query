@@ -10,6 +10,9 @@ export interface WatchlistItem {
   position_status: '已持有' | '未持有'
   cost_price?: number | null
   added_at?: string
+  cached_signal?: string
+  cached_signal_score?: number
+  cached_signal_time?: string
 }
 
 export interface AnalysisRequest {

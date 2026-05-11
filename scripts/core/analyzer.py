@@ -257,10 +257,14 @@ class StockAnalyzer:
         except (TypeError, ValueError):
             main_inflow = 0
 
+        try:
+            ratio = float(ratio) if ratio else 0
+        except (TypeError, ValueError):
+            ratio = 0
+
         score = 0
         trend = "neutral"
 
-        # 优先从fund_flow获取成交额，否则从stock_info获取
         amount = fund_flow.get("成交额", 0)
         if not amount and stock_info:
             amount = stock_info.get("成交额") or stock_info.get("今日成交额") or stock_info.get("成交额(万)")
@@ -272,7 +276,10 @@ class StockAnalyzer:
         except (TypeError, ValueError):
             amount = 1
 
-        inflow_ratio = main_inflow / amount if amount else 0
+        if ratio != 0:
+            inflow_ratio = ratio / 100
+        else:
+            inflow_ratio = main_inflow / amount if amount else 0
 
         market_cap = 0
         if stock_info:
@@ -427,7 +434,7 @@ class StockAnalyzer:
 
         return result
 
-    def generate_trading_signal(self, analysis: Dict) -> Dict:
+    def generate_trading_signal(self, analysis: Dict, position_status: str = "未持有") -> Dict:
         """生成交易信号"""
         analyzer_logger.info("=" * 50)
         analyzer_logger.info("开始生成交易信号...")
@@ -470,16 +477,27 @@ class StockAnalyzer:
         else:
             signal = "sell"
 
+        if position_status == "已持有":
+            signal_text_map = {
+                "strong_buy": "强烈加仓",
+                "buy": "加仓",
+                "hold": "持有",
+                "watch": "观望",
+                "sell": "减仓",
+            }
+        else:
+            signal_text_map = {
+                "strong_buy": "强烈买入",
+                "buy": "买入",
+                "hold": "观望",
+                "watch": "回避",
+                "sell": "回避",
+            }
+
         return {
             "score": round(total_score, 3),
             "signal": signal,
-            "signal_text": {
-                "strong_buy": "强烈买入",
-                "buy": "买入",
-                "hold": "持有",
-                "watch": "观望",
-                "sell": "卖出",
-            }.get(signal, "持有"),
+            "signal_text": signal_text_map.get(signal, "观望"),
         }
 
     def get_limit_pct(self, stock_code: str, stock_name: str = "") -> float:
@@ -745,7 +763,7 @@ class StockAnalyzer:
             }
         else:
             day1 = {
-                "target_low": round(support, 2),
+                "target_low": round(current_price - day_range * 0.5, 2),
                 "target_high": round(current_price + day_range * 0.5, 2),
                 "trend": "neutral",
                 "signal": "震荡整理",
@@ -824,16 +842,16 @@ class StockAnalyzer:
             "sentiment": sentiment_analysis,
         }
 
-        trading_signal = self.generate_trading_signal(analysis)
+        trading_signal = self.generate_trading_signal(analysis, position_status)
         price_prediction = self.predict_price_range(all_data, indicators, stock_code)
 
         if position_status == "已持有":
             position_strategy = self.generate_position_strategy(
-                all_data, indicators, current_price, cost_price
+                all_data, indicators, current_price, cost_price, trading_signal
             )
         else:
             position_strategy = self.generate_buy_strategy(
-                all_data, indicators, current_price
+                all_data, indicators, current_price, trading_signal
             )
 
         return {
@@ -851,6 +869,7 @@ class StockAnalyzer:
         indicators: Dict,
         current_price: float,
         cost_price: float = None,
+        trading_signal: Dict = None,
     ) -> Dict:
         """生成持仓策略（已持有时使用）"""
         history_df = all_data.get("history_data")
@@ -858,7 +877,7 @@ class StockAnalyzer:
         if cost_price:
             avg_cost = cost_price
         else:
-            avg_cost = current_price * 0.95
+            avg_cost = current_price
 
         price_change = ((current_price - avg_cost) / avg_cost) * 100 if avg_cost else 0
 
@@ -930,12 +949,20 @@ class StockAnalyzer:
             target_price = current_price * (1 + stop_profit_pct / 100)
             stop_price = current_price * (1 + stop_loss_pct / 100)
 
-        if rsi_value and rsi_value > 80:
+        signal_name = trading_signal.get("signal", "hold") if trading_signal else "hold"
+
+        if signal_name == "sell":
+            position_adjust = "建议减仓"
+        elif signal_name == "strong_buy":
+            position_adjust = "可考虑加仓"
+        elif rsi_value and rsi_value > 80:
             position_adjust = "建议减仓"
         elif rsi_value and rsi_value < 30:
             position_adjust = "可考虑补仓"
         elif macd_signal == "死叉" or kdj_signal == "死叉":
             position_adjust = "建议减仓"
+        elif macd_signal == "金叉" or kdj_signal == "金叉":
+            position_adjust = "继续持有"
         else:
             position_adjust = "继续持有"
 
@@ -978,7 +1005,7 @@ class StockAnalyzer:
         return "; ".join(reasons) if reasons else "无明显信号"
 
     def generate_buy_strategy(
-        self, all_data: Dict, indicators: Dict, current_price: float
+        self, all_data: Dict, indicators: Dict, current_price: float, trading_signal: Dict = None
     ) -> Dict:
         """生成买入策略（未持有时使用）"""
         history_df = all_data.get("history_data")
@@ -1025,15 +1052,18 @@ class StockAnalyzer:
             atr_value = float(atr)
 
         buy_timing = "不建议买入"
-        if tech_score >= 0.7:
+        total_score = trading_signal.get("score", 0) if trading_signal else 0
+        if tech_score >= 0.7 or total_score >= 0.7:
             buy_timing = "建议买入"
+        elif total_score >= 0.5:
+            buy_timing = "可考虑买入"
         elif macd_signal in ("金叉", "金叉确认", "多头"):
             buy_timing = "建议买入"
         elif kdj_signal == "金叉":
             buy_timing = "可考虑买入"
-        elif rsi_value and rsi_value < 30:
-            buy_timing = "RSI超卖，可以关注"
         elif rsi_value and rsi_value < 25:
+            buy_timing = "RSI严重超卖，可以关注"
+        elif rsi_value and rsi_value < 30:
             buy_timing = "RSI超卖，可以关注"
 
         # 基于ATR计算买入止损价

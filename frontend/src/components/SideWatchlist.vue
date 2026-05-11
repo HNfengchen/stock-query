@@ -22,7 +22,7 @@ function analyzeStock(item: any) {
   if (item.position_status) {
     query.position = item.position_status
   }
-  if (item.cost_price) {
+  if (item.position_status === '已持有' && item.cost_price) {
     query.cost = String(item.cost_price)
   }
   router.push({ path: '/', query })
@@ -71,7 +71,7 @@ async function removeStock(stockCode: string, event: Event) {
           </div>
           <div class="item-bottom">
             <span class="stock-name">{{ item.stock_name }}</span>
-            <span v-if="item.cost_price" class="cost-price">
+            <span v-if="item.position_status === '已持有' && item.cost_price" class="cost-price">
               成本 {{ item.cost_price.toFixed(2) }}
             </span>
           </div>

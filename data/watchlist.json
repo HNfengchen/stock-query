@@ -4,48 +4,70 @@
     "stock_name": "威派格",
     "position_status": "已持有",
     "cost_price": 11.3,
-    "added_at": "2026-05-07T01:20:19.183550"
+    "added_at": "2026-05-07T01:20:19.183550",
+    "cached_signal": "加仓",
+    "cached_signal_score": 0.665,
+    "cached_signal_time": "2026-05-11T23:13:16.955980"
   },
   {
     "stock_code": "601515",
     "stock_name": "衢州东峰",
     "position_status": "未持有",
     "cost_price": null,
-    "added_at": "2026-05-07T02:26:47.686726"
+    "added_at": "2026-05-07T02:26:47.686726",
+    "updated_at": "2026-05-11T23:13:43.521551",
+    "cached_signal": "观望",
+    "cached_signal_score": 0.472,
+    "cached_signal_time": "2026-05-11T23:13:20.292665"
   },
   {
     "stock_code": "601388",
     "stock_name": "怡球资源",
     "position_status": "未持有",
     "cost_price": null,
-    "added_at": "2026-05-07T02:41:19.746858"
+    "added_at": "2026-05-07T02:41:19.746858",
+    "cached_signal": "观望",
+    "cached_signal_score": 0.36,
+    "cached_signal_time": "2026-05-11T23:13:21.749458"
   },
   {
     "stock_code": "002108",
     "stock_name": "沧州明珠",
     "position_status": "未持有",
     "cost_price": null,
-    "added_at": "2026-05-07T02:41:50.489477"
+    "added_at": "2026-05-07T02:41:50.489477",
+    "cached_signal": "强烈买入",
+    "cached_signal_score": 0.772,
+    "cached_signal_time": "2026-05-11T23:20:01.545881"
   },
   {
     "stock_code": "600152",
     "stock_name": "维科技术",
     "position_status": "未持有",
     "cost_price": null,
-    "added_at": "2026-05-07T02:42:26.893189"
+    "added_at": "2026-05-07T02:42:26.893189",
+    "cached_signal": "观望",
+    "cached_signal_score": 0.427,
+    "cached_signal_time": "2026-05-11T23:13:24.547846"
   },
   {
     "stock_code": "601016",
     "stock_name": "节能风电",
     "position_status": "未持有",
     "cost_price": null,
-    "added_at": "2026-05-07T02:42:55.882032"
+    "added_at": "2026-05-07T02:42:55.882032",
+    "cached_signal": "强烈买入",
+    "cached_signal_score": 0.718,
+    "cached_signal_time": "2026-05-11T23:13:28.335081"
   },
   {
     "stock_code": "000630",
     "stock_name": "铜陵有色",
     "position_status": "未持有",
     "cost_price": null,
-    "added_at": "2026-05-07T23:18:47.337445"
+    "added_at": "2026-05-07T23:18:47.337445",
+    "cached_signal": "买入",
+    "cached_signal_score": 0.645,
+    "cached_signal_time": "2026-05-11T23:13:30.468608"
   }
 ]
