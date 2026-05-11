@@ -20,6 +20,7 @@ build/
 .sisyphus/
 
 # Output
+docs/
 output/
 logs/
 
