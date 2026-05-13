@@ -21,6 +21,11 @@ def to_python_type(val):
     if isinstance(val, np.ndarray):
         return val.tolist()
     try:
+        if pd.isna(val):
+            return None
+    except (ValueError, TypeError):
+        pass
+    try:
         return val.item()
     except (AttributeError, ValueError):
         return val
@@ -327,15 +332,15 @@ class StockDataManager:
             close = EXCLUDED.close,
             volume = EXCLUDED.volume,
             amount = EXCLUDED.amount,
-            change_pct = COALESCE(EXCLUDED.change_pct, stock_table.change_pct),
-            change_amount = COALESCE(EXCLUDED.change_amount, stock_table.change_amount),
-            turnover_rate = COALESCE(EXCLUDED.turnover_rate, stock_table.turnover_rate),
-            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, stock_table.pe_dynamic),
-            pb = COALESCE(EXCLUDED.pb, stock_table.pb),
-            total_market_cap = COALESCE(EXCLUDED.total_market_cap, stock_table.total_market_cap),
-            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, stock_table.circ_market_cap),
-            main_flow = COALESCE(EXCLUDED.main_flow, stock_table.main_flow),
-            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, stock_table.main_flow_ratio)
+            change_pct = COALESCE(EXCLUDED.change_pct, {self.table_name}.change_pct),
+            change_amount = COALESCE(EXCLUDED.change_amount, {self.table_name}.change_amount),
+            turnover_rate = EXCLUDED.turnover_rate,
+            pe_dynamic = EXCLUDED.pe_dynamic,
+            pb = EXCLUDED.pb,
+            total_market_cap = COALESCE(EXCLUDED.total_market_cap, {self.table_name}.total_market_cap),
+            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, {self.table_name}.circ_market_cap),
+            main_flow = EXCLUDED.main_flow,
+            main_flow_ratio = EXCLUDED.main_flow_ratio
         """
 
         cur.execute(insert_sql, data)
@@ -376,15 +381,15 @@ class StockDataManager:
             close = EXCLUDED.close,
             volume = EXCLUDED.volume,
             amount = EXCLUDED.amount,
-            change_pct = COALESCE(EXCLUDED.change_pct, stock_table.change_pct),
-            change_amount = COALESCE(EXCLUDED.change_amount, stock_table.change_amount),
-            turnover_rate = COALESCE(EXCLUDED.turnover_rate, stock_table.turnover_rate),
-            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, stock_table.pe_dynamic),
-            pb = COALESCE(EXCLUDED.pb, stock_table.pb),
-            total_market_cap = COALESCE(EXCLUDED.total_market_cap, stock_table.total_market_cap),
-            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, stock_table.circ_market_cap),
-            main_flow = COALESCE(EXCLUDED.main_flow, stock_table.main_flow),
-            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, stock_table.main_flow_ratio)
+            change_pct = COALESCE(EXCLUDED.change_pct, {self.table_name}.change_pct),
+            change_amount = COALESCE(EXCLUDED.change_amount, {self.table_name}.change_amount),
+            turnover_rate = EXCLUDED.turnover_rate,
+            pe_dynamic = EXCLUDED.pe_dynamic,
+            pb = EXCLUDED.pb,
+            total_market_cap = COALESCE(EXCLUDED.total_market_cap, {self.table_name}.total_market_cap),
+            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, {self.table_name}.circ_market_cap),
+            main_flow = EXCLUDED.main_flow,
+            main_flow_ratio = EXCLUDED.main_flow_ratio
         """
 
         cur.executemany(insert_sql, data_list)
@@ -563,6 +568,32 @@ class StockDataManager:
         conn.close()
         db_logger.info(f"[{self.stock_code}] 技术指标批量更新完成")
 
+    def has_null_fields(self) -> bool:
+        """检查表中是否有重要字段为空的记录"""
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(f"""
+                SELECT COUNT(*) FROM {self.table_name}
+                WHERE change_pct IS NULL OR amount IS NULL OR turnover_rate IS NULL
+            """)
+            null_count = cur.fetchone()[0]
+            if null_count > 0:
+                return True
+            cur.execute(f"""
+                SELECT COUNT(DISTINCT total_market_cap) FROM {self.table_name}
+                WHERE total_market_cap IS NOT NULL
+            """)
+            distinct_cap = cur.fetchone()[0]
+            if distinct_cap <= 1:
+                return True
+            return False
+        except psycopg2.errors.UndefinedTable:
+            return False
+        finally:
+            cur.close()
+            conn.close()
+
     def get_historical_data(self, days: int = None) -> pd.DataFrame:
         """获取历史数据"""
         conn = get_connection()
@@ -627,6 +658,173 @@ class StockDataManager:
         return df
 
 
+def _enrich_history_df(df: pd.DataFrame, stock_code: str = "") -> pd.DataFrame:
+    """补充历史DataFrame中缺失的衍生字段
+
+    多重保障机制：
+    1. 从收盘价计算涨跌幅和涨跌额
+    2. 从成交量×均价估算成交额
+    3. 从baostock补充PE/PB/换手率（如果缺失）
+    """
+    if df is None or df.empty or "收盘" not in df.columns:
+        return df
+
+    df = df.copy()
+
+    close = pd.to_numeric(df["收盘"], errors="coerce")
+
+    if "涨跌幅" not in df.columns or df["涨跌幅"].isna().all():
+        prev_close = close.shift(1)
+        mask = prev_close.notna() & (prev_close != 0)
+        df["涨跌幅"] = np.nan
+        df.loc[mask, "涨跌幅"] = ((close[mask] - prev_close[mask]) / prev_close[mask] * 100).round(4)
+    elif df["涨跌幅"].isna().any():
+        prev_close = close.shift(1)
+        mask = df["涨跌幅"].isna() & prev_close.notna() & (prev_close != 0)
+        df.loc[mask, "涨跌幅"] = ((close[mask] - prev_close[mask]) / prev_close[mask] * 100).round(4)
+
+    if "涨跌额" not in df.columns or df["涨跌额"].isna().all():
+        prev_close = close.shift(1)
+        mask = prev_close.notna()
+        df["涨跌额"] = np.nan
+        df.loc[mask, "涨跌额"] = (close[mask] - prev_close[mask]).round(2)
+    elif df["涨跌额"].isna().any():
+        prev_close = close.shift(1)
+        mask = df["涨跌额"].isna() & prev_close.notna()
+        df.loc[mask, "涨跌额"] = (close[mask] - prev_close[mask]).round(2)
+
+    if "成交额" not in df.columns or df["成交额"].isna().all():
+        if "成交量" in df.columns and "最高" in df.columns and "最低" in df.columns:
+            vol = pd.to_numeric(df["成交量"], errors="coerce")
+            high = pd.to_numeric(df["最高"], errors="coerce")
+            low = pd.to_numeric(df["最低"], errors="coerce")
+            avg_price = (high + low) / 2
+            df["成交额"] = (vol * avg_price * 100).round(2)
+    elif df["成交额"].isna().any():
+        if "成交量" in df.columns and "最高" in df.columns and "最低" in df.columns:
+            vol = pd.to_numeric(df["成交量"], errors="coerce")
+            high = pd.to_numeric(df["最高"], errors="coerce")
+            low = pd.to_numeric(df["最低"], errors="coerce")
+            avg_price = (high + low) / 2
+            mask = df["成交额"].isna()
+            df.loc[mask, "成交额"] = (vol[mask] * avg_price[mask] * 100).round(2)
+
+    needs_pe = "市盈率-动态" not in df.columns or df["市盈率-动态"].isna().all() if "市盈率-动态" in df.columns else True
+    needs_pb = "市净率" not in df.columns or df["市净率"].isna().all() if "市净率" in df.columns else True
+    needs_turn = "换手率" not in df.columns or df["换手率"].isna().all() if "换手率" in df.columns else True
+
+    if needs_pe or needs_pb or needs_turn:
+        df = _supplement_from_baostock(df, stock_code)
+
+    return df
+
+
+def _supplement_from_baostock(df: pd.DataFrame, stock_code: str = "") -> pd.DataFrame:
+    """从baostock补充PE/PB/换手率/成交额等字段，并从收盘价反推历史市值"""
+    try:
+        import baostock as bs
+
+        if df.empty or "日期" not in df.columns or not stock_code:
+            return df
+
+        market = "sh" if stock_code.startswith(("6", "5", "9")) else "sz"
+        bs_code = f"{market}.{stock_code}"
+
+        dates = pd.to_datetime(df["日期"], errors="coerce")
+        start_date = dates.min().strftime("%Y-%m-%d") if dates.notna().any() else "20200101"
+        end_date = dates.max().strftime("%Y-%m-%d") if dates.notna().any() else "20991231"
+
+        bs.login()
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,amount,turn,peTTM,pbMRQ",
+            start_date=start_date,
+            end_date=end_date,
+            frequency="d",
+            adjustflag="2",
+        )
+
+        bs_data = []
+        while rs.error_code == "0" and rs.next():
+            bs_data.append(rs.get_row_data())
+        bs.logout()
+
+        if not bs_data:
+            return df
+
+        bs_df = pd.DataFrame(bs_data, columns=["日期", "成交额_bs", "换手率_bs", "市盈率_bs", "市净率_bs"])
+        bs_df["日期"] = pd.to_datetime(bs_df["日期"], errors="coerce")
+        bs_df["成交额_bs"] = pd.to_numeric(bs_df["成交额_bs"], errors="coerce")
+        bs_df["换手率_bs"] = pd.to_numeric(bs_df["换手率_bs"], errors="coerce")
+        bs_df["市盈率_bs"] = pd.to_numeric(bs_df["市盈率_bs"], errors="coerce")
+        bs_df["市净率_bs"] = pd.to_numeric(bs_df["市净率_bs"], errors="coerce")
+
+        df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
+        df = df.merge(bs_df, on="日期", how="left")
+
+        if "成交额" not in df.columns or df["成交额"].isna().all():
+            df["成交额"] = df["成交额_bs"]
+        else:
+            mask = df["成交额_bs"].notna()
+            df.loc[mask, "成交额"] = df.loc[mask, "成交额_bs"]
+
+        if "换手率" not in df.columns or df["换手率"].isna().all():
+            df["换手率"] = df["换手率_bs"]
+        elif df["换手率"].isna().any():
+            mask = df["换手率"].isna()
+            df.loc[mask, "换手率"] = df.loc[mask, "换手率_bs"]
+
+        if "市盈率-动态" not in df.columns or df["市盈率-动态"].isna().all():
+            df["市盈率-动态"] = df["市盈率_bs"]
+        elif df["市盈率-动态"].isna().any():
+            mask = df["市盈率-动态"].isna()
+            df.loc[mask, "市盈率-动态"] = df.loc[mask, "市盈率_bs"]
+
+        if "市净率" not in df.columns or df["市净率"].isna().all():
+            df["市净率"] = df["市净率_bs"]
+        elif df["市净率"].isna().any():
+            mask = df["市净率"].isna()
+            df.loc[mask, "市净率"] = df.loc[mask, "市净率_bs"]
+
+        df = df.drop(columns=["成交额_bs", "换手率_bs", "市盈率_bs", "市净率_bs"], errors="ignore")
+
+    except Exception as e:
+        db_logger.warning(f"baostock补充数据失败: {e}")
+
+    return df
+
+
+def _calc_market_cap(df: pd.DataFrame, stock_info: Dict) -> pd.DataFrame:
+    """从收盘价变化比例反推历史总市值和流通市值
+
+    原理：总市值 = 收盘价 × 总股本，总股本短期内不变
+    所以：历史市值 = 最新市值 × (历史收盘价 / 最新收盘价)
+    """
+    if df is None or df.empty or "收盘" not in df.columns:
+        return df
+
+    latest_mkt_cap = stock_info.get("总市值")
+    latest_circ_cap = stock_info.get("流通市值")
+
+    if not latest_mkt_cap and not latest_circ_cap:
+        return df
+
+    df = df.copy()
+    close = pd.to_numeric(df["收盘"], errors="coerce")
+    last_close = close.iloc[-1] if close.notna().any() else None
+
+    if last_close and last_close > 0:
+        ratio = close / last_close
+        if latest_mkt_cap:
+            latest_mkt_cap = float(latest_mkt_cap)
+            df["总市值"] = (latest_mkt_cap * ratio).round(2)
+        if latest_circ_cap:
+            latest_circ_cap = float(latest_circ_cap)
+            df["流通市值"] = (latest_circ_cap * ratio).round(2)
+
+    return df
+
+
 def ensure_stock_table(stock_code: str):
     """确保股票数据表存在"""
     manager = StockDataManager(stock_code)
@@ -679,7 +877,11 @@ def get_or_fetch_stock_data(
             db_logger.warning(f"[{stock_code}] 无法获取历史数据")
             return {"source": "error", "error": "无法获取历史数据"}
 
+        history_df = _enrich_history_df(history_df, stock_code)
+
         db_logger.info(f"[{stock_code}] 计算技术指标...")
+
+        history_df = _calc_market_cap(history_df, stock_info)
         indicators = calculate_all_indicators(history_df)
 
         db_logger.info(f"[{stock_code}] 获取到 {len(history_df)} 条历史数据")
@@ -708,6 +910,11 @@ def get_or_fetch_stock_data(
 
         need_insert = is_first_time or force_refresh
 
+        if not need_insert and not is_first_time and manager.has_null_fields():
+            db_logger.info(f"[{stock_code}] 检测到数据库有空值字段，强制刷新")
+            need_insert = True
+            force_refresh = True
+
         if not need_insert and api_latest_date and latest_date:
             latest_date_only = (
                 latest_date.date() if hasattr(latest_date, "date") and not isinstance(latest_date, date_type) else latest_date
@@ -718,6 +925,9 @@ def get_or_fetch_stock_data(
                 latest_date_only = latest_date_only.date() if hasattr(latest_date_only, "date") else latest_date_only
             if api_latest_date > latest_date_only:
                 db_logger.info(f"[{stock_code}] API有新增数据，需要更新")
+                need_insert = True
+            elif api_latest_date == latest_date_only and api_latest_date == today:
+                db_logger.info(f"[{stock_code}] 当日数据可能为盘中快照，仅刷新最新日数据")
                 need_insert = True
             else:
                 db_logger.info(f"[{stock_code}] API数据不新于数据库，跳过")
@@ -748,8 +958,12 @@ def get_or_fetch_stock_data(
                     latest_date.date() if hasattr(latest_date, "date") and not isinstance(latest_date, date_type) else latest_date
                 )
                 cutoff_ts = pd.Timestamp(latest_date_only)
-                new_data_df = history_df[pd.to_datetime(history_df["日期"]) > cutoff_ts]
-                db_logger.info(f"[{stock_code}] 需要新增 {len(new_data_df)} 条数据")
+                if api_latest_date == latest_date_only:
+                    new_data_df = history_df[pd.to_datetime(history_df["日期"]) >= cutoff_ts]
+                    db_logger.info(f"[{stock_code}] 刷新当日数据: {len(new_data_df)} 条")
+                else:
+                    new_data_df = history_df[pd.to_datetime(history_df["日期"]) > cutoff_ts]
+                    db_logger.info(f"[{stock_code}] 需要新增 {len(new_data_df)} 条数据")
 
             if is_first_time:
                 db_logger.info(f"[{stock_code}] 计算全部技术指标...")
@@ -778,6 +992,8 @@ def get_or_fetch_stock_data(
                         trade_date.date() if hasattr(trade_date, "date") else trade_date
                     )
 
+                    is_latest_row = (i == len(new_data_df) - 1) if not new_data_df.empty else False
+
                     daily_data = {
                         "trade_date": trade_date_only,
                         "trade_time": trade_date,
@@ -791,15 +1007,15 @@ def get_or_fetch_stock_data(
                         "amount": to_python_type(row.get("成交额")),
                         "change_pct": to_python_type(row.get("涨跌幅")),
                         "change_amount": to_python_type(row.get("涨跌额")),
-                        "turnover_rate": to_python_type(row.get("换手率")),
-                        "pe_dynamic": to_python_type(stock_info.get("市盈率-动态")),
-                        "pb": to_python_type(stock_info.get("市净率")),
-                        "total_market_cap": to_python_type(stock_info.get("总市值")),
-                        "circ_market_cap": to_python_type(stock_info.get("流通市值")),
-                        "main_flow": to_python_type(fund_flow.get("主力净流入")),
+                        "turnover_rate": to_python_type(row.get("换手率")) or (to_python_type(stock_info.get("换手率")) if is_latest_row else None),
+                        "pe_dynamic": to_python_type(row.get("市盈率-动态")) or (to_python_type(stock_info.get("市盈率-动态")) if is_latest_row else None),
+                        "pb": to_python_type(row.get("市净率")) or (to_python_type(stock_info.get("市净率")) if is_latest_row else None),
+                        "total_market_cap": to_python_type(row.get("总市值")),
+                        "circ_market_cap": to_python_type(row.get("流通市值")),
+                        "main_flow": to_python_type(fund_flow.get("主力净流入")) if is_latest_row else None,
                         "main_flow_ratio": to_python_type(
                             fund_flow.get("主力净流入占比")
-                        ),
+                        ) if is_latest_row else None,
                     }
                     data_list.append(daily_data)
 

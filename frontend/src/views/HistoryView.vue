@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useStockStore } from '@/stores/stockStore'
 import { useRouter } from 'vue-router'
 import type { AnalysisRequest } from '@/types'
+import { DataAnalysis } from '@element-plus/icons-vue'
 
 const store = useStockStore()
 const router = useRouter()
@@ -56,9 +57,23 @@ function onEditPositionChange() {
 
 function getSignalClass(signal: string): string {
   if (!signal) return ''
-  if (['强烈买入', '强烈加仓', '买入', '加仓', '建议买入', '可考虑买入'].includes(signal)) return 'signal-bull'
-  if (['减仓', '卖出', '回避', '不建议买入'].includes(signal)) return 'signal-bear'
-  return 'signal-neutral'
+  if (['建议买入', '强烈买入', '强烈加仓', '买入', '加仓', '可考虑买入', '继续持有'].includes(signal)) return 'signal-bull'
+  if (['减仓', '卖出', '回避', '谨慎持有', '不建议买入'].includes(signal)) return 'signal-bear'
+  return 'signal-info'
+}
+
+async function batchQuickAnalyze() {
+  if (store.watchlist.length === 0) return
+  const stocks: AnalysisRequest[] = store.watchlist.map(item => ({
+    stock_input: item.stock_code,
+    position_status: item.position_status,
+    cost_price: item.cost_price ?? undefined,
+  }))
+  try {
+    await store.runBatchQuickAnalysis(stocks)
+  } catch (e) {
+    console.error(e)
+  }
 }
 
 async function confirmEdit() {
@@ -90,10 +105,34 @@ async function removeStock(stockCode: string) {
         <el-icon><Collection /></el-icon>
         <span>历史股票</span>
       </div>
-      <el-button type="primary" size="small" class="add-btn" @click="openAddDialog">
-        <el-icon><Plus /></el-icon>
-        <span>添加股票</span>
-      </el-button>
+      <div class="header-actions">
+        <el-button
+          type="success"
+          size="small"
+          :loading="store.loading && store.batchProgress.status === 'analyzing'"
+          :disabled="store.watchlist.length === 0"
+          @click="batchQuickAnalyze"
+        >
+          <el-icon><DataAnalysis /></el-icon>
+          <span>一键分析 ({{ store.watchlist.length }})</span>
+        </el-button>
+        <el-button type="primary" size="small" class="add-btn" @click="openAddDialog">
+          <el-icon><Plus /></el-icon>
+          <span>添加股票</span>
+        </el-button>
+      </div>
+    </div>
+
+    <div v-if="store.loading && store.batchProgress.status === 'analyzing'" class="batch-progress">
+      <el-progress
+        :percentage="Math.round((store.batchProgress.current / store.batchProgress.total) * 100)"
+        :format="() => `${store.batchProgress.current}/${store.batchProgress.total}`"
+        status="success"
+        :stroke-width="18"
+        striped
+        striped-flow
+      />
+      <span class="progress-text">正在批量分析...</span>
     </div>
 
     <div class="stock-grid">
@@ -130,6 +169,9 @@ async function removeStock(stockCode: string) {
           </span>
           <span v-if="item.cached_signal_score" class="signal-score font-mono">
             {{ item.cached_signal_score.toFixed(2) }}
+          </span>
+          <span v-if="item.cached_signal_time" class="signal-time">
+            {{ new Date(item.cached_signal_time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}
           </span>
         </div>
         <div class="card-actions">
@@ -233,6 +275,37 @@ async function removeStock(stockCode: string) {
   background: linear-gradient(135deg, var(--color-up) 0%, #00897b 100%) !important;
   border: none !important;
   font-weight: 600;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.batch-progress {
+  margin: 12px 0;
+  padding: 16px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.batch-progress .el-progress {
+  flex: 1;
+}
+
+.progress-text {
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.signal-time {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-left: 4px;
 }
 
 .stock-grid {
@@ -343,6 +416,11 @@ async function removeStock(stockCode: string) {
 .signal-badge.signal-neutral {
   background: rgba(255, 167, 38, 0.15);
   color: var(--color-warn);
+}
+
+.signal-badge.signal-info {
+  background: rgba(33, 150, 243, 0.15);
+  color: #42a5f5;
 }
 
 .signal-score {

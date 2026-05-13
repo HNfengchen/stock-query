@@ -185,6 +185,18 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     analysis_data = analysis.get("analysis", {})
     validation = analysis.get("validation", {})
 
+    action_gate = validation.get("action_gate", "")
+    action_gate_text_map = {
+        "allow_buy": "建议买入",
+        "cautious_buy": "可考虑买入",
+        "avoid_buy": "回避",
+        "watch": "观望",
+        "reduce_position": "减仓",
+        "cautious_hold": "谨慎持有",
+        "hold_position": "持有",
+    }
+    action_gate_text = action_gate_text_map.get(action_gate, trading_signal.get("signal_text", "观望"))
+
     result = {
         "stock_code": stock_code,
         "stock_name": stock_name or info.get("名称", stock_code),
@@ -193,13 +205,14 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
             "fund_flow_score": clean_float(analysis_data.get("fund_flow", {}).get("score", 0)),
             "sentiment_score": clean_float(analysis_data.get("sentiment", {}).get("score", 0)),
             "overall_score": clean_float(trading_signal.get("score", 0)),
-            "recommendation": trading_signal.get("signal_text", "未知"),
+            "recommendation": action_gate_text,
             "details": clean_nested(analysis_data),
         },
         "trading_signal": {
             "score": clean_float(trading_signal.get("score", 0)),
             "signal": trading_signal.get("signal", "hold"),
-            "signal_text": trading_signal.get("signal_text", "持有"),
+            "signal_text": action_gate_text,
+            "action_gate": action_gate,
             "reason": trading_signal.get("reason", ""),
         },
         "price_prediction": {

@@ -207,6 +207,16 @@ export interface BatchAnalysisResult {
   errors: Array<{ stock_input: string; error: string }>
 }
 
+export interface BatchQuickSummary {
+  stock_code: string
+  stock_name: string
+  signal_text: string
+  score: number
+  action_gate: string
+  recommendation: string
+  index: number
+}
+
 export interface ProgressMessage {
   type: 'progress'
   task_id: string

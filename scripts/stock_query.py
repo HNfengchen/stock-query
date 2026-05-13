@@ -165,6 +165,44 @@ def _get_full_code(stock_code: str, market: str) -> str:
     return f"{stock_code}.{'SH' if market == 'sh' else 'SZ'}"
 
 
+def _calc_change_fields(df: pd.DataFrame) -> pd.DataFrame:
+    """从收盘价计算涨跌幅和涨跌额（如果缺失）"""
+    if df is None or df.empty or "收盘" not in df.columns:
+        return df
+    df = df.copy()
+    close = pd.to_numeric(df["收盘"], errors="coerce")
+    prev_close = close.shift(1)
+    if "涨跌幅" not in df.columns or df["涨跌幅"].isna().all():
+        mask = prev_close.notna() & (prev_close != 0)
+        df["涨跌幅"] = float('nan')
+        df.loc[mask, "涨跌幅"] = ((close[mask] - prev_close[mask]) / prev_close[mask] * 100).round(4)
+    elif df["涨跌幅"].isna().any():
+        mask = df["涨跌幅"].isna() & prev_close.notna() & (prev_close != 0)
+        df.loc[mask, "涨跌幅"] = ((close[mask] - prev_close[mask]) / prev_close[mask] * 100).round(4)
+    if "涨跌额" not in df.columns or df["涨跌额"].isna().all():
+        mask = prev_close.notna()
+        df["涨跌额"] = float('nan')
+        df.loc[mask, "涨跌额"] = (close[mask] - prev_close[mask]).round(2)
+    elif df["涨跌额"].isna().any():
+        mask = df["涨跌额"].isna() & prev_close.notna()
+        df.loc[mask, "涨跌额"] = (close[mask] - prev_close[mask]).round(2)
+    return df
+
+
+def _estimate_amount(df: pd.DataFrame) -> pd.DataFrame:
+    """当成交额缺失时，用成交量×均价估算成交额"""
+    if df is None or df.empty:
+        return df
+    if "成交额" not in df.columns or df["成交额"].isna().all():
+        if "成交量" in df.columns and "最高" in df.columns and "最低" in df.columns:
+            vol = pd.to_numeric(df["成交量"], errors="coerce")
+            high = pd.to_numeric(df["最高"], errors="coerce")
+            low = pd.to_numeric(df["最低"], errors="coerce")
+            avg_price = (high + low) / 2
+            df["成交额"] = (vol * avg_price * 100).round(2)
+    return df
+
+
 def get_stock_info(stock_code: str) -> Dict:
     """
     获取股票基本信息
@@ -564,6 +602,7 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
                         df.index.name = "日期"
 
                     df = clean_data(df, stock_code, stock_name)
+                    df = _calc_change_fields(df)
                     result = df.tail(days)
                     if not result.empty:
                         print(f"xtquant（前复权）获取历史数据成功: {len(result)} 条")
@@ -612,6 +651,8 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
                 df.index.name = "日期"
                 df = df.reset_index()
                 df = clean_data(df, stock_code, stock_name)
+                df = _estimate_amount(df)
+                df = _calc_change_fields(df)
                 result = df.tail(days)
                 if not result.empty:
                     print(f"腾讯接口获取历史数据成功: {len(result)} 条")
@@ -625,7 +666,7 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
         bs.login()
         rs = bs.query_history_k_data_plus(
             f"{'sh' if market == 'sh' else 'sz'}.{stock_code}",
-            "date,open,high,low,close,volume,amount",
+            "date,open,high,low,close,volume,amount,turn,peTTM,pbMRQ",
             start_date=start_date,
             end_date=end_date,
             frequency="d",
@@ -641,7 +682,7 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
         if data_list:
             df = pd.DataFrame(
                 data_list,
-                columns=["日期", "开盘", "最高", "最低", "收盘", "成交量", "成交额"],
+                columns=["日期", "开盘", "最高", "最低", "收盘", "成交量", "成交额", "换手率", "市盈率TTM", "市净率MRQ"],
             )
             df["开盘"] = pd.to_numeric(df["开盘"], errors="coerce")
             df["最高"] = pd.to_numeric(df["最高"], errors="coerce")
@@ -649,7 +690,12 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
             df["收盘"] = pd.to_numeric(df["收盘"], errors="coerce")
             df["成交量"] = pd.to_numeric(df["成交量"], errors="coerce")
             df["成交额"] = pd.to_numeric(df["成交额"], errors="coerce")
+            df["换手率"] = pd.to_numeric(df["换手率"], errors="coerce")
+            df["市盈率TTM"] = pd.to_numeric(df["市盈率TTM"], errors="coerce")
+            df["市净率MRQ"] = pd.to_numeric(df["市净率MRQ"], errors="coerce")
+            df = df.rename(columns={"市盈率TTM": "市盈率-动态", "市净率MRQ": "市净率"})
             df = clean_data(df, stock_code, stock_name)
+            df = _calc_change_fields(df)
             print(f"baostock（前复权）获取历史数据成功: {len(df)} 条")
             return df.tail(days)
     except ImportError:

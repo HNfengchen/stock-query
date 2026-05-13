@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { AnalysisResult, WatchlistItem, AnalysisRequest } from '@/types'
-import { analyzeStock, batchAnalyze } from '@/api/analysis'
+import { analyzeStock, batchAnalyze, batchQuickAnalyzeStream } from '@/api/analysis'
 import { getWatchlist, addToWatchlist, removeFromWatchlist, updateWatchlist } from '@/api/history'
 
 export const useStockStore = defineStore('stock', () => {
@@ -33,6 +33,46 @@ export const useStockStore = defineStore('stock', () => {
     } catch (e) {
       batchProgress.value.status = 'error'
       throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function runBatchQuickAnalysis(stocks: AnalysisRequest[]) {
+    loading.value = true
+    batchProgress.value = { current: 0, total: stocks.length, currentStock: '', status: 'analyzing' }
+    try {
+      await batchQuickAnalyzeStream(
+        stocks,
+        (event) => {
+          batchProgress.value.current = event.current
+          batchProgress.value.total = event.total
+          if (event.summary) {
+            const idx = watchlist.value.findIndex(w => w.stock_code === event.summary!.stock_code)
+            if (idx >= 0) {
+              const existing = watchlist.value[idx]!
+              watchlist.value[idx] = {
+                stock_code: existing.stock_code,
+                stock_name: existing.stock_name,
+                position_status: existing.position_status,
+                cost_price: existing.cost_price,
+                added_at: existing.added_at,
+                cached_signal: event.summary.signal_text,
+                cached_signal_score: event.summary.score,
+                cached_signal_time: new Date().toISOString(),
+              }
+            }
+          }
+        },
+        (event) => {
+          batchProgress.value.status = 'completed'
+          batchProgress.value.current = event.total
+        },
+        (error) => {
+          batchProgress.value.status = 'error'
+          console.error('Batch quick analysis error:', error)
+        },
+      )
     } finally {
       loading.value = false
     }
@@ -76,6 +116,7 @@ export const useStockStore = defineStore('stock', () => {
     hasResult,
     runAnalysis,
     runBatchAnalysis,
+    runBatchQuickAnalysis,
     loadWatchlist,
     addStock,
     removeStock,
