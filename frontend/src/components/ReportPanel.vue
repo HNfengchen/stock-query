@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AnalysisResult } from '@/types'
+import ValidationPanel from '@/components/ValidationPanel.vue'
+import { getTrendTagType, getTrendClass, fmtNum } from '@/utils/format'
 
 const props = defineProps<{ result: AnalysisResult }>()
 
@@ -22,19 +24,6 @@ const isHeld = computed(() => 'avg_cost' in ps.value)
 const profitBelowCost = computed(() => {
   return isHeld.value && ps.value.stop_profit_price != null && ps.value.avg_cost != null && ps.value.stop_profit_price < ps.value.avg_cost
 })
-
-function fmt(val: any) {
-  if (val === null || val === undefined) return '-'
-  const num = Number(val)
-  if (isNaN(num)) return String(val)
-  return num.toFixed(2)
-}
-
-function getTrendType(trend: string) {
-  if (trend === 'up') return 'success'
-  if (trend === 'down') return 'danger'
-  return 'warning'
-}
 </script>
 
 <template>
@@ -66,26 +55,27 @@ function getTrendType(trend: string) {
         <div class="pred-row">
           <div class="pred-item">
             <span class="pred-label">当前价</span>
-            <span class="pred-val font-mono">{{ fmt(result.price_prediction?.current) }}</span>
+            <span class="pred-val font-mono">{{ fmtNum(result.price_prediction?.current) }}</span>
           </div>
           <div class="pred-item">
             <span class="pred-label">支撑</span>
-            <span class="pred-val support font-mono">{{ fmt(result.price_prediction?.support) }}</span>
+            <span class="pred-val support font-mono">{{ fmtNum(result.price_prediction?.support) }}</span>
           </div>
           <div class="pred-item">
             <span class="pred-label">压力</span>
-            <span class="pred-val resistance font-mono">{{ fmt(result.price_prediction?.resistance) }}</span>
+            <span class="pred-val resistance font-mono">{{ fmtNum(result.price_prediction?.resistance) }}</span>
           </div>
         </div>
         <div class="pred-days">
           <div class="pred-day">
             <span class="day-label">Day1</span>
             <span class="day-range font-mono">
-              {{ fmt(result.price_prediction?.day1?.target_low) }} ~ {{ fmt(result.price_prediction?.day1?.target_high) }}
+              {{ fmtNum(result.price_prediction?.day1?.target_low) }} ~ {{ fmtNum(result.price_prediction?.day1?.target_high) }}
             </span>
             <el-tag
               size="small"
-              :type="getTrendType(result.price_prediction?.day1?.trend)"
+              :type="getTrendTagType(result.price_prediction?.day1?.trend)"
+              :class="getTrendClass(result.price_prediction?.day1?.trend)"
               effect="dark"
             >
               {{ result.price_prediction?.day1?.signal }}
@@ -94,11 +84,12 @@ function getTrendType(trend: string) {
           <div class="pred-day">
             <span class="day-label">Day2</span>
             <span class="day-range font-mono">
-              {{ fmt(result.price_prediction?.day2?.target_low) }} ~ {{ fmt(result.price_prediction?.day2?.target_high) }}
+              {{ fmtNum(result.price_prediction?.day2?.target_low) }} ~ {{ fmtNum(result.price_prediction?.day2?.target_high) }}
             </span>
             <el-tag
               size="small"
-              :type="getTrendType(result.price_prediction?.day2?.trend)"
+              :type="getTrendTagType(result.price_prediction?.day2?.trend)"
+              :class="getTrendClass(result.price_prediction?.day2?.trend)"
               effect="dark"
             >
               {{ result.price_prediction?.day2?.signal }}
@@ -114,7 +105,7 @@ function getTrendType(trend: string) {
           <div class="strat-grid">
             <div class="strat-item">
               <span class="strat-label">成本</span>
-              <span class="strat-val font-mono">{{ fmt(ps.avg_cost) }}</span>
+              <span class="strat-val font-mono">{{ fmtNum(ps.avg_cost) }}</span>
             </div>
             <div class="strat-item">
               <span class="strat-label">盈亏</span>
@@ -122,7 +113,7 @@ function getTrendType(trend: string) {
                 class="strat-val font-mono"
                 :class="(ps.price_change_pct || 0) >= 0 ? 'profit' : 'loss'"
               >
-                {{ fmt(ps.price_change_pct) }}%
+                {{ fmtNum(ps.price_change_pct) }}%
               </span>
             </div>
             <div class="strat-item">
@@ -131,17 +122,17 @@ function getTrendType(trend: string) {
                 class="strat-val font-mono"
                 :class="profitBelowCost ? 'warn' : 'profit'"
               >
-                {{ fmt(ps.stop_profit_price) }}
+                {{ fmtNum(ps.stop_profit_price) }}
               </span>
             </div>
             <div class="strat-item">
               <span class="strat-label">止损</span>
-              <span class="strat-val loss font-mono">{{ fmt(ps.stop_loss_price) }}</span>
+              <span class="strat-val loss font-mono">{{ fmtNum(ps.stop_loss_price) }}</span>
             </div>
           </div>
           <div class="strat-action">
             <el-tag
-              :type="ps.position_adjust?.includes('减仓') ? 'danger' : ps.position_adjust?.includes('补仓') ? 'success' : 'info'"
+              :type="ps.position_adjust?.includes('减仓') ? 'danger' : ps.position_adjust?.includes('加仓') || ps.position_adjust?.includes('补仓') ? 'success' : 'warning'"
               effect="dark"
               size="small"
             >
@@ -154,7 +145,7 @@ function getTrendType(trend: string) {
             <div class="strat-item">
               <span class="strat-label">时机</span>
               <el-tag
-                :type="ps.buy_timing?.includes('建议') ? 'success' : 'warning'"
+                :type="ps.buy_timing?.includes('不建议') ? 'danger' : ps.buy_timing?.includes('建议') || ps.buy_timing?.includes('可考虑') ? 'success' : 'warning'"
                 effect="dark"
                 size="small"
               >
@@ -167,7 +158,7 @@ function getTrendType(trend: string) {
             </div>
             <div class="strat-item">
               <span class="strat-label">止损</span>
-              <span class="strat-val loss font-mono">{{ fmt(ps.stop_loss_price) }}</span>
+              <span class="strat-val loss font-mono">{{ fmtNum(ps.stop_loss_price) }}</span>
             </div>
             <div class="strat-item">
               <span class="strat-label">风险</span>
@@ -184,6 +175,9 @@ function getTrendType(trend: string) {
       </div>
     </div>
 
+    <!-- 交叉验证 -->
+    <ValidationPanel v-if="result.validation" :validation="result.validation" />
+
     <!-- 技术指标 -->
     <div class="indicators-row">
       <div v-if="result.indicators?.MACD" class="ind-chip">
@@ -195,7 +189,7 @@ function getTrendType(trend: string) {
           {{ result.indicators.MACD.signal }}
         </span>
         <span v-if="result.indicators.MACD.latest" class="ind-detail font-mono">
-          DIF {{ fmt(result.indicators.MACD.latest.DIF) }} / DEA {{ fmt(result.indicators.MACD.latest.DEA) }}
+          DIF {{ fmtNum(result.indicators.MACD.latest.DIF) }} / DEA {{ fmtNum(result.indicators.MACD.latest.DEA) }}
         </span>
       </div>
       <div v-if="result.indicators?.RSI?.['RSI(12)']" class="ind-chip">
@@ -206,7 +200,7 @@ function getTrendType(trend: string) {
         >
           {{ result.indicators.RSI['RSI(12)']?.signal }}
         </span>
-        <span class="ind-detail font-mono">{{ fmt(result.indicators.RSI['RSI(12)']?.latest) }}</span>
+        <span class="ind-detail font-mono">{{ fmtNum(result.indicators.RSI['RSI(12)']?.latest) }}</span>
       </div>
       <div v-if="result.indicators?.KDJ" class="ind-chip">
         <span class="ind-name">KDJ</span>
@@ -217,7 +211,7 @@ function getTrendType(trend: string) {
           {{ result.indicators.KDJ.signal }}
         </span>
         <span v-if="result.indicators.KDJ.latest" class="ind-detail font-mono">
-          K {{ fmt(result.indicators.KDJ.latest.K) }} D {{ fmt(result.indicators.KDJ.latest.D) }} J {{ fmt(result.indicators.KDJ.latest.J) }}
+          K {{ fmtNum(result.indicators.KDJ.latest.K) }} D {{ fmtNum(result.indicators.KDJ.latest.D) }} J {{ fmtNum(result.indicators.KDJ.latest.J) }}
         </span>
       </div>
       <div v-if="result.indicators?.BOLL?.latest" class="ind-chip">
@@ -228,7 +222,7 @@ function getTrendType(trend: string) {
         >
           {{ result.indicators.BOLL.latest.bandwidth < 10 ? '收窄' : result.indicators.BOLL.latest.bandwidth > 25 ? '扩张' : '平稳' }}
         </span>
-        <span class="ind-detail font-mono">带宽 {{ fmt(result.indicators.BOLL.latest.bandwidth) }}%</span>
+        <span class="ind-detail font-mono">带宽 {{ fmtNum(result.indicators.BOLL.latest.bandwidth) }}%</span>
       </div>
     </div>
   </div>

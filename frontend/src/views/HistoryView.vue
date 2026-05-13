@@ -56,8 +56,8 @@ function onEditPositionChange() {
 
 function getSignalClass(signal: string): string {
   if (!signal) return ''
-  if (['强烈买入', '强烈加仓', '买入', '加仓', '建议买入'].includes(signal)) return 'signal-bull'
-  if (['减仓', '卖出', '回避'].includes(signal)) return 'signal-bear'
+  if (['强烈买入', '强烈加仓', '买入', '加仓', '建议买入', '可考虑买入'].includes(signal)) return 'signal-bull'
+  if (['减仓', '卖出', '回避', '不建议买入'].includes(signal)) return 'signal-bear'
   return 'signal-neutral'
 }
 

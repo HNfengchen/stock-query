@@ -215,11 +215,11 @@ class DataFetcher:
                 stock_code, force_refresh=False, days=120
             )
 
-            if db_result.get("source") == "database" and "dataframe" in db_result:
+            if db_result.get("source") == "database" and "history_df" in db_result:
                 fetcher_logger.info(
-                    f"[DataFetcher] 使用数据库中的历史数据 ({len(db_result['dataframe'])} 条)"
+                    f"[DataFetcher] 使用数据库中的历史数据 ({len(db_result['history_df'])} 条)"
                 )
-                history_df = db_result["dataframe"]
+                history_df = db_result["history_df"]
                 info = db_result.get("stock_info", {})
                 fund_flow = db_result.get("fund_flow", {})
             else:

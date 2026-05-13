@@ -6,18 +6,13 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { BarChart, LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent } from 'echarts/components'
 import type { FundFlowData } from '@/types'
+import { fmtAmount } from '@/utils/format'
 
 use([CanvasRenderer, BarChart, LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent])
 
 const props = defineProps<{ data: FundFlowData }>()
 
 const option = ref<any>({})
-
-function formatAmount(value: number): string {
-  if (Math.abs(value) >= 100000000) return (value / 100000000).toFixed(2) + '亿'
-  if (Math.abs(value) >= 10000) return (value / 10000).toFixed(1) + '万'
-  return value.toFixed(0)
-}
 
 function buildOption(data: FundFlowData) {
   const upColor = '#26a69a'
@@ -64,7 +59,7 @@ function buildOption(data: FundFlowData) {
           const val = typeof p.value === 'object' ? p.value.value : p.value
           const label = p.seriesName
           if (label === '主力净流入' || label === '小单净流入') {
-            html += `<span style="color:rgba(255,255,255,0.6)">${label}</span><span style="color:${p.color};font-weight:600">${formatAmount(val)}</span>`
+            html += `<span style="color:rgba(255,255,255,0.6)">${label}</span><span style="color:${p.color};font-weight:600">${fmtAmount(val)}</span>`
           } else if (label === '主力占比') {
             html += `<span style="color:rgba(255,255,255,0.6)">${label}</span><span style="color:${p.color};font-weight:600">${val.toFixed(2)}%</span>`
           } else if (label === '涨跌幅') {
@@ -111,7 +106,7 @@ function buildOption(data: FundFlowData) {
           fontSize: 9,
           inside: false,
           margin: 8,
-          formatter: (value: number) => formatAmount(value),
+          formatter: (value: number) => fmtAmount(value),
         },
         splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)', type: [4, 4] } },
         axisTick: { show: false },

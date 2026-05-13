@@ -1,11 +1,7 @@
 import sys
 import os
-import json
-import math
-import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, Optional
-from functools import lru_cache
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -13,7 +9,7 @@ import yaml
 from scripts.core.data_fetcher import DataFetcher
 from scripts.core.analyzer import StockAnalyzer
 from scripts.technical_indicators import calculate_all_indicators
-from backend.utils import clean_float, to_list, sanitize_for_json, deep_clean_nan, clean_nested
+from backend.utils import clean_float, to_list, deep_clean_nan, clean_nested
 
 _config_cache = None
 _fetcher_cache = None
@@ -143,6 +139,13 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     if cache_key in _result_cache:
         cached_result, cached_time = _result_cache[cache_key]
         if (now - cached_time).total_seconds() < 300:
+            try:
+                from backend.services.history_service import update_signal_cache
+                stock_code = cached_result.get("stock_code", stock_input)
+                update_signal_cache(stock_code, position_status, cached_result.get("trading_signal", {}), cost_price=cost_price)
+            except Exception as e:
+                import logging
+                logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
             return cached_result
 
     fetcher = get_fetcher()
@@ -152,6 +155,12 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     info = fetcher.fetch_stock_info(stock_code)
     fund_flow = fetcher.fetch_fund_flow(stock_code)
     history_df = fetcher.fetch_history_data(stock_code, days=120)
+
+    try:
+        from scripts.database import get_or_fetch_stock_data
+        get_or_fetch_stock_data(stock_code, force_refresh=False, days=120)
+    except Exception:
+        pass
 
     if history_df is None or history_df.empty:
         raise ValueError(f"无法获取 {stock_code} 的历史数据")
@@ -225,9 +234,10 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
 
     try:
         from backend.services.history_service import update_signal_cache
-        update_signal_cache(stock_code, position_status, result.get("trading_signal", {}))
-    except Exception:
-        pass
+        update_signal_cache(stock_code, position_status, result.get("trading_signal", {}), cost_price=cost_price)
+    except Exception as e:
+        import logging
+        logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
 
     return result
 

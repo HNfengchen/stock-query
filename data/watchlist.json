@@ -3,11 +3,11 @@
     "stock_code": "603956",
     "stock_name": "威派格",
     "position_status": "已持有",
-    "cost_price": 11.3,
+    "cost_price": 15.0,
     "added_at": "2026-05-07T01:20:19.183550",
-    "cached_signal": "加仓",
-    "cached_signal_score": 0.665,
-    "cached_signal_time": "2026-05-12T02:32:45.724565"
+    "cached_signal": "强烈加仓",
+    "cached_signal_score": 0.703,
+    "cached_signal_time": "2026-05-14T02:04:15.018979"
   },
   {
     "stock_code": "601515",
@@ -17,8 +17,8 @@
     "added_at": "2026-05-07T02:26:47.686726",
     "updated_at": "2026-05-11T23:13:43.521551",
     "cached_signal": "观望",
-    "cached_signal_score": 0.472,
-    "cached_signal_time": "2026-05-12T02:33:03.794875"
+    "cached_signal_score": 0.476,
+    "cached_signal_time": "2026-05-14T02:04:22.702649"
   },
   {
     "stock_code": "601388",
@@ -27,8 +27,8 @@
     "cost_price": null,
     "added_at": "2026-05-07T02:41:19.746858",
     "cached_signal": "观望",
-    "cached_signal_score": 0.36,
-    "cached_signal_time": "2026-05-12T02:33:02.642683"
+    "cached_signal_score": 0.48,
+    "cached_signal_time": "2026-05-14T02:04:32.808192"
   },
   {
     "stock_code": "002108",
@@ -36,9 +36,9 @@
     "position_status": "未持有",
     "cost_price": null,
     "added_at": "2026-05-07T02:41:50.489477",
-    "cached_signal": "强烈买入",
-    "cached_signal_score": 0.772,
-    "cached_signal_time": "2026-05-12T02:33:11.140555"
+    "cached_signal": "买入",
+    "cached_signal_score": 0.517,
+    "cached_signal_time": "2026-05-14T02:04:49.554565"
   },
   {
     "stock_code": "600152",
@@ -46,9 +46,9 @@
     "position_status": "未持有",
     "cost_price": null,
     "added_at": "2026-05-07T02:42:26.893189",
-    "cached_signal": "观望",
-    "cached_signal_score": 0.427,
-    "cached_signal_time": "2026-05-12T02:33:18.164925"
+    "cached_signal": "买入",
+    "cached_signal_score": 0.663,
+    "cached_signal_time": "2026-05-14T02:07:16.030057"
   },
   {
     "stock_code": "601016",
@@ -56,9 +56,9 @@
     "position_status": "未持有",
     "cost_price": null,
     "added_at": "2026-05-07T02:42:55.882032",
-    "cached_signal": "强烈买入",
-    "cached_signal_score": 0.718,
-    "cached_signal_time": "2026-05-12T02:33:35.150346"
+    "cached_signal": "买入",
+    "cached_signal_score": 0.624,
+    "cached_signal_time": "2026-05-14T02:05:39.880762"
   },
   {
     "stock_code": "000630",
@@ -68,6 +68,36 @@
     "added_at": "2026-05-07T23:18:47.337445",
     "cached_signal": "买入",
     "cached_signal_score": 0.645,
-    "cached_signal_time": "2026-05-12T02:33:59.499363"
+    "cached_signal_time": "2026-05-14T02:07:04.191385"
+  },
+  {
+    "stock_code": "000981",
+    "stock_name": "山子高科",
+    "position_status": "未持有",
+    "cost_price": null,
+    "added_at": "2026-05-12T21:00:34.127491",
+    "cached_signal": "观望",
+    "cached_signal_score": 0.411,
+    "cached_signal_time": "2026-05-14T02:08:36.190899"
+  },
+  {
+    "stock_code": "002340",
+    "stock_name": "格林美",
+    "position_status": "未持有",
+    "cost_price": null,
+    "added_at": "2026-05-14T02:02:49.347595",
+    "cached_signal": "强烈买入",
+    "cached_signal_score": 0.733,
+    "cached_signal_time": "2026-05-14T02:07:08.085804"
+  },
+  {
+    "stock_code": "601898",
+    "stock_name": "中煤能源",
+    "position_status": "未持有",
+    "cost_price": null,
+    "added_at": "2026-05-14T02:04:06.968450",
+    "cached_signal": "观望",
+    "cached_signal_score": 0.466,
+    "cached_signal_time": "2026-05-14T02:06:47.521552"
   }
 ]

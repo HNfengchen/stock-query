@@ -4,11 +4,12 @@ import { useBacktestStore } from '@/stores/backtestStore'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { LineChart, BarChart, ScatterChart, CustomChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent, LegendComponent, MarkLineComponent } from 'echarts/components'
+import { LineChart, BarChart, CustomChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, TitleComponent } from 'echarts/components'
 import type { BacktestRequest } from '@/types'
+import { TREND_LABEL_MAP, getTrendColor, getTrendTagType, getTrendClass, trendToValue, changeToTrendValue } from '@/utils/format'
 
-use([CanvasRenderer, LineChart, BarChart, ScatterChart, CustomChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent])
+use([CanvasRenderer, LineChart, BarChart, CustomChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, TitleComponent])
 
 const store = useBacktestStore()
 
@@ -76,7 +77,8 @@ const priceCompareOption = computed(() => {
         const p = preds[idx]
         if (!p) return ''
         let html = `<div style="font-weight:600;margin-bottom:6px">${p.date}</div>`
-        html += `<div>预测趋势: <span style="color:${p.trend === 'up' ? 'var(--color-up)' : p.trend === 'down' ? 'var(--color-down)' : 'var(--text-muted)'}">${p.trend === 'up' ? '上涨' : p.trend === 'down' ? '下跌' : '震荡'}</span></div>`
+        const tColor = getTrendColor(p.trend)
+        html += `<div>预测趋势: <span style="color:${tColor}">${TREND_LABEL_MAP[p.trend] || p.trend}</span></div>`
         html += `<div>预测区间: <span class="font-mono">${p.predicted_low.toFixed(2)} ~ ${p.predicted_high.toFixed(2)}</span></div>`
         if (p.current_price != null) {
           html += `<div>当日收盘: <span class="font-mono">${p.current_price.toFixed(2)}</span></div>`
@@ -157,18 +159,12 @@ const trendAccuracyOption = computed(() => {
   const preds = store.result.predictions
   const dates = preds.map(p => p.date)
 
-  const trendValues = preds.map(p => {
-    if (p.trend === 'up') return 1
-    if (p.trend === 'down') return -1
-    return 0
-  })
+  const trendValues = preds.map(p => trendToValue(p.trend))
 
   const actualTrendValues = preds.map(p => {
     if (p.actual_price == null || p.current_price == null) return null
     const change = (p.actual_price - p.current_price) / p.current_price
-    if (change > 0.005) return 1
-    if (change < -0.005) return -1
-    return 0
+    return changeToTrendValue(change)
   })
 
   const matchData: number[] = []
@@ -203,14 +199,12 @@ const trendAccuracyOption = computed(() => {
         if (idx === undefined || idx < 0) return ''
         const p = preds[idx]
         if (!p) return ''
-        const trendMap: Record<string, string> = { up: '上涨', down: '下跌', neutral: '震荡' }
         let html = `<div style="font-weight:600;margin-bottom:4px">${p.date}</div>`
-        html += `<div>预测: <span style="color:${p.trend === 'up' ? 'var(--color-up)' : p.trend === 'down' ? 'var(--color-down)' : 'var(--text-muted)'}">${trendMap[p.trend] || p.trend}</span></div>`
+        html += `<div>预测: <span style="color:${getTrendColor(p.trend)}">${TREND_LABEL_MAP[p.trend] || p.trend}</span></div>`
         const actualVal = actualTrendValues[idx]
         if (actualVal !== null && actualVal !== undefined) {
-          const actualName = actualVal === 1 ? '上涨' : actualVal === -1 ? '下跌' : '震荡'
-          const actualColor = actualVal === 1 ? 'var(--color-up)' : actualVal === -1 ? 'var(--color-down)' : 'var(--text-muted)'
-          html += `<div>实际: <span style="color:${actualColor}">${actualName}</span></div>`
+          const actualName = actualVal === 2 ? '大幅上涨' : actualVal === 1 ? '上涨' : actualVal === -1 ? '下跌' : actualVal === -2 ? '大幅下跌' : '震荡'
+          html += `<div>实际: <span style="color:${getTrendColor(actualVal === 2 ? 'strong_up' : actualVal === 1 ? 'up' : actualVal === -1 ? 'down' : actualVal === -2 ? 'strong_down' : 'neutral')}">${actualName}</span></div>`
         }
         const matchVal = matchData[idx]
         if (matchVal !== undefined && !isNaN(matchVal)) {
@@ -282,7 +276,7 @@ function exportCSV() {
       ? ((p.actual_price - p.current_price) / p.current_price * 100).toFixed(2)
       : ''
     return [
-      p.date, p.trend, p.predicted_low, p.predicted_high,
+      p.date, TREND_LABEL_MAP[p.trend] || p.trend, p.predicted_low, p.predicted_high,
       p.current_price ?? '', p.actual_price ?? '', chg,
       p.hit ? '是' : '否',
     ]
@@ -396,10 +390,15 @@ function exportCSV() {
             <div class="chart-title">逐日预测明细</div>
             <el-table :data="store.result.predictions.slice((currentPage - 1) * pageSize, currentPage * pageSize)" size="small" class="dark-table">
               <el-table-column prop="date" label="日期" width="110" />
-              <el-table-column prop="trend" label="趋势" width="70">
+              <el-table-column prop="trend" label="趋势" width="80">
                 <template #default="{ row }">
-                  <el-tag :type="row.trend === 'up' ? 'success' : row.trend === 'down' ? 'danger' : 'info'" size="small" effect="dark">
-                    {{ row.trend === 'up' ? '上涨' : row.trend === 'down' ? '下跌' : '震荡' }}
+                  <el-tag
+                    :type="getTrendTagType(row.trend)"
+                    :class="getTrendClass(row.trend)"
+                    size="small"
+                    effect="dark"
+                  >
+                    {{ TREND_LABEL_MAP[row.trend] || row.trend }}
                   </el-tag>
                 </template>
               </el-table-column>

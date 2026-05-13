@@ -39,6 +39,9 @@ analyzer:
     strong_buy: 0.7
     buy: 0.5
     hold: 0.3
+  trend_thresholds:
+    strong_threshold: 0.03
+    normal_threshold: 0.01
   validation:
     score_thresholds:
       technical_bullish: 0.65

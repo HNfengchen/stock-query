@@ -9,6 +9,7 @@ import TechnicalChart from '@/components/TechnicalChart.vue'
 import FundFlowChart from '@/components/FundFlowChart.vue'
 import ReportPanel from '@/components/ReportPanel.vue'
 import type { AnalysisRequest } from '@/types'
+import { fmtNum, fmtMarketCap, fmtVolume } from '@/utils/format'
 
 const route = useRoute()
 const store = useStockStore()
@@ -46,6 +47,7 @@ async function doAnalyze() {
   if (!form.value.stock_input.trim()) return
   try {
     await store.runAnalysis(form.value)
+    await store.loadWatchlist()
   } catch (e) {
     console.error(e)
   }
@@ -83,32 +85,6 @@ const changeAmt = computed(() => {
   const v = Number(si.value['涨跌额'])
   return isNaN(v) ? null : v
 })
-
-function fmtNum(val: any, decimals: number = 2): string {
-  if (val === null || val === undefined || val === 'N/A') return '-'
-  const num = Number(val)
-  if (isNaN(num)) return String(val)
-  return num.toFixed(decimals)
-}
-
-function fmtMarketCap(val: any): string {
-  if (val === null || val === undefined || val === 'N/A') return '-'
-  const num = Number(val)
-  if (isNaN(num)) return String(val)
-  if (Math.abs(num) >= 1000000000000) return (num / 1000000000000).toFixed(2) + '万亿'
-  if (Math.abs(num) >= 100000000) return (num / 100000000).toFixed(2) + '亿'
-  if (Math.abs(num) >= 10000) return (num / 10000).toFixed(2) + '万'
-  return num.toFixed(2)
-}
-
-function fmtVolume(val: any): string {
-  if (val === null || val === undefined || val === 'N/A') return '-'
-  const num = Number(val)
-  if (isNaN(num)) return String(val)
-  if (Math.abs(num) >= 100000000) return (num / 100000000).toFixed(2) + '亿'
-  if (Math.abs(num) >= 10000) return (num / 10000).toFixed(2) + '万'
-  return num.toFixed(0)
-}
 
 const emptyKline = {
   dates: [], opens: [], closes: [], highs: [], lows: [], volumes: [],

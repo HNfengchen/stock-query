@@ -3,15 +3,22 @@ import os
 import json
 import math
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import pandas as pd
 from scripts.core.backtest import Backtester
 from scripts.technical_indicators import calculate_all_indicators
-from backend.utils import clean_float, to_list, sanitize_for_json
+from backend.utils import sanitize_for_json
 from backend.services.analysis_service import get_fetcher
+
+
+def _get_config():
+    import yaml
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "config.yaml")
+    with open(config_path) as f:
+        return yaml.safe_load(f)
 
 
 def get_history_data(stock_code: str, days: int = 120) -> pd.DataFrame:
@@ -52,6 +59,14 @@ def _parse_lookback_days(value) -> int:
 
 def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict:
     params = params or {}
+
+    stock_name = ""
+    try:
+        fetcher = get_fetcher()
+        _, stock_name, _ = fetcher.resolve_stock_code(stock_code)
+    except Exception:
+        pass
+
     try:
         atr_multiplier = float(params.get("atr_multiplier", 1.5))
     except (TypeError, ValueError):
@@ -68,13 +83,15 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
     if df is None or df.empty or len(df) < minimum_rows:
         raise ValueError(f"无法获取 {stock_code} 的足够历史数据")
 
-    backtester = Backtester(atr_multiplier=atr_multiplier, stock_code=stock_code)
+    backtester = Backtester(atr_multiplier=atr_multiplier, stock_code=stock_code, stock_name=stock_name, config=_get_config())
 
     df_sorted = df.copy()
     if "日期" in df_sorted.columns:
         df_sorted["日期"] = pd.to_datetime(df_sorted["日期"])
         df_sorted = df_sorted.sort_values("日期")
         df_sorted = df_sorted.set_index("日期")
+    elif df_sorted.index.name == "日期" or hasattr(df_sorted.index, "dtype"):
+        df_sorted = df_sorted.sort_index()
 
     all_predictions = backtester.calculate_predictions(
         df_sorted, lookback_days=lookback_days
@@ -106,7 +123,14 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
         actual_value = p.get("actual_day1")
         actual = _safe_float(actual_value) if actual_value is not None else None
         trend = p.get("trend", "neutral")
-        target_position = position_size if trend == "up" else 0.0
+        if trend in ("strong_up",):
+            target_position = position_size * 1.0
+        elif trend in ("up",):
+            target_position = position_size * 0.7
+        elif trend in ("strong_down", "down"):
+            target_position = 0.0
+        else:
+            target_position = position_size * 0.3
         turnover = abs(target_position - previous_position)
         cost = turnover * total_cost_rate
         price_return = 0.0
@@ -197,17 +221,6 @@ def run_builtin_backtest(stock_code: str, params: Optional[Dict] = None) -> Dict
     return sanitize_for_json(result)
 
 
-BLOCKED_MODULES = {
-    'os', 'sys', 'subprocess', 'shutil', 'socket', 'http', 'urllib',
-    'requests', 'pathlib', 'importlib', 'ctypes', 'pickle', 'shelve',
-    'marshal', 'code', 'codeop', 'compile', 'compileall', 'py_compile',
-    'zipimport', 'pkgutil', 'multiprocessing', 'threading', 'signal',
-    'tempfile', 'glob', 'fnmatch', 'linecache', 'tokenize', 'dis',
-    'inspect', 'ast', 'eval', 'exec', 'open', '__import__',
-    'globals', 'locals', 'vars', 'dir', 'getattr', 'setattr', 'delattr',
-    'hasattr', 'type', 'object', 'class', 'bases',
-}
-
 DANGEROUS_PATTERNS = [
     '__import__', 'import os', 'import sys', 'import subprocess',
     'import shutil', 'import socket', 'import http', 'import urllib',
@@ -253,10 +266,10 @@ def run_custom_backtest(stock_code: str, algorithm_code: str, algorithm_name: st
 
     local_ns = {
         '__builtins__': safe_builtins,
-        'pd': __import__('pandas'),
-        'np': __import__('numpy'),
-        'json': __import__('json'),
-        'math': __import__('math'),
+        'pd': pd,
+        'np': np,
+        'json': json,
+        'math': math,
         'data': data_dict,
         'indicators': indicators_dict,
     }
@@ -270,7 +283,7 @@ def run_custom_backtest(stock_code: str, algorithm_code: str, algorithm_name: st
         raise ValueError("算法代码必须定义 signal(df, indicators) 函数")
 
     signal_func = local_ns['signal']
-    test_df = __import__('pandas').DataFrame(data_dict)
+    test_df = pd.DataFrame(data_dict)
     try:
         test_result = signal_func(test_df, indicators_dict)
         if test_result not in ('buy', 'sell', 'hold'):

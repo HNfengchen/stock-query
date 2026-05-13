@@ -5,7 +5,6 @@
 
 import efinance as ef
 import pandas as pd
-import numpy as np
 from typing import Dict, Optional, Tuple
 from datetime import datetime
 import time
@@ -246,7 +245,7 @@ def get_stock_info(stock_code: str) -> Dict:
                 "成交额": "成交额",
                 "换手率": "换手率",
                 "量比": "量比",
-                "市盈率-动态": "市盈率-动态",
+                "市盈率-动态": "市盈率(动)",
                 "市净率": "市净率",
                 "总市值": "总市值",
                 "流通市值": "流通市值",
@@ -255,6 +254,10 @@ def get_stock_info(stock_code: str) -> Dict:
             for dest_key, src_key in mapping.items():
                 if dest_key not in info or info.get(dest_key) is None:
                     val = s.get(src_key)
+                    if val is None and src_key == "市盈率(动)":
+                        val = s.get("市盈率-动态")
+                    if val is None and src_key == "市净率":
+                        val = s.get("市净率(动)")
                     if val is not None and not pd.isna(val):
                         info[dest_key] = val
 
@@ -310,6 +313,79 @@ def get_stock_info(stock_code: str) -> Dict:
                         info["市净率"] = pb
     except Exception as e:
         print(f"efinance 获取基础信息失败: {e}")
+
+    try:
+        import requests as _req
+
+        market_prefix = "sh" if stock_code.startswith(("6", "5")) else "sz"
+        tencent_url = f"http://qt.gtimg.cn/q={market_prefix}{stock_code}"
+        tencent_resp = _req.get(tencent_url, timeout=10)
+        tencent_text = tencent_resp.text.strip()
+        if tencent_text and "~" in tencent_text:
+            tp = tencent_text.split("~")
+            if len(tp) > 35:
+                if not info.get("市盈率-动态") or info.get("市盈率-动态") == "N/A":
+                    pe_val = None
+                    for pe_idx in [39, 52, 47]:
+                        try:
+                            v = float(tp[pe_idx])
+                            if v != 0:
+                                pe_val = v
+                                break
+                        except (ValueError, IndexError):
+                            pass
+                    if pe_val is not None:
+                        info["市盈率-动态"] = pe_val
+                if not info.get("市净率") or info.get("市净率") == "N/A":
+                    try:
+                        info["市净率"] = float(tp[46])
+                    except (ValueError, IndexError):
+                        pass
+                if not info.get("总市值") or info.get("总市值") == "N/A":
+                    try:
+                        mv = float(tp[44])
+                        if mv > 0:
+                            info["总市值"] = mv * 100000000
+                    except (ValueError, IndexError):
+                        pass
+                if not info.get("流通市值") or info.get("流通市值") == "N/A":
+                    try:
+                        cmv = float(tp[45])
+                        if cmv > 0:
+                            info["流通市值"] = cmv * 100000000
+                    except (ValueError, IndexError):
+                        pass
+                if not info.get("振幅") or info.get("振幅") == "N/A":
+                    try:
+                        info["振幅"] = float(tp[43])
+                    except (ValueError, IndexError):
+                        pass
+    except Exception as e:
+        print(f"腾讯接口获取补充信息失败: {e}")
+
+    try:
+        import requests as _req
+
+        secid = f"1.{stock_code}" if stock_code.startswith(("6", "5")) else f"0.{stock_code}"
+        dc_url = "http://datacenter-web.eastmoney.com/api/data/v1/get"
+        dc_params = {
+            "reportName": "RPT_F10_BASIC_ORGINFO",
+            "columns": "SECURITY_CODE,EM2016,BOARD_NAME_LEVEL",
+            "filter": f'(SECURITY_CODE="{stock_code}")',
+            "pageNumber": 1,
+            "pageSize": 1,
+        }
+        dc_resp = _req.get(dc_url, params=dc_params, timeout=10)
+        dc_data = dc_resp.json()
+        dc_result = dc_data.get("result", {})
+        if dc_result and dc_result.get("data"):
+            row = dc_result["data"][0]
+            if not info.get("所属行业") or info.get("所属行业") == "N/A":
+                industry = row.get("EM2016") or row.get("BOARD_NAME_LEVEL")
+                if industry and str(industry) not in ("None", "", "-"):
+                    info["所属行业"] = str(industry).split("-")[-1] if "-" in str(industry) else str(industry)
+    except Exception as e:
+        print(f"datacenter 获取行业信息失败: {e}")
 
     if "名称" not in info or info.get("名称") is None:
         info["名称"] = stock_code
@@ -498,17 +574,6 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
     try:
         df = ef.stock.get_quote_history(stock_code, klt=101, fqt=1)
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
-            df = df.rename(
-                columns={
-                    "日期": "日期",
-                    "开盘": "开盘",
-                    "收盘": "收盘",
-                    "最高": "最高",
-                    "最低": "最低",
-                    "成交量": "成交量",
-                    "成交额": "成交额",
-                }
-            )
             df = clean_data(df, stock_code, stock_name)
             result = df.tail(days)
             if not result.empty:
@@ -516,6 +581,43 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
                 return result
     except Exception as e:
         print(f"efinance 获取历史数据失败: {e}")
+
+    try:
+        import requests as _req
+
+        market_prefix = "sh" if stock_code.startswith(("6", "5")) else "sz"
+        tencent_url = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+        tencent_params = {"param": f"{market_prefix}{stock_code},day,,,{days},qfq"}
+        tencent_resp = _req.get(tencent_url, params=tencent_params, timeout=10)
+        tencent_data = tencent_resp.json()
+        stock_key = f"{market_prefix}{stock_code}"
+        stock_info = tencent_data.get("data", {}).get(stock_key, {})
+        day_lines = stock_info.get("qfqday", stock_info.get("day", []))
+        if day_lines:
+            rows = []
+            for line in day_lines:
+                if len(line) >= 6:
+                    rows.append({
+                        "日期": line[0],
+                        "开盘": float(line[1]),
+                        "收盘": float(line[2]),
+                        "最高": float(line[3]),
+                        "最低": float(line[4]),
+                        "成交量": float(line[5]),
+                    })
+            if rows:
+                df = pd.DataFrame(rows)
+                df["日期"] = pd.to_datetime(df["日期"])
+                df = df.set_index("日期")
+                df.index.name = "日期"
+                df = df.reset_index()
+                df = clean_data(df, stock_code, stock_name)
+                result = df.tail(days)
+                if not result.empty:
+                    print(f"腾讯接口获取历史数据成功: {len(result)} 条")
+                    return result
+    except Exception as e:
+        print(f"腾讯接口获取历史数据失败: {e}")
 
     try:
         import baostock as bs
@@ -554,6 +656,26 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
         print("baostock 未安装")
     except Exception as e:
         print(f"baostock 获取历史数据失败: {e}")
+
+    try:
+        from scripts.database import StockDataManager
+        db = StockDataManager(stock_code)
+        db_df = db.get_historical_data(days)
+        if db_df is not None and not db_df.empty:
+            required_cols = ["开盘", "收盘", "最高", "最低", "成交量"]
+            if all(c in db_df.columns for c in required_cols):
+                if db_df.index.name == "日期" and "日期" in db_df.columns:
+                    db_df = db_df.drop(columns=["日期"])
+                db_df = db_df.reset_index()
+                if "index" in db_df.columns:
+                    db_df = db_df.rename(columns={"index": "日期"})
+                db_df = clean_data(db_df, stock_code, stock_name)
+                result = db_df.tail(days)
+                if not result.empty:
+                    print(f"数据库回退获取历史数据成功: {len(result)} 条")
+                    return result
+    except Exception as e:
+        print(f"数据库回退获取历史数据失败: {e}")
 
     return pd.DataFrame()
 

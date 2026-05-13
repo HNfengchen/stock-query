@@ -4,11 +4,21 @@
 """
 
 import pandas as pd
-import numpy as np
 from typing import Dict, Optional
 from scripts.logger import get_logger
 
 analyzer_logger = get_logger("Analyzer")
+
+TREND_STRONG_UP = "strong_up"
+TREND_UP = "up"
+TREND_NEUTRAL = "neutral"
+TREND_DOWN = "down"
+TREND_STRONG_DOWN = "strong_down"
+
+TREND_ALL = [TREND_STRONG_UP, TREND_UP, TREND_NEUTRAL, TREND_DOWN, TREND_STRONG_DOWN]
+
+STRONG_THRESHOLD = 0.03
+NORMAL_THRESHOLD = 0.01
 
 
 class AnalysisError(Exception):
@@ -524,6 +534,53 @@ class StockAnalyzer:
         except (IndexError, TypeError, ValueError):
             return default
 
+    def _detect_signal_persistence(self, indicators: Dict) -> Dict:
+        """检测技术指标的信号持续性
+
+        返回:
+            dict: 各指标信号的持续天数和方向
+        """
+        persistence = {}
+
+        macd_data = indicators.get("MACD", {})
+        macd_hist = macd_data.get("histogram")
+        if macd_hist is not None and hasattr(macd_hist, "__len__") and len(macd_hist) >= 2:
+            try:
+                vals = list(macd_hist.iloc[-10:]) if hasattr(macd_hist, "iloc") else list(macd_hist[-10:])
+                vals = [float(v) for v in vals if not pd.isna(v)]
+                if vals:
+                    sign = 1 if vals[-1] > 0 else -1
+                    days = 0
+                    for v in reversed(vals):
+                        if (v > 0 and sign > 0) or (v < 0 and sign < 0):
+                            days += 1
+                        else:
+                            break
+                    persistence["macd"] = {"direction": "bullish" if sign > 0 else "bearish", "days": days}
+            except (TypeError, ValueError, IndexError):
+                pass
+
+        rsi_data = indicators.get("RSI", {})
+        rsi_12 = rsi_data.get("RSI(12)", {})
+        if isinstance(rsi_12, dict):
+            rsi_series = rsi_12.get("values")
+            if rsi_series is not None and hasattr(rsi_series, "__len__") and len(rsi_series) >= 2:
+                try:
+                    vals = list(rsi_series.iloc[-10:]) if hasattr(rsi_series, "iloc") else list(rsi_series[-10:])
+                    vals = [float(v) for v in vals if not pd.isna(v)]
+                    if vals:
+                        latest = vals[-1]
+                        if latest >= 70:
+                            over_days = sum(1 for v in reversed(vals) if v >= 70)
+                            persistence["rsi"] = {"direction": "overbought", "days": over_days}
+                        elif latest <= 30:
+                            over_days = sum(1 for v in reversed(vals) if v <= 30)
+                            persistence["rsi"] = {"direction": "oversold", "days": over_days}
+                except (TypeError, ValueError, IndexError):
+                    pass
+
+        return persistence
+
     def cross_validate_analysis(
         self,
         analysis: Dict,
@@ -535,6 +592,13 @@ class StockAnalyzer:
     ) -> Dict:
         """
         对分析结论进行交叉验证，返回可解释的一致性、风控与行动门控结果。
+
+        优化点:
+        1. 加权投票 - 使用模型权重(技术0.5/资金0.3/情绪0.2)替代简单计数
+        2. 缺失数据标记 - 检测各维度数据缺失，排除并降低共识阈值
+        3. 信号持续性 - MACD金叉持续天数、RSI超买/超卖持续天数
+        4. 扩展冲突检测 - 新增"技术偏弱但资金流入"、"RSI背离"等模式
+        5. 柔性门控 - 分级action_gate替代二元门控
 
         参数:
             analysis: 技术、资金、情绪分析结果
@@ -566,72 +630,116 @@ class StockAnalyzer:
         agreement_weight = cw.get("agreement", 0.6)
         per_conflict_penalty = cp.get("per_conflict", 0.1)
         max_conflict_penalty = cp.get("max", 0.3)
+
+        model_weights = self.weights
+        w_tech = model_weights.get("technical", 0.5)
+        w_fund = model_weights.get("fund_flow", 0.3)
+        w_sent = model_weights.get("sentiment", 0.2)
+
         supporting_factors = []
         opposing_factors = []
         conflicts = []
+        missing_dimensions = []
 
         technical_score = self._safe_score(
-            analysis.get("technical", {}).get("score"), default=0.5
+            analysis.get("technical", {}).get("score"), default=None
         )
         fund_flow = analysis.get("fund_flow", {})
-        fund_score = self._safe_score(fund_flow.get("score"), default=0.5)
-        sentiment_score = self._safe_score(
-            analysis.get("sentiment", {}).get("score"), default=0.5
+        fund_score_raw = self._safe_score(fund_flow.get("score"), default=None)
+        sentiment_score_raw = self._safe_score(
+            analysis.get("sentiment", {}).get("score"), default=None
         )
         signal_score = self._safe_score(trading_signal.get("score"), default=0.5)
 
-        bullish_votes = 0
-        bearish_votes = 0
+        tech_missing = technical_score is None
+        fund_missing = fund_score_raw is None
+        sent_missing = sentiment_score_raw is None
 
-        if technical_score >= tech_bullish:
-            bullish_votes += 1
-            supporting_factors.append("技术评分偏强")
-        elif technical_score <= tech_bearish:
-            bearish_votes += 1
-            opposing_factors.append("技术评分偏弱")
+        technical_score = technical_score if technical_score is not None else 0.5
+        fund_score = fund_score_raw if fund_score_raw is not None else 0.5
+        sentiment_score = sentiment_score_raw if sentiment_score_raw is not None else 0.5
 
-        fund_trend = fund_flow.get("trend", "neutral")
-        if fund_score >= fund_bullish or fund_trend == "inflow":
-            bullish_votes += 1
-            supporting_factors.append("资金流入支持")
-        elif fund_score <= fund_bearish or fund_trend == "outflow":
-            bearish_votes += 1
-            opposing_factors.append("资金流出压制")
+        if tech_missing:
+            missing_dimensions.append("技术")
+        if fund_missing:
+            missing_dimensions.append("资金")
+        if sent_missing:
+            missing_dimensions.append("情绪")
 
-        if sentiment_score >= sentiment_bullish:
-            bullish_votes += 1
-            supporting_factors.append("市场情绪偏暖")
-        elif sentiment_score <= sentiment_bearish:
-            bearish_votes += 1
-            opposing_factors.append("市场情绪偏弱")
+        weighted_bullish = 0.0
+        weighted_bearish = 0.0
+        active_weight_total = 0.0
+
+        if not tech_missing:
+            active_weight_total += w_tech
+            if technical_score >= tech_bullish:
+                weighted_bullish += w_tech
+                supporting_factors.append("技术评分偏强")
+            elif technical_score <= tech_bearish:
+                weighted_bearish += w_tech
+                opposing_factors.append("技术评分偏弱")
+
+        if not fund_missing:
+            active_weight_total += w_fund
+            fund_trend = fund_flow.get("trend", "neutral")
+            if fund_score >= fund_bullish or fund_trend == "inflow":
+                weighted_bullish += w_fund
+                supporting_factors.append("资金流入支持")
+            elif fund_score <= fund_bearish or fund_trend == "outflow":
+                weighted_bearish += w_fund
+                opposing_factors.append("资金流出压制")
+
+        if not sent_missing:
+            active_weight_total += w_sent
+            if sentiment_score >= sentiment_bullish:
+                weighted_bullish += w_sent
+                supporting_factors.append("市场情绪偏暖")
+            elif sentiment_score <= sentiment_bearish:
+                weighted_bearish += w_sent
+                opposing_factors.append("市场情绪偏弱")
 
         prediction_trends = [
             price_prediction.get("day1", {}).get("trend"),
             price_prediction.get("day2", {}).get("trend"),
         ]
-        up_predictions = prediction_trends.count("up")
-        down_predictions = prediction_trends.count("down")
-        if up_predictions >= 2:
-            bullish_votes += 1
+        up_weight_pred = sum(
+            1.0 if t == TREND_STRONG_UP else 0.6
+            for t in prediction_trends if t in (TREND_STRONG_UP, TREND_UP)
+        )
+        down_weight_pred = sum(
+            1.0 if t == TREND_STRONG_DOWN else 0.6
+            for t in prediction_trends if t in (TREND_STRONG_DOWN, TREND_DOWN)
+        )
+        pred_weight = 0.15
+        if up_weight_pred > down_weight_pred:
+            weighted_bullish += pred_weight
+            active_weight_total += pred_weight
             supporting_factors.append("短线价格预测向上")
-        elif down_predictions >= 1:
-            bearish_votes += 1
+        elif down_weight_pred > up_weight_pred:
+            weighted_bearish += pred_weight
+            active_weight_total += pred_weight
             opposing_factors.append("短线价格预测承压")
 
         macd_signal = indicators.get("MACD", {}).get("signal", "")
+        macd_weight = 0.10
         if macd_signal in ("金叉", "金叉确认", "多头"):
-            bullish_votes += 1
+            weighted_bullish += macd_weight
+            active_weight_total += macd_weight
             supporting_factors.append(f"MACD{macd_signal}")
         elif macd_signal in ("死叉", "死叉确认", "空头"):
-            bearish_votes += 1
+            weighted_bearish += macd_weight
+            active_weight_total += macd_weight
             opposing_factors.append(f"MACD{macd_signal}")
 
         kdj_signal = indicators.get("KDJ", {}).get("signal", "")
+        kdj_weight = 0.08
         if kdj_signal in ("金叉", "超卖"):
-            bullish_votes += 1
+            weighted_bullish += kdj_weight
+            active_weight_total += kdj_weight
             supporting_factors.append(f"KDJ{kdj_signal}")
         elif kdj_signal in ("死叉", "超买"):
-            bearish_votes += 1
+            weighted_bearish += kdj_weight
+            active_weight_total += kdj_weight
             opposing_factors.append(f"KDJ{kdj_signal}")
 
         rsi_12 = indicators.get("RSI", {}).get("RSI(12)", {})
@@ -641,19 +749,24 @@ class StockAnalyzer:
         else:
             rsi_latest = self._latest_indicator_value(rsi_12)
             rsi_signal = ""
+        rsi_weight = 0.07
         try:
             rsi_value = float(rsi_latest) if rsi_latest is not None else None
             if rsi_value is not None and rsi_value >= 70:
-                bearish_votes += 1
+                weighted_bearish += rsi_weight
+                active_weight_total += rsi_weight
                 opposing_factors.append("RSI接近超买")
             elif rsi_value is not None and rsi_value <= 30:
-                bullish_votes += 1
+                weighted_bullish += rsi_weight
+                active_weight_total += rsi_weight
                 supporting_factors.append("RSI接近超卖反弹区")
             elif rsi_signal == "偏强":
-                bullish_votes += 1
+                weighted_bullish += rsi_weight
+                active_weight_total += rsi_weight
                 supporting_factors.append("RSI偏强")
             elif rsi_signal == "偏弱":
-                bearish_votes += 1
+                weighted_bearish += rsi_weight
+                active_weight_total += rsi_weight
                 opposing_factors.append("RSI偏弱")
         except (TypeError, ValueError):
             pass
@@ -666,36 +779,74 @@ class StockAnalyzer:
                 upper = float(upper) if upper is not None else None
                 lower = float(lower) if lower is not None else None
                 if upper is not None and current_price >= upper:
-                    bearish_votes += 1
+                    weighted_bearish += 0.05
+                    active_weight_total += 0.05
                     opposing_factors.append("价格接近布林上轨")
                 elif lower is not None and current_price <= lower:
-                    bullish_votes += 1
+                    weighted_bullish += 0.05
+                    active_weight_total += 0.05
                     supporting_factors.append("价格接近布林下轨")
             except (TypeError, ValueError):
                 pass
 
-        if technical_score >= tech_bullish and (fund_score <= fund_bearish or fund_trend == "outflow"):
-            conflicts.append("技术偏强但资金未确认")
-        if signal_score >= 0.7 and down_predictions > 0:
-            conflicts.append("交易信号偏强但价格预测转弱")
-        if signal_score < 0.5 and bullish_votes >= 3:
-            conflicts.append("多项指标偏多但综合信号未确认")
+        persistence = self._detect_signal_persistence(indicators)
+        persistence_info = {}
+        for key, info in persistence.items():
+            direction = info.get("direction", "")
+            days = info.get("days", 0)
+            if key == "macd":
+                persistence_info["macd_persistence"] = info
+                if direction == "bullish" and days >= 3:
+                    weighted_bullish += 0.05
+                    active_weight_total += 0.05
+                    supporting_factors.append(f"MACD多头持续{days}日")
+                elif direction == "bearish" and days >= 3:
+                    weighted_bearish += 0.05
+                    active_weight_total += 0.05
+                    opposing_factors.append(f"MACD空头持续{days}日")
+            elif key == "rsi":
+                persistence_info["rsi_persistence"] = info
+                if direction == "overbought" and days >= 3:
+                    weighted_bearish += 0.05
+                    active_weight_total += 0.05
+                    opposing_factors.append(f"RSI超买持续{days}日")
+                elif direction == "oversold" and days >= 3:
+                    weighted_bullish += 0.05
+                    active_weight_total += 0.05
+                    supporting_factors.append(f"RSI超卖持续{days}日")
 
-        if bullish_votes >= bearish_votes + bullish_margin:
+        if technical_score >= tech_bullish and (fund_score <= fund_bearish or fund_flow.get("trend") == "outflow"):
+            conflicts.append("技术偏强但资金未确认")
+        if technical_score <= tech_bearish and fund_score >= fund_bullish:
+            conflicts.append("技术偏弱但资金流入")
+        if signal_score >= 0.7 and down_weight_pred > 0:
+            conflicts.append("交易信号偏强但价格预测转弱")
+        if signal_score < 0.5 and weighted_bullish >= 0.3:
+            conflicts.append("多项指标偏多但综合信号未确认")
+        if rsi_value is not None and rsi_value >= 70 and weighted_bullish > weighted_bearish:
+            conflicts.append("RSI超买与看多方向背离")
+        if rsi_value is not None and rsi_value <= 30 and weighted_bearish > weighted_bullish:
+            conflicts.append("RSI超卖与看空方向背离")
+
+        if active_weight_total > 0:
+            bull_ratio = weighted_bullish / active_weight_total
+            bear_ratio = weighted_bearish / active_weight_total
+        else:
+            bull_ratio = 0.5
+            bear_ratio = 0.5
+
+        missing_penalty = len(missing_dimensions) * 0.05
+
+        if bull_ratio >= 0.6:
             direction_consensus = "bullish"
-        elif bearish_votes >= bullish_votes + bearish_margin:
+        elif bear_ratio >= 0.6:
             direction_consensus = "bearish"
         else:
             direction_consensus = "mixed"
 
         conflict_penalty = min(max_conflict_penalty, len(conflicts) * per_conflict_penalty)
-        agreement_total = bullish_votes + bearish_votes
-        agreement_ratio = (
-            max(bullish_votes, bearish_votes) / agreement_total
-            if agreement_total > 0
-            else 0.5
-        )
-        confidence = (signal_score * signal_weight) + (agreement_ratio * agreement_weight) - conflict_penalty
+        agreement_ratio = max(bull_ratio, bear_ratio)
+        confidence = (signal_score * signal_weight) + (agreement_ratio * agreement_weight) - conflict_penalty - missing_penalty
         confidence = round(max(0.0, min(1.0, confidence)), 3)
 
         if conflicts or direction_consensus == "mixed":
@@ -704,25 +855,35 @@ class StockAnalyzer:
             risk_level = "low"
         if len(conflicts) >= 2 or direction_consensus == "bearish":
             risk_level = "high"
+        if missing_dimensions:
+            risk_level = "high" if risk_level == "low" else risk_level
 
         signal = trading_signal.get("signal", "hold")
         if position_status == "未持有":
             if signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= 0.7:
                 action_gate = "allow_buy"
-            else:
+            elif signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= 0.5:
+                action_gate = "cautious_buy"
+            elif direction_consensus == "bearish" and confidence >= 0.6:
                 action_gate = "avoid_buy"
-        elif direction_consensus == "bearish" and risk_level == "high":
-            action_gate = "reduce_position"
+            else:
+                action_gate = "watch"
         else:
-            action_gate = "hold_position"
+            if direction_consensus == "bearish" and risk_level == "high":
+                action_gate = "reduce_position"
+            elif direction_consensus == "bearish" and risk_level == "medium":
+                action_gate = "cautious_hold"
+            else:
+                action_gate = "hold_position"
 
+        missing_note = f"缺失维度：{'、'.join(missing_dimensions)}。" if missing_dimensions else ""
         validation_note = (
             f"方向{direction_consensus}，置信度{confidence:.3f}，风险{risk_level}。"
             f"支持因素{len(supporting_factors)}项，反对因素{len(opposing_factors)}项，"
-            f"冲突{len(conflicts)}项。"
+            f"冲突{len(conflicts)}项。{missing_note}"
         )
 
-        return {
+        result = {
             "direction_consensus": direction_consensus,
             "action_gate": action_gate,
             "risk_level": risk_level,
@@ -731,7 +892,15 @@ class StockAnalyzer:
             "opposing_factors": opposing_factors,
             "conflicts": conflicts,
             "validation_note": validation_note,
+            "weighted_bullish": round(weighted_bullish, 3),
+            "weighted_bearish": round(weighted_bearish, 3),
+            "active_weight_total": round(active_weight_total, 3),
+            "missing_dimensions": missing_dimensions,
         }
+        if persistence_info:
+            result["signal_persistence"] = persistence_info
+
+        return result
 
     def get_limit_pct(self, stock_code: str, stock_name: str = "") -> float:
         """根据股票代码和名称获取涨跌停比例
@@ -825,7 +994,7 @@ class StockAnalyzer:
         if not resistance:
             resistance = recent_high
 
-        trend = "neutral"
+        trend_direction = TREND_NEUTRAL
         technical_analysis = data.get("technical_analysis", {})
         tech_score = technical_analysis.get("score", 0.5)
 
@@ -868,9 +1037,9 @@ class StockAnalyzer:
                     trend_persistence = "weak"
 
         if tech_score > 0.6:
-            trend = "up"
+            trend_direction = TREND_UP
         elif tech_score < 0.4:
-            trend = "down"
+            trend_direction = TREND_DOWN
 
         trading_signal = trading_signal or {}
         signal_name = trading_signal.get("signal", "")
@@ -895,11 +1064,24 @@ class StockAnalyzer:
         )
 
         if signal_name in ("strong_buy", "buy") and tech_score >= 0.5 and not has_overheat_risk:
-            trend = "up"
+            trend_direction = TREND_UP
         elif signal_name in ("sell", "watch") and tech_score <= 0.5:
-            trend = "down"
+            trend_direction = TREND_DOWN
         elif signal_score >= 0.7 and tech_score >= 0.5 and not has_overheat_risk:
-            trend = "up"
+            trend_direction = TREND_UP
+
+        if trend_direction == TREND_UP:
+            if tech_score >= 0.8 and trend_persistence != "weak":
+                trend = TREND_STRONG_UP
+            else:
+                trend = TREND_UP
+        elif trend_direction == TREND_DOWN:
+            if tech_score <= 0.2 and trend_persistence != "weak":
+                trend = TREND_STRONG_DOWN
+            else:
+                trend = TREND_DOWN
+        else:
+            trend = TREND_NEUTRAL
 
         trend_strength = abs(tech_score - 0.5) / 0.5 if tech_score != 0.5 else 0
 
@@ -959,18 +1141,30 @@ class StockAnalyzer:
         limit_up = current_price * (1 + limit_pct) if current_price else None
         limit_down = current_price * (1 - limit_pct) if current_price else None
 
-        if trend == "up":
+        if trend == TREND_STRONG_UP:
+            if ma_target and deviation > 0.1:
+                base_target_high = min(current_price + price_range * atr_mult * 1.3, ma_target * 1.02) * mean_reversion_factor + current_price * (1 - mean_reversion_factor)
+            else:
+                base_target_high = current_price + price_range * atr_mult * 1.3
+            base_target_low = current_price + price_range * 0.4
+        elif trend == TREND_UP:
             if ma_target and deviation > 0.1:
                 base_target_high = min(current_price + price_range * atr_mult, ma_target * 1.02) * mean_reversion_factor + current_price * (1 - mean_reversion_factor)
             else:
                 base_target_high = current_price + price_range * atr_mult
             base_target_low = current_price + price_range * 0.3
-        elif trend == "down":
+        elif trend == TREND_DOWN:
             if ma_target and deviation < -0.1:
                 base_target_low = max(current_price - price_range * atr_mult, ma_target * 0.98) * mean_reversion_factor + current_price * (1 - mean_reversion_factor)
             else:
                 base_target_low = current_price - price_range * atr_mult
             base_target_high = current_price - price_range * 0.3
+        elif trend == TREND_STRONG_DOWN:
+            if ma_target and deviation < -0.1:
+                base_target_low = max(current_price - price_range * atr_mult * 1.3, ma_target * 0.98) * mean_reversion_factor + current_price * (1 - mean_reversion_factor)
+            else:
+                base_target_low = current_price - price_range * atr_mult * 1.3
+            base_target_high = current_price - price_range * 0.4
         else:
             base_target_low = support
             base_target_high = resistance
@@ -999,11 +1193,24 @@ class StockAnalyzer:
 
         # M-08：day2趋势修正改用RSI(12)（更稳定）
         if rsi_12 == "超买":
-            day2_trend = "down"
+            day2_trend = TREND_DOWN
         elif rsi_12 == "超卖":
-            day2_trend = "up"
+            day2_trend = TREND_UP
 
-        if trend == "up":
+        if trend == TREND_STRONG_UP:
+            day1 = {
+                "target_low": round(current_price + day_range * day_range_mult_low, 2),
+                "target_high": round(current_price + day_range * day_range_mult_high, 2),
+                "trend": day1_trend,
+                "signal": "强势看涨",
+            }
+            day2 = {
+                "target_low": round(base_target_low + day_range * 0.5, 2),
+                "target_high": round(base_target_high, 2),
+                "trend": day2_trend,
+                "signal": "强势延续" if day2_trend in (TREND_STRONG_UP, TREND_UP) else "注意获利回吐",
+            }
+        elif trend == TREND_UP:
             day1 = {
                 "target_low": round(current_price + day_range * day_range_mult_low, 2),
                 "target_high": round(current_price + day_range * day_range_mult_high, 2),
@@ -1014,9 +1221,9 @@ class StockAnalyzer:
                 "target_low": round(base_target_low + day_range * 0.5, 2),
                 "target_high": round(base_target_high, 2),
                 "trend": day2_trend,
-                "signal": "持续上涨" if day2_trend == "up" else "注意回调",
+                "signal": "持续上涨" if day2_trend in (TREND_STRONG_UP, TREND_UP) else "注意回调",
             }
-        elif trend == "down":
+        elif trend == TREND_DOWN:
             day1 = {
                 "target_low": round(current_price - day_range * day_range_mult_high, 2),
                 "target_high": round(current_price - day_range * day_range_mult_low, 2),
@@ -1027,19 +1234,32 @@ class StockAnalyzer:
                 "target_low": round(base_target_low, 2),
                 "target_high": round(base_target_high - day_range * 0.5, 2),
                 "trend": day2_trend,
-                "signal": "持续下跌" if day2_trend == "down" else "注意反弹",
+                "signal": "持续下跌" if day2_trend in (TREND_STRONG_DOWN, TREND_DOWN) else "注意反弹",
+            }
+        elif trend == TREND_STRONG_DOWN:
+            day1 = {
+                "target_low": round(current_price - day_range * day_range_mult_high, 2),
+                "target_high": round(current_price - day_range * day_range_mult_low, 2),
+                "trend": day1_trend,
+                "signal": "强势看跌",
+            }
+            day2 = {
+                "target_low": round(base_target_low, 2),
+                "target_high": round(base_target_high - day_range * 0.5, 2),
+                "trend": day2_trend,
+                "signal": "跌势加速" if day2_trend in (TREND_STRONG_DOWN, TREND_DOWN) else "注意超跌反弹",
             }
         else:
             day1 = {
                 "target_low": round(current_price - day_range * 0.5, 2),
                 "target_high": round(current_price + day_range * 0.5, 2),
-                "trend": "neutral",
+                "trend": TREND_NEUTRAL,
                 "signal": "震荡整理",
             }
             day2 = {
                 "target_low": round(support, 2),
                 "target_high": round(resistance, 2),
-                "trend": "neutral",
+                "trend": TREND_NEUTRAL,
                 "signal": "等待突破",
             }
 

@@ -24,8 +24,10 @@
 
   --color-up: #26a69a;
   --color-up-dim: rgba(38, 166, 154, 0.15);
+  --color-up-strong: #00897b;
   --color-down: #ef5350;
   --color-down-dim: rgba(239, 83, 80, 0.15);
+  --color-down-strong: #c62828;
   --color-accent: #42a5f5;
   --color-warn: #ffa726;
   --color-gold: #ffd54f;
@@ -98,4 +100,20 @@ body {
 ::selection {
   background: rgba(0, 212, 170, 0.2);
   color: var(--text-primary);
+}
+
+.trend-strong-up :deep(.el-tag__content) {
+  font-weight: 700;
+}
+
+.trend-strong-up {
+  box-shadow: 0 0 0 1px var(--color-up-strong, #00897b) inset;
+}
+
+.trend-strong-down :deep(.el-tag__content) {
+  font-weight: 700;
+}
+
+.trend-strong-down {
+  box-shadow: 0 0 0 1px var(--color-down-strong, #c62828) inset;
 }

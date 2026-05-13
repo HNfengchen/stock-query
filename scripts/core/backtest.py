@@ -1,12 +1,18 @@
-"""
-回测模块
+"""回测模块
 使用历史数据验证价格预测的准确率，包含交易成本计算
+策略与分析窗口(analyzer.py predict_price_range)保持一致
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional
-from datetime import datetime, timedelta
+from typing import Dict, List
+from datetime import datetime
+
+from scripts.core.analyzer import (
+    StockAnalyzer,
+    TREND_STRONG_UP, TREND_UP, TREND_NEUTRAL, TREND_DOWN, TREND_STRONG_DOWN,
+    STRONG_THRESHOLD, NORMAL_THRESHOLD,
+)
 
 from scripts.logger import get_logger
 
@@ -20,19 +26,29 @@ SLIPPAGE = 0.001
 class Backtester:
     """价格预测回测器
 
-    优化策略：使用更大的预测区间来提高准确率
-    - 趋势明确时：区间较窄
-    - 趋势不明时：区间较宽
+    策略与分析窗口(analyzer.py predict_price_range)保持一致
+    通过直接调用 analyzer.predict_price_range() 确保预测逻辑完全相同
     """
 
-    def __init__(self, atr_multiplier: float = 1.5, stop_profit_mult: float = 2.5, stock_code: str = "", stock_name: str = ""):
+    def __init__(self, atr_multiplier: float = 1.5, stop_profit_mult: float = 2.5, stock_code: str = "", stock_name: str = "", config: dict = None):
         self.atr_multiplier = atr_multiplier
         self.stop_profit_mult = stop_profit_mult
         self.stock_code = stock_code
         self.stock_name = stock_name
+        self.config = config
+        self._analyzer = None
+
+    @property
+    def analyzer(self) -> StockAnalyzer:
+        if self._analyzer is None:
+            if self.config is None:
+                import yaml
+                with open("config/config.yaml") as f:
+                    self.config = yaml.safe_load(f)
+            self._analyzer = StockAnalyzer(self.config)
+        return self._analyzer
 
     def calculate_transaction_cost(self, price: float, shares: int) -> float:
-        """计算单次交易成本（佣金+印花税+滑点）"""
         if price <= 0 or shares <= 0:
             return 0
         amount = price * shares
@@ -42,27 +58,17 @@ class Backtester:
         return commission + stamp_duty + slippage_cost
 
     def get_limit_pct(self) -> float:
-        """获取涨跌停限制比例"""
-        if "ST" in self.stock_name or "*ST" in self.stock_name or "S*" in self.stock_name:
+        name_upper = str(self.stock_name).upper()
+        if "ST" in name_upper or "*ST" in name_upper or "S*" in name_upper:
             return 0.05
-        if self.stock_code.startswith("68") or self.stock_code.startswith("8"):
-            return 0.20
-        if self.stock_code.startswith("30") or self.stock_code.startswith("837"):
+        if self.stock_code.startswith("30") or self.stock_code.startswith("68"):
             return 0.20
         return 0.10
 
     def calculate_predictions(
         self, df: pd.DataFrame, lookback_days: int = 60
     ) -> List[Dict]:
-        """从历史数据计算预测信号
-
-        参数:
-            df: 历史K线数据（按日期升序排列）
-            lookback_days: 计算技术指标使用的历史数据天数
-
-        返回:
-            list: 每日预测结果 [{date, prediction, actual}, ...]
-        """
+        """从历史数据计算预测信号 - 直接调用 analyzer.predict_price_range() 确保一致"""
         if df is None or len(df) < lookback_days + 10:
             return []
 
@@ -79,129 +85,48 @@ class Backtester:
                 continue
 
             closes = window_df["收盘"].values
-            current_price = closes[-1]
+            current_price = float(closes[-1])
 
-            boll = indicators.get("BOLL", {}).get("latest", {})
-            upper = boll.get("upper") if isinstance(boll, dict) else None
-            lower = boll.get("lower") if isinstance(boll, dict) else None
-            atr_data = indicators.get("ATR", {}).get("latest")
+            technical_analysis = self.analyzer.analyze_technical(indicators, current_price)
+
+            all_data = {
+                "history_data": window_df,
+                "stock_info": {"最新价": current_price, "名称": self.stock_name},
+                "stock_code": self.stock_code,
+                "indicators": indicators,
+                "technical_analysis": technical_analysis,
+            }
+
+            trading_signal = self.analyzer.generate_trading_signal(
+                {"technical": technical_analysis, "fund_flow": {}, "sentiment": {}},
+                "未持有",
+            )
 
             try:
-                if hasattr(upper, "iloc"):
-                    upper = upper.iloc[-1] if not pd.isna(upper.iloc[-1]) else None
-                    lower = lower.iloc[-1] if lower is not None and not pd.isna(lower.iloc[-1]) else None
-                    atr_data = atr_data.iloc[-1] if hasattr(atr_data, "iloc") else atr_data
-                upper = float(upper) if upper is not None else None
-                lower = float(lower) if lower is not None else None
-                atr = float(atr_data) if atr_data is not None else None
-            except (TypeError, ValueError):
-                upper, lower, atr = None, None, None
+                prediction = self.analyzer.predict_price_range(
+                    all_data, indicators, self.stock_code, trading_signal
+                )
+            except Exception as e:
+                backtest_logger.warning(f"预测失败(i={i}): {e}")
+                continue
 
-            recent_low = min(closes[-5:]) if len(closes) >= 5 else min(closes)
-            recent_high = max(closes[-5:]) if len(closes) >= 5 else max(closes)
+            trend = prediction.get("trend", TREND_NEUTRAL)
+            day1 = prediction.get("day1", {})
+            day2 = prediction.get("day2", {})
 
-            support = lower if lower else recent_low
-            resistance = upper if upper else recent_high
-
-            if not support:
-                support = recent_low
-            if not resistance:
-                resistance = recent_high
-
-            if atr and atr > 0:
-                price_range = atr
-            else:
-                price_range = resistance - support if resistance and support else current_price * 0.05
-
-            macd_signal = indicators.get("MACD", {}).get("signal", "")
-            rsi_12 = indicators.get("RSI", {}).get("RSI(12)", {}).get("latest")
-            if hasattr(rsi_12, "iloc"):
-                rsi_12 = rsi_12.iloc[-1]
-            try:
-                rsi_12 = float(rsi_12) if rsi_12 is not None else 50
-            except (TypeError, ValueError):
-                rsi_12 = 50
-
-            kdj_signal = indicators.get("KDJ", {}).get("signal", "")
-            boll_signal = indicators.get("BOLL", {}).get("signal", "")
-
-            tech_score = 0.5
-            if macd_signal in ("金叉确认",):
-                tech_score += 0.2
-            elif macd_signal in ("金叉",):
-                tech_score += 0.167
-            elif macd_signal in ("多头",):
-                tech_score += 0.1
-            elif macd_signal in ("死叉确认",):
-                tech_score -= 0.2
-            elif macd_signal in ("死叉",):
-                tech_score -= 0.167
-            elif macd_signal in ("空头",):
-                tech_score -= 0.1
-
-            if rsi_12 > 80:
-                tech_score -= 0.067
-            elif rsi_12 > 70:
-                tech_score -= 0.033
-            elif rsi_12 < 20:
-                tech_score += 0.067
-            elif rsi_12 < 30:
-                tech_score += 0.033
-
-            if kdj_signal == "金叉":
-                tech_score += 0.1
-            elif kdj_signal == "死叉":
-                tech_score -= 0.1
-            elif kdj_signal == "超卖":
-                tech_score += 0.067
-            elif kdj_signal == "超买":
-                tech_score -= 0.067
-
-            tech_score = max(0, min(1, tech_score))
-
-            if tech_score > 0.6:
-                trend = "up"
-            elif tech_score < 0.4:
-                trend = "down"
-            else:
-                trend = "neutral"
-
-            day2_trend = trend
-            if rsi_12 > 70:
-                day2_trend = "down"
-            elif rsi_12 < 30:
-                day2_trend = "up"
-
-            day_range = price_range * 0.5
-
-            if tech_score >= 0.7:
-                mult_low, mult_high = 0.2, 0.8
-            elif tech_score >= 0.5:
-                mult_low, mult_high = 0.4, 0.6
-            else:
-                mult_low, mult_high = 0.3, 0.7
-
-            if trend == "up":
-                day1_high = current_price + day_range * mult_high
-                day1_low = current_price + day_range * mult_low
-            elif trend == "down":
-                day1_high = current_price - day_range * mult_low
-                day1_low = current_price - day_range * mult_high
-            else:
-                day1_high = current_price + day_range * 1.0
-                day1_low = current_price - day_range * 1.0
-
-            if atr and atr > 0:
-                day2_high = current_price + atr * self.atr_multiplier * 1.5
-                day2_low = current_price - atr * 2.0
-            else:
-                day2_high = resistance if resistance else current_price * 1.1
-                day2_low = support if support else current_price * 0.9
+            day1_low = day1.get("target_low")
+            day1_high = day1.get("target_high")
+            day2_low = day2.get("target_low")
+            day2_high = day2.get("target_high")
 
             limit_pct = self.get_limit_pct()
             limit_up = current_price * (1 + limit_pct) if current_price else None
             limit_down = current_price * (1 - limit_pct) if current_price else None
 
+            if limit_up and day1_high:
+                day1_high = min(day1_high, limit_up)
+            if limit_down and day1_low:
+                day1_low = max(day1_low, limit_down)
             if limit_up and day2_high:
                 day2_high = min(day2_high, limit_up)
             if limit_down and day2_low:
@@ -214,9 +139,9 @@ class Backtester:
             results.append({
                 "date": str(prediction_date),
                 "trend": trend,
-                "day2_trend": day2_trend,
-                "day1": {"high": day1_high, "low": day1_low},
-                "day2": {"high": day2_high, "low": day2_low},
+                "day2_trend": day2.get("trend", trend),
+                "day1": {"high": round(day1_high, 2) if day1_high else None, "low": round(day1_low, 2) if day1_low else None},
+                "day2": {"high": round(day2_high, 2) if day2_high else None, "low": round(day2_low, 2) if day2_low else None},
                 "actual_day1": actual_day1,
                 "actual_day2": actual_day2,
                 "current_price": current_price,
@@ -225,14 +150,6 @@ class Backtester:
         return results
 
     def evaluate_predictions(self, predictions: List[Dict]) -> Dict:
-        """评估预测准确率
-
-        参数:
-            predictions: 预测结果列表
-
-        返回:
-            dict: 评估统计
-        """
         if not predictions:
             return {"error": "无预测数据"}
 
@@ -268,20 +185,25 @@ class Backtester:
                 if day1_low <= actual_day1 <= day1_high:
                     day1_in_range += 1
             if actual_day1 is not None and current is not None and current > 0:
-                if trend == "up" and actual_day1 > current:
+                actual_change = (actual_day1 - current) / current
+                if trend == TREND_STRONG_UP and actual_change > STRONG_THRESHOLD:
                     day1_correct_trend += 1
-                elif trend == "down" and actual_day1 < current:
+                elif trend == TREND_UP and actual_change > NORMAL_THRESHOLD:
                     day1_correct_trend += 1
-                elif trend == "neutral" and abs(actual_day1 - current) / current < 0.02:
+                elif trend == TREND_NEUTRAL and abs(actual_change) <= NORMAL_THRESHOLD:
+                    day1_correct_trend += 1
+                elif trend == TREND_DOWN and actual_change < -NORMAL_THRESHOLD:
+                    day1_correct_trend += 1
+                elif trend == TREND_STRONG_DOWN and actual_change < -STRONG_THRESHOLD:
                     day1_correct_trend += 1
 
             if actual_day2 is not None and day2_low is not None and day2_high is not None:
                 if day2_low <= actual_day2 <= day2_high:
                     day2_in_range += 1
             if actual_day2 is not None and current is not None and current > 0:
-                if p.get("day2_trend") == "up" and actual_day2 > current:
+                if p.get("day2_trend") in (TREND_STRONG_UP, TREND_UP) and actual_day2 > current:
                     day2_correct_trend += 1
-                elif p.get("day2_trend") == "down" and actual_day2 < current:
+                elif p.get("day2_trend") in (TREND_STRONG_DOWN, TREND_DOWN) and actual_day2 < current:
                     day2_correct_trend += 1
 
         day1_hits = day1_in_range / total if total > 0 else 0
@@ -307,15 +229,6 @@ class Backtester:
         }
 
     def run_backtest(self, df: pd.DataFrame, stock_code: str = "") -> Dict:
-        """运行完整回测
-
-        参数:
-            df: 历史K线数据
-            stock_code: 股票代码
-
-        返回:
-            dict: 回测结果
-        """
         backtest_logger.info(f"开始回测 {stock_code}，数据量: {len(df) if df is not None else 0}")
 
         if df is None or df.empty:

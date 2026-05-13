@@ -1,3 +1,5 @@
+export type TrendType = 'strong_up' | 'up' | 'neutral' | 'down' | 'strong_down'
+
 export interface StockInput {
   stock_input: string
   position_status: '已持有' | '未持有'
@@ -31,7 +33,7 @@ export interface TradingSignal {
 export interface PricePredictionDay {
   target_low: number | null
   target_high: number | null
-  trend: string
+  trend: TrendType
   signal: string
 }
 
@@ -54,6 +56,11 @@ export interface AnalysisValidation {
   opposing_factors: string[]
   conflicts: string[]
   validation_note: string
+  weighted_bullish?: number
+  weighted_bearish?: number
+  active_weight_total?: number
+  missing_dimensions?: string[]
+  signal_persistence?: Record<string, { direction: string; days: number }>
 }
 
 export interface PositionStrategyHeld {
@@ -174,7 +181,7 @@ export interface BacktestResult {
   }
   predictions: Array<{
     date: string
-    trend: string
+    trend: TrendType
     predicted_low: number
     predicted_high: number
     actual_price: number | null

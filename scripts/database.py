@@ -6,7 +6,7 @@ PostgreSQL数据库操作模块
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
-from datetime import datetime
+from datetime import datetime, date as date_type
 from typing import Dict, List, Optional, Any
 import pandas as pd
 import numpy as np
@@ -326,7 +326,16 @@ class StockDataManager:
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             volume = EXCLUDED.volume,
-            amount = EXCLUDED.amount
+            amount = EXCLUDED.amount,
+            change_pct = COALESCE(EXCLUDED.change_pct, stock_table.change_pct),
+            change_amount = COALESCE(EXCLUDED.change_amount, stock_table.change_amount),
+            turnover_rate = COALESCE(EXCLUDED.turnover_rate, stock_table.turnover_rate),
+            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, stock_table.pe_dynamic),
+            pb = COALESCE(EXCLUDED.pb, stock_table.pb),
+            total_market_cap = COALESCE(EXCLUDED.total_market_cap, stock_table.total_market_cap),
+            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, stock_table.circ_market_cap),
+            main_flow = COALESCE(EXCLUDED.main_flow, stock_table.main_flow),
+            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, stock_table.main_flow_ratio)
         """
 
         cur.execute(insert_sql, data)
@@ -366,7 +375,16 @@ class StockDataManager:
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             volume = EXCLUDED.volume,
-            amount = EXCLUDED.amount
+            amount = EXCLUDED.amount,
+            change_pct = COALESCE(EXCLUDED.change_pct, stock_table.change_pct),
+            change_amount = COALESCE(EXCLUDED.change_amount, stock_table.change_amount),
+            turnover_rate = COALESCE(EXCLUDED.turnover_rate, stock_table.turnover_rate),
+            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, stock_table.pe_dynamic),
+            pb = COALESCE(EXCLUDED.pb, stock_table.pb),
+            total_market_cap = COALESCE(EXCLUDED.total_market_cap, stock_table.total_market_cap),
+            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, stock_table.circ_market_cap),
+            main_flow = COALESCE(EXCLUDED.main_flow, stock_table.main_flow),
+            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, stock_table.main_flow_ratio)
         """
 
         cur.executemany(insert_sql, data_list)
@@ -545,56 +563,6 @@ class StockDataManager:
         conn.close()
         db_logger.info(f"[{self.stock_code}] 技术指标批量更新完成")
 
-    def update_technical_indicators(
-        self, trade_date: datetime, indicators: Dict[str, Any]
-    ):
-        """更新技术指标数据"""
-        db_logger.info(f"[{self.stock_code}] 更新技术指标: {trade_date}")
-        conn = get_connection()
-        cur = conn.cursor()
-
-        update_sql = f"""
-        UPDATE {self.table_name} SET
-            macd_dif = %(macd_dif)s,
-            macd_dea = %(macd_dea)s,
-            macd_hist = %(macd_hist)s,
-            rsi_6 = %(rsi_6)s,
-            rsi_12 = %(rsi_12)s,
-            rsi_24 = %(rsi_24)s,
-            k = %(k)s,
-            d = %(d)s,
-            j = %(j)s,
-            ma5 = %(ma5)s,
-            ma10 = %(ma10)s,
-            ma20 = %(ma20)s,
-            ma60 = %(ma60)s,
-            boll_upper = %(boll_upper)s,
-            boll_middle = %(boll_middle)s,
-            boll_lower = %(boll_lower)s
-        WHERE trade_date = %(trade_date)s
-        """
-
-        cur.execute(update_sql, {**indicators, "trade_date": trade_date})
-        conn.commit()
-        cur.close()
-        conn.close()
-
-    def update_vector_features(self, trade_date: datetime, vector: List[float]):
-        """更新向量特征"""
-        conn = get_connection()
-        cur = conn.cursor()
-
-        update_sql = f"""
-        UPDATE {self.table_name} SET
-            features_vector = %s
-        WHERE trade_date = %s
-        """
-
-        cur.execute(update_sql, (vector, trade_date))
-        conn.commit()
-        cur.close()
-        conn.close()
-
     def get_historical_data(self, days: int = None) -> pd.DataFrame:
         """获取历史数据"""
         conn = get_connection()
@@ -726,6 +694,10 @@ def get_or_fetch_stock_data(
                 last_date = date_col.iloc[-1]
                 if isinstance(last_date, str):
                     api_latest_date = pd.to_datetime(last_date).date()
+                elif isinstance(last_date, pd.Timestamp):
+                    api_latest_date = last_date.date()
+                elif hasattr(last_date, "date"):
+                    api_latest_date = last_date.date()
                 else:
                     api_latest_date = last_date
                 db_logger.info(f"[{stock_code}] API最新日期: {api_latest_date}")
@@ -738,8 +710,12 @@ def get_or_fetch_stock_data(
 
         if not need_insert and api_latest_date and latest_date:
             latest_date_only = (
-                latest_date.date() if hasattr(latest_date, "date") else latest_date
+                latest_date.date() if hasattr(latest_date, "date") and not isinstance(latest_date, date_type) else latest_date
             )
+            if not isinstance(api_latest_date, date_type):
+                api_latest_date = api_latest_date.date() if hasattr(api_latest_date, "date") else api_latest_date
+            if not isinstance(latest_date_only, date_type):
+                latest_date_only = latest_date_only.date() if hasattr(latest_date_only, "date") else latest_date_only
             if api_latest_date > latest_date_only:
                 db_logger.info(f"[{stock_code}] API有新增数据，需要更新")
                 need_insert = True
@@ -769,9 +745,10 @@ def get_or_fetch_stock_data(
             else:
                 db_logger.info(f"[{stock_code}] 已有数据，最新日期: {latest_date}")
                 latest_date_only = (
-                    latest_date.date() if hasattr(latest_date, "date") else latest_date
+                    latest_date.date() if hasattr(latest_date, "date") and not isinstance(latest_date, date_type) else latest_date
                 )
-                new_data_df = history_df[history_df["日期"] > str(latest_date_only)]
+                cutoff_ts = pd.Timestamp(latest_date_only)
+                new_data_df = history_df[pd.to_datetime(history_df["日期"]) > cutoff_ts]
                 db_logger.info(f"[{stock_code}] 需要新增 {len(new_data_df)} 条数据")
 
             if is_first_time:
@@ -800,7 +777,6 @@ def get_or_fetch_stock_data(
                     trade_date_only = (
                         trade_date.date() if hasattr(trade_date, "date") else trade_date
                     )
-                    is_latest = api_latest_date and trade_date_only == api_latest_date
 
                     daily_data = {
                         "trade_date": trade_date_only,
@@ -813,35 +789,17 @@ def get_or_fetch_stock_data(
                         if pd.notna(row.get("成交量"))
                         else 0,
                         "amount": to_python_type(row.get("成交额")),
-                        "change_pct": to_python_type(row.get("涨跌幅"))
-                        if is_latest
-                        else None,
-                        "change_amount": to_python_type(row.get("涨跌额"))
-                        if is_latest
-                        else None,
-                        "turnover_rate": to_python_type(row.get("换手率"))
-                        if is_latest
-                        else None,
-                        "pe_dynamic": to_python_type(stock_info.get("市盈率-动态"))
-                        if is_latest
-                        else None,
-                        "pb": to_python_type(stock_info.get("市净率"))
-                        if is_latest
-                        else None,
-                        "total_market_cap": to_python_type(stock_info.get("总市值"))
-                        if is_latest
-                        else None,
-                        "circ_market_cap": to_python_type(stock_info.get("流通市值"))
-                        if is_latest
-                        else None,
-                        "main_flow": to_python_type(fund_flow.get("主力净流入"))
-                        if is_latest
-                        else None,
+                        "change_pct": to_python_type(row.get("涨跌幅")),
+                        "change_amount": to_python_type(row.get("涨跌额")),
+                        "turnover_rate": to_python_type(row.get("换手率")),
+                        "pe_dynamic": to_python_type(stock_info.get("市盈率-动态")),
+                        "pb": to_python_type(stock_info.get("市净率")),
+                        "total_market_cap": to_python_type(stock_info.get("总市值")),
+                        "circ_market_cap": to_python_type(stock_info.get("流通市值")),
+                        "main_flow": to_python_type(fund_flow.get("主力净流入")),
                         "main_flow_ratio": to_python_type(
                             fund_flow.get("主力净流入占比")
-                        )
-                        if is_latest
-                        else None,
+                        ),
                     }
                     data_list.append(daily_data)
 
@@ -901,7 +859,7 @@ def get_or_fetch_stock_data(
         try:
             df = manager.get_historical_data()
             if df is not None and not df.empty:
-                return {"source": "database", "dataframe": df}
+                return {"source": "database", "history_df": df}
         except:
             pass
 
