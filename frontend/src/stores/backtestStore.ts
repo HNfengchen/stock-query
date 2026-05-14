@@ -16,7 +16,7 @@ export const useBacktestStore = defineStore('backtest', () => {
       result.value = res
       return res
     } catch (e: any) {
-      error.value = e.response?.data?.detail || e.message || '回测执行失败'
+      error.value = e.response?.data?.detail || e.message || '预测验证执行失败'
       throw e
     } finally {
       loading.value = false

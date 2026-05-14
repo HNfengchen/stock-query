@@ -133,39 +133,59 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
     }
 
 
-def run_analysis(stock_input: str, position_status: str, cost_price: Optional[float] = None) -> Dict:
+def run_analysis(stock_input: str, position_status: str, cost_price: Optional[float] = None, skip_signal_cache: bool = False) -> Dict:
     cache_key = (stock_input, position_status, cost_price)
     now = datetime.now()
     if cache_key in _result_cache:
         cached_result, cached_time = _result_cache[cache_key]
         if (now - cached_time).total_seconds() < 300:
-            try:
-                from backend.services.history_service import update_signal_cache
-                stock_code = cached_result.get("stock_code", stock_input)
-                update_signal_cache(stock_code, position_status, cached_result.get("trading_signal", {}), cost_price=cost_price)
-            except Exception as e:
-                import logging
-                logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
+            if not skip_signal_cache:
+                try:
+                    from backend.services.history_service import update_signal_cache
+                    stock_code = cached_result.get("stock_code", stock_input)
+                    update_signal_cache(stock_code, position_status, cached_result.get("trading_signal", {}), cost_price=cost_price)
+                except Exception as e:
+                    import logging
+                    logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
             return cached_result
 
     fetcher = get_fetcher()
     analyzer = get_analyzer()
 
     stock_code, stock_name, market = fetcher.resolve_stock_code(stock_input)
-    info = fetcher.fetch_stock_info(stock_code)
-    fund_flow = fetcher.fetch_fund_flow(stock_code)
-    history_df = fetcher.fetch_history_data(stock_code, days=120)
+
+    info = None
+    fund_flow = None
+    history_df = None
+    indicators = None
 
     try:
         from scripts.database import get_or_fetch_stock_data
-        get_or_fetch_stock_data(stock_code, force_refresh=False, days=120)
+        db_data = get_or_fetch_stock_data(stock_code, force_refresh=False, days=120)
+        if db_data:
+            if db_data.get("history_df") is not None and not db_data["history_df"].empty:
+                history_df = db_data["history_df"]
+            if db_data.get("stock_info"):
+                info = db_data["stock_info"]
+            if db_data.get("fund_flow"):
+                fund_flow = db_data["fund_flow"]
+            if db_data.get("indicators"):
+                indicators = db_data["indicators"]
     except Exception:
         pass
+
+    if info is None:
+        info = fetcher.fetch_stock_info(stock_code)
+    if fund_flow is None:
+        fund_flow = fetcher.fetch_fund_flow(stock_code)
+    if history_df is None:
+        history_df = fetcher.fetch_history_data(stock_code, days=120)
 
     if history_df is None or history_df.empty:
         raise ValueError(f"无法获取 {stock_code} 的历史数据")
 
-    indicators = calculate_all_indicators(history_df)
+    if not indicators:
+        indicators = calculate_all_indicators(history_df)
 
     analysis = analyzer.generate_recommendation({
         "stock_code": stock_code,
@@ -245,14 +265,60 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     _result_cache[cache_key] = (result, now)
     _cleanup_cache()
 
+    if not skip_signal_cache:
+        try:
+            from backend.services.history_service import update_signal_cache
+            update_signal_cache(stock_code, position_status, result.get("trading_signal", {}), cost_price=cost_price)
+        except Exception as e:
+            import logging
+            logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
+
     try:
-        from backend.services.history_service import update_signal_cache
-        update_signal_cache(stock_code, position_status, result.get("trading_signal", {}), cost_price=cost_price)
+        _update_prediction_to_db(stock_code, result.get("price_prediction", {}))
     except Exception as e:
         import logging
-        logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
+        logging.getLogger("stock_query").warning(f"更新预测值到数据库失败: {e}")
 
     return result
+
+
+def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
+    import logging
+    logger = logging.getLogger("stock_query")
+
+    if not price_prediction:
+        logger.debug(f"[{stock_code}] 无预测数据，跳过写入")
+        return
+
+    day1 = price_prediction.get("day1", {})
+    day2 = price_prediction.get("day2", {})
+    day1_high = day1.get("target_high")
+    day1_low = day1.get("target_low")
+    day2_high = day2.get("target_high")
+    day2_low = day2.get("target_low")
+
+    if all(v is None for v in [day1_high, day1_low, day2_high, day2_low]):
+        logger.debug(f"[{stock_code}] 预测值全为None，跳过写入")
+        return
+
+    from scripts.database import get_connection
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(f"""
+            UPDATE stock_{stock_code}
+            SET day1_pred_high = COALESCE(%s, day1_pred_high),
+                day1_pred_low = COALESCE(%s, day1_pred_low),
+                day2_pred_high = COALESCE(%s, day2_pred_high),
+                day2_pred_low = COALESCE(%s, day2_pred_low)
+            WHERE trade_date = (SELECT MAX(trade_date) FROM stock_{stock_code})
+        """, (day1_high, day1_low, day2_high, day2_low))
+        updated = cur.rowcount
+        conn.commit()
+        logger.info(f"[{stock_code}] 预测值写入DB: day1={day1_low}-{day1_high}, day2={day2_low}-{day2_high}, 影响行数={updated}")
+    finally:
+        cur.close()
+        conn.close()
 
 
 def _cleanup_cache():

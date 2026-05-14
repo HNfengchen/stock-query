@@ -97,6 +97,38 @@ class StockDataManager:
         self.stock_code = stock_code.zfill(6)
         self.table_name = f"stock_{self.stock_code}"
 
+    def _migrate_table(self):
+        new_columns = [
+            ("day1_pred_high", "NUMERIC(12, 2)"),
+            ("day1_pred_low", "NUMERIC(12, 2)"),
+            ("day2_pred_high", "NUMERIC(12, 2)"),
+            ("day2_pred_low", "NUMERIC(12, 2)"),
+        ]
+        column_comments = {
+            "day1_pred_high": "预测1日最高价",
+            "day1_pred_low": "预测1日最低价",
+            "day2_pred_high": "预测2日最高价",
+            "day2_pred_low": "预测2日最低价",
+        }
+        conn = get_connection()
+        conn.autocommit = True
+        cur = conn.cursor()
+        try:
+            for col_name, col_type in new_columns:
+                cur.execute(f"""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = '{self.table_name}' AND column_name = '{col_name}'
+                """)
+                if not cur.fetchone():
+                    cur.execute(f"ALTER TABLE {self.table_name} ADD COLUMN {col_name} {col_type}")
+                    db_logger.info(f"[{self.stock_code}] 添加字段 {col_name}")
+            for col_name, comment in column_comments.items():
+                cur.execute(f"COMMENT ON COLUMN {self.table_name}.{col_name} IS %s", (comment,))
+            db_logger.info(f"[{self.stock_code}] 迁移字段注释更新完成")
+        finally:
+            cur.close()
+            conn.close()
+
     def table_exists(self) -> bool:
         """检查表是否存在"""
         conn = get_connection()
@@ -114,6 +146,7 @@ class StockDataManager:
     def create_table(self):
         """为单个股票创建独立的数据表"""
         if self.table_exists():
+            self._migrate_table()
             db_logger.info(f"[{self.stock_code}] 表 {self.table_name} 已存在，跳过创建")
             return
 
@@ -170,6 +203,11 @@ class StockDataManager:
                 main_flow NUMERIC(20, 2),
                 main_flow_ratio NUMERIC(10, 4),
                 
+                day1_pred_high NUMERIC(12, 2),
+                day1_pred_low NUMERIC(12, 2),
+                day2_pred_high NUMERIC(12, 2),
+                day2_pred_low NUMERIC(12, 2),
+                
                 features_vector vector(384),
                 
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -218,6 +256,10 @@ class StockDataManager:
                 ("main_flow_ratio", "主力净流入占比(%)"),
                 ("features_vector", "特征向量(用于相似股票查询)"),
                 ("created_at", "记录创建时间"),
+                ("day1_pred_high", "预测1日最高价"),
+                ("day1_pred_low", "预测1日最低价"),
+                ("day2_pred_high", "预测2日最高价"),
+                ("day2_pred_low", "预测2日最低价"),
             ]
 
             for col, desc in comments:
@@ -318,29 +360,37 @@ class StockDataManager:
             open, high, low, close, volume, amount,
             change_pct, change_amount, turnover_rate,
             pe_dynamic, pb, total_market_cap, circ_market_cap,
-            main_flow, main_flow_ratio
+            main_flow, main_flow_ratio,
+            day1_pred_high, day1_pred_low, day2_pred_high, day2_pred_low,
+            trend
         ) VALUES (
             %(trade_date)s, %(trade_time)s,
             %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, %(amount)s,
             %(change_pct)s, %(change_amount)s, %(turnover_rate)s,
             %(pe_dynamic)s, %(pb)s, %(total_market_cap)s, %(circ_market_cap)s,
-            %(main_flow)s, %(main_flow_ratio)s
+            %(main_flow)s, %(main_flow_ratio)s,
+            %(day1_pred_high)s, %(day1_pred_low)s, %(day2_pred_high)s, %(day2_pred_low)s,
+            %(trend)s
         ) ON CONFLICT (trade_date) DO UPDATE SET
             open = EXCLUDED.open,
             high = EXCLUDED.high,
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             volume = EXCLUDED.volume,
-            amount = EXCLUDED.amount,
+            amount = COALESCE(EXCLUDED.amount, {self.table_name}.amount),
             change_pct = COALESCE(EXCLUDED.change_pct, {self.table_name}.change_pct),
             change_amount = COALESCE(EXCLUDED.change_amount, {self.table_name}.change_amount),
-            turnover_rate = EXCLUDED.turnover_rate,
-            pe_dynamic = EXCLUDED.pe_dynamic,
-            pb = EXCLUDED.pb,
+            turnover_rate = COALESCE(EXCLUDED.turnover_rate, {self.table_name}.turnover_rate),
+            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, {self.table_name}.pe_dynamic),
+            pb = COALESCE(EXCLUDED.pb, {self.table_name}.pb),
             total_market_cap = COALESCE(EXCLUDED.total_market_cap, {self.table_name}.total_market_cap),
             circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, {self.table_name}.circ_market_cap),
-            main_flow = EXCLUDED.main_flow,
-            main_flow_ratio = EXCLUDED.main_flow_ratio
+            main_flow = COALESCE(EXCLUDED.main_flow, {self.table_name}.main_flow),
+            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, {self.table_name}.main_flow_ratio),
+            day1_pred_high = COALESCE(EXCLUDED.day1_pred_high, {self.table_name}.day1_pred_high),
+            day1_pred_low = COALESCE(EXCLUDED.day1_pred_low, {self.table_name}.day1_pred_low),
+            day2_pred_high = COALESCE(EXCLUDED.day2_pred_high, {self.table_name}.day2_pred_high),
+            day2_pred_low = COALESCE(EXCLUDED.day2_pred_low, {self.table_name}.day2_pred_low)
         """
 
         cur.execute(insert_sql, data)
@@ -367,29 +417,37 @@ class StockDataManager:
             open, high, low, close, volume, amount,
             change_pct, change_amount, turnover_rate,
             pe_dynamic, pb, total_market_cap, circ_market_cap,
-            main_flow, main_flow_ratio
+            main_flow, main_flow_ratio,
+            day1_pred_high, day1_pred_low, day2_pred_high, day2_pred_low,
+            trend
         ) VALUES (
             %(trade_date)s, %(trade_time)s,
             %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, %(amount)s,
             %(change_pct)s, %(change_amount)s, %(turnover_rate)s,
             %(pe_dynamic)s, %(pb)s, %(total_market_cap)s, %(circ_market_cap)s,
-            %(main_flow)s, %(main_flow_ratio)s
+            %(main_flow)s, %(main_flow_ratio)s,
+            %(day1_pred_high)s, %(day1_pred_low)s, %(day2_pred_high)s, %(day2_pred_low)s,
+            %(trend)s
         ) ON CONFLICT (trade_date) DO UPDATE SET
             open = EXCLUDED.open,
             high = EXCLUDED.high,
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             volume = EXCLUDED.volume,
-            amount = EXCLUDED.amount,
+            amount = COALESCE(EXCLUDED.amount, {self.table_name}.amount),
             change_pct = COALESCE(EXCLUDED.change_pct, {self.table_name}.change_pct),
             change_amount = COALESCE(EXCLUDED.change_amount, {self.table_name}.change_amount),
-            turnover_rate = EXCLUDED.turnover_rate,
-            pe_dynamic = EXCLUDED.pe_dynamic,
-            pb = EXCLUDED.pb,
+            turnover_rate = COALESCE(EXCLUDED.turnover_rate, {self.table_name}.turnover_rate),
+            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, {self.table_name}.pe_dynamic),
+            pb = COALESCE(EXCLUDED.pb, {self.table_name}.pb),
             total_market_cap = COALESCE(EXCLUDED.total_market_cap, {self.table_name}.total_market_cap),
             circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, {self.table_name}.circ_market_cap),
-            main_flow = EXCLUDED.main_flow,
-            main_flow_ratio = EXCLUDED.main_flow_ratio
+            main_flow = COALESCE(EXCLUDED.main_flow, {self.table_name}.main_flow),
+            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, {self.table_name}.main_flow_ratio),
+            day1_pred_high = COALESCE(EXCLUDED.day1_pred_high, {self.table_name}.day1_pred_high),
+            day1_pred_low = COALESCE(EXCLUDED.day1_pred_low, {self.table_name}.day1_pred_low),
+            day2_pred_high = COALESCE(EXCLUDED.day2_pred_high, {self.table_name}.day2_pred_high),
+            day2_pred_low = COALESCE(EXCLUDED.day2_pred_low, {self.table_name}.day2_pred_low)
         """
 
         cur.executemany(insert_sql, data_list)
@@ -1016,6 +1074,10 @@ def get_or_fetch_stock_data(
                         "main_flow_ratio": to_python_type(
                             fund_flow.get("主力净流入占比")
                         ) if is_latest_row else None,
+                        "day1_pred_high": to_python_type(row.get("day1_pred_high")),
+                        "day1_pred_low": to_python_type(row.get("day1_pred_low")),
+                        "day2_pred_high": to_python_type(row.get("day2_pred_high")),
+                        "day2_pred_low": to_python_type(row.get("day2_pred_low")),
                     }
                     data_list.append(daily_data)
 

@@ -6,8 +6,8 @@
     "cost_price": 11.3,
     "added_at": "2026-05-07T01:20:19.183550",
     "cached_signal": "持有",
-    "cached_signal_score": 0.703,
-    "cached_signal_time": "2026-05-14T03:58:43.086002"
+    "cached_signal_score": 0.47,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "601515",
@@ -16,9 +16,9 @@
     "cost_price": null,
     "added_at": "2026-05-07T02:26:47.686726",
     "updated_at": "2026-05-11T23:13:43.521551",
-    "cached_signal": "观望",
-    "cached_signal_score": 0.476,
-    "cached_signal_time": "2026-05-14T03:59:18.438695"
+    "cached_signal": "建议买入",
+    "cached_signal_score": 0.767,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "601388",
@@ -27,8 +27,8 @@
     "cost_price": null,
     "added_at": "2026-05-07T02:41:19.746858",
     "cached_signal": "观望",
-    "cached_signal_score": 0.48,
-    "cached_signal_time": "2026-05-14T03:59:14.095724"
+    "cached_signal_score": 0.375,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "002108",
@@ -36,9 +36,9 @@
     "position_status": "未持有",
     "cost_price": null,
     "added_at": "2026-05-07T02:41:50.489477",
-    "cached_signal": "可考虑买入",
-    "cached_signal_score": 0.517,
-    "cached_signal_time": "2026-05-14T03:58:59.522417"
+    "cached_signal": "观望",
+    "cached_signal_score": 0.493,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "600152",
@@ -47,8 +47,8 @@
     "cost_price": null,
     "added_at": "2026-05-07T02:42:26.893189",
     "cached_signal": "观望",
-    "cached_signal_score": 0.663,
-    "cached_signal_time": "2026-05-14T03:59:27.935872"
+    "cached_signal_score": 0.376,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "601016",
@@ -57,8 +57,8 @@
     "cost_price": null,
     "added_at": "2026-05-07T02:42:55.882032",
     "cached_signal": "观望",
-    "cached_signal_score": 0.624,
-    "cached_signal_time": "2026-05-14T03:59:50.750936"
+    "cached_signal_score": 0.451,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "000630",
@@ -67,8 +67,8 @@
     "cost_price": null,
     "added_at": "2026-05-07T23:18:47.337445",
     "cached_signal": "观望",
-    "cached_signal_score": 0.645,
-    "cached_signal_time": "2026-05-14T03:59:53.605789"
+    "cached_signal_score": 0.427,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "000981",
@@ -77,8 +77,8 @@
     "cost_price": null,
     "added_at": "2026-05-12T21:00:34.127491",
     "cached_signal": "观望",
-    "cached_signal_score": 0.411,
-    "cached_signal_time": "2026-05-14T04:00:00.414906"
+    "cached_signal_score": 0.628,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "002340",
@@ -86,9 +86,9 @@
     "position_status": "未持有",
     "cost_price": null,
     "added_at": "2026-05-14T02:02:49.347595",
-    "cached_signal": "建议买入",
-    "cached_signal_score": 0.733,
-    "cached_signal_time": "2026-05-14T04:00:41.756818"
+    "cached_signal": "回避",
+    "cached_signal_score": 0.297,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "601898",
@@ -98,7 +98,7 @@
     "added_at": "2026-05-14T02:04:06.968450",
     "cached_signal": "观望",
     "cached_signal_score": 0.466,
-    "cached_signal_time": "2026-05-14T04:00:38.646407"
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   },
   {
     "stock_code": "603993",
@@ -107,7 +107,7 @@
     "cost_price": null,
     "added_at": "2026-05-14T03:16:24.939383",
     "cached_signal": "观望",
-    "cached_signal_score": 0.651,
-    "cached_signal_time": "2026-05-14T04:00:18.021057"
+    "cached_signal_score": 0.47,
+    "cached_signal_time": "2026-05-15T03:04:42.578221"
   }
 ]

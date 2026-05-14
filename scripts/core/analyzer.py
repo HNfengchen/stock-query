@@ -1003,25 +1003,41 @@ class StockAnalyzer:
         trend_persistence = "new"
 
         if history_df is not None and len(history_df) >= 20:
-            from scripts.technical_indicators import calculate_macd
+            macd_series = indicators.get("MACD", {}).get("series", {})
+            dif_series = macd_series.get("DIF") if isinstance(macd_series, dict) else None
+            dea_series = macd_series.get("DEA") if isinstance(macd_series, dict) else None
 
             recent_scores = []
             lookback = min(5, len(history_df) - 5)
             step = max(1, lookback // 3)
 
-            for i in range(len(history_df) - lookback, len(history_df) - 1, step):
-                window = history_df.iloc[max(0, i-30):i+1]
-                if len(window) >= 30:
-                    closes = window["收盘"].values if "收盘" in window.columns else window["close"].values
-                    macd_result = calculate_macd(closes)
-                    macd_sig = macd_result.get("signal", "")
-
-                    s = 0.5
-                    if macd_sig in ("金叉", "金叉确认", "多头"):
-                        s += 0.2
-                    elif macd_sig in ("死叉", "死叉确认", "空头"):
-                        s -= 0.2
-                    recent_scores.append(s)
+            if dif_series is not None and dea_series is not None and hasattr(dif_series, '__len__') and len(dif_series) >= 30:
+                for i in range(len(history_df) - lookback, len(history_df) - 1, step):
+                    window_start = max(0, i - 30)
+                    window_dif = dif_series.iloc[window_start:i+1] if hasattr(dif_series, 'iloc') else dif_series[window_start:i+1]
+                    window_dea = dea_series.iloc[window_start:i+1] if hasattr(dea_series, 'iloc') else dea_series[window_start:i+1]
+                    if len(window_dif) >= 2 and len(window_dea) >= 2:
+                        last_dif = window_dif.iloc[-1] if hasattr(window_dif, 'iloc') else window_dif[-1]
+                        prev_dif = window_dif.iloc[-2] if hasattr(window_dif, 'iloc') else window_dif[-2]
+                        last_dea = window_dea.iloc[-1] if hasattr(window_dea, 'iloc') else window_dea[-1]
+                        prev_dea = window_dea.iloc[-2] if hasattr(window_dea, 'iloc') else window_dea[-2]
+                        try:
+                            last_dif = float(last_dif)
+                            prev_dif = float(prev_dif)
+                            last_dea = float(last_dea)
+                            prev_dea = float(prev_dea)
+                            s = 0.5
+                            if last_dif > last_dea and prev_dif <= prev_dea:
+                                s += 0.2
+                            elif last_dif < last_dea and prev_dif >= prev_dea:
+                                s -= 0.2
+                            elif last_dif > last_dea:
+                                s += 0.1
+                            elif last_dif < last_dea:
+                                s -= 0.1
+                            recent_scores.append(s)
+                        except (TypeError, ValueError):
+                            pass
 
             if len(recent_scores) >= 5:
                 avg_recent = sum(recent_scores[-3:]) / 3
@@ -1295,16 +1311,15 @@ class StockAnalyzer:
         position_status: str = "未持有",
         cost_price: float = None,
     ) -> Dict:
-        """生成完整的买卖建议"""
-        from scripts.technical_indicators import calculate_all_indicators
-
-        history_df = all_data.get("history_data")
-        if history_df is not None and not history_df.empty:
-            indicators = calculate_all_indicators(history_df)
-        else:
-            indicators = {"error": "无法计算技术指标"}
-
-        all_data["indicators"] = indicators
+        indicators = all_data.get("indicators")
+        if not indicators or "error" in indicators:
+            history_df = all_data.get("history_data")
+            if history_df is not None and not history_df.empty:
+                from scripts.technical_indicators import calculate_all_indicators
+                indicators = calculate_all_indicators(history_df)
+            else:
+                indicators = {"error": "无法计算技术指标"}
+            all_data["indicators"] = indicators
 
         current_price = all_data.get("stock_info", {}).get("最新价", 0)
         try:

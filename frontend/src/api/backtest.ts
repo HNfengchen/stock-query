@@ -7,7 +7,6 @@ const api = axios.create({
 })
 
 export async function runBacktest(data: BacktestRequest): Promise<BacktestResult> {
-  const endpoint = data.mode === 'custom' ? '/api/backtest/custom' : '/api/backtest'
-  const response = await api.post(endpoint, data)
+  const response = await api.post('/api/backtest', data)
   return response.data
 }

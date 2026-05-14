@@ -97,6 +97,34 @@ def update_signal_cache(stock_code: str, position_status: str, trading_signal: D
             return
 
 
+def batch_update_signal_cache(updates: List[Dict]):
+    if not updates:
+        return
+    wl = load_watchlist()
+    now = datetime.now().isoformat()
+    code_map = {item["stock_code"]: item for item in wl}
+    changed = False
+    for upd in updates:
+        stock_code = upd.get("stock_code")
+        trading_signal = upd.get("trading_signal", {})
+        position_status = upd.get("position_status")
+        cost_price = upd.get("cost_price")
+        item = code_map.get(stock_code)
+        if item:
+            item["cached_signal"] = trading_signal.get("signal_text", "")
+            item["cached_signal_score"] = trading_signal.get("score", 0)
+            item["cached_signal_time"] = now
+            if position_status is not None:
+                item["position_status"] = position_status
+                if position_status == "未持有":
+                    item["cost_price"] = None
+            if cost_price is not None:
+                item["cost_price"] = cost_price
+            changed = True
+    if changed:
+        save_watchlist(wl)
+
+
 def delete_from_watchlist(stock_code: str):
     wl = load_watchlist()
     wl = [item for item in wl if item["stock_code"] != stock_code]

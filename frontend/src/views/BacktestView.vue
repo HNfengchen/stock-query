@@ -6,63 +6,28 @@ import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, BarChart, CustomChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, TitleComponent } from 'echarts/components'
-import type { BacktestRequest } from '@/types'
+import type { BacktestRequest, BacktestPrediction } from '@/types'
 import { TREND_LABEL_MAP, getTrendColor, getTrendTagType, getTrendClass, trendToValue, changeToTrendValue } from '@/utils/format'
 
 use([CanvasRenderer, LineChart, BarChart, CustomChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, TitleComponent])
 
 const store = useBacktestStore()
 
-const form = ref<BacktestRequest>({
-  stock_code: '',
-  mode: 'builtin',
-  params: {
-    atr_multiplier: 1.5,
-    lookback_days: 60,
-  },
-})
-
-const customCode = ref(`def signal(df, indicators):
-    """
-    df: DataFrame - K线数据，列名: opens, closes, highs, lows, volumes
-    indicators: dict - 技术指标，含 latest 和 signal 字段
-    返回: 'buy' | 'sell' | 'hold'
-    """
-    if len(df) < 5:
-        return 'hold'
-
-    closes = df['closes'].values
-    volumes = df['volumes'].values
-
-    last_close = closes[-1]
-    prev_close = closes[-2]
-    avg_vol_5 = sum(volumes[-5:]) / 5
-    last_vol = volumes[-1]
-
-    ma5 = sum(closes[-5:]) / 5
-    ma3 = sum(closes[-3:]) / 3
-
-    price_up = last_close > prev_close
-    vol_up = last_vol > avg_vol_5 * 1.2
-    above_ma5 = last_close > ma5
-    below_ma5 = last_close < ma5
-
-    if price_up and vol_up and above_ma5 and prev_close <= ma5:
-        return 'buy'
-    if last_close < ma3 and prev_close >= ma3:
-        return 'sell'
-    return 'hold'
-`)
-
-const activeTab = ref('builtin')
+const stockCode = ref('')
 const currentPage = ref(1)
 const pageSize = ref(20)
 
-const priceCompareOption = computed(() => {
+function buildPriceCompareOption(day: 1 | 2) {
   if (!store.result?.predictions?.length) return {}
   const preds = store.result.predictions
   const dates = preds.map(p => p.date)
-  const actualPrices = preds.map(p => p.actual_price)
+
+  const predHighKey = day === 1 ? 'day1_pred_high' : 'day2_pred_high'
+  const predLowKey = day === 1 ? 'day1_pred_low' : 'day2_pred_low'
+  const actualKey = day === 1 ? 'actual_day1' : 'actual_day2'
+  const hitKey = day === 1 ? 'day1_hit' : 'day2_hit'
+
+  const actualPrices = preds.map(p => (p as any)[actualKey])
 
   return {
     backgroundColor: 'transparent',
@@ -76,26 +41,33 @@ const priceCompareOption = computed(() => {
         if (idx === undefined || idx < 0) return ''
         const p = preds[idx]
         if (!p) return ''
+        const predHigh = (p as any)[predHighKey]
+        const predLow = (p as any)[predLowKey]
+        const actual = (p as any)[actualKey]
+        const hit = (p as any)[hitKey]
         let html = `<div style="font-weight:600;margin-bottom:6px">${p.date}</div>`
-        const tColor = getTrendColor(p.trend)
-        html += `<div>预测趋势: <span style="color:${tColor}">${TREND_LABEL_MAP[p.trend] || p.trend}</span></div>`
-        html += `<div>预测区间: <span class="font-mono">${p.predicted_low.toFixed(2)} ~ ${p.predicted_high.toFixed(2)}</span></div>`
+        html += `<div>预测趋势: <span style="color:${getTrendColor(p.trend)}">${TREND_LABEL_MAP[p.trend] || p.trend}</span></div>`
+        if (predLow != null && predHigh != null) {
+          html += `<div>Day${day}预测区间: <span class="font-mono">${predLow.toFixed(2)} ~ ${predHigh.toFixed(2)}</span></div>`
+        }
         if (p.current_price != null) {
           html += `<div>当日收盘: <span class="font-mono">${p.current_price.toFixed(2)}</span></div>`
         }
-        if (p.actual_price != null) {
-          html += `<div>次日实际: <span style="color:var(--color-accent);font-weight:600">${p.actual_price.toFixed(2)}</span></div>`
+        if (actual != null) {
+          html += `<div>Day${day}实际: <span style="color:var(--color-accent);font-weight:600">${actual.toFixed(2)}</span></div>`
           if (p.current_price != null) {
-            const chg = ((p.actual_price - p.current_price) / p.current_price * 100).toFixed(2)
+            const chg = ((actual - p.current_price) / p.current_price * 100).toFixed(2)
             html += `<div>涨跌幅: <span style="color:${parseFloat(chg) >= 0 ? 'var(--color-up)' : 'var(--color-down)'}">${chg}%</span></div>`
           }
-          html += `<div>命中: <span style="color:${p.hit ? 'var(--color-up)' : 'var(--color-down)'}">${p.hit ? '是' : '否'}</span></div>`
+          if (hit != null) {
+            html += `<div>命中: <span style="color:${hit ? 'var(--color-up)' : 'var(--color-down)'}">${hit ? '是' : '否'}</span></div>`
+          }
         }
         return html
       },
     },
     legend: {
-      data: ['预测区间', '实际价格'],
+      data: [`Day${day}预测区间`, `Day${day}实际价格`],
       textStyle: { color: 'var(--text-muted)', fontSize: 11 },
       top: 4,
     },
@@ -118,7 +90,7 @@ const priceCompareOption = computed(() => {
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     series: [
       {
-        name: '预测区间',
+        name: `Day${day}预测区间`,
         type: 'custom',
         renderItem: (_params: any, api: any) => {
           const x = api.coord([api.value(0), 0])[0]
@@ -130,17 +102,22 @@ const priceCompareOption = computed(() => {
             type: 'rect',
             shape: { x: x - width / 2, y: yHigh, width, height: yLow - yHigh },
             style: {
-              fill: hit ? 'rgba(0, 212, 170, 0.2)' : 'rgba(255, 71, 87, 0.2)',
-              stroke: hit ? 'var(--color-up)' : 'var(--color-down)',
+              fill: hit === 1 ? 'rgba(0, 212, 170, 0.2)' : hit === 0 ? 'rgba(255, 71, 87, 0.2)' : 'rgba(100, 116, 139, 0.15)',
+              stroke: hit === 1 ? 'var(--color-up)' : hit === 0 ? 'var(--color-down)' : 'var(--text-disabled)',
               lineWidth: 1,
             },
           }
         },
-        data: preds.map((p, i) => [i, p.predicted_low, p.predicted_high, p.hit]),
+        data: preds.map((p, i) => {
+          const predLow = (p as any)[predLowKey]
+          const predHigh = (p as any)[predHighKey]
+          const hit = (p as any)[hitKey]
+          return [i, predLow, predHigh, hit === true ? 1 : hit === false ? 0 : -1]
+        }),
         z: 1,
       },
       {
-        name: '实际价格',
+        name: `Day${day}实际价格`,
         type: 'line',
         data: actualPrices,
         smooth: true,
@@ -152,39 +129,36 @@ const priceCompareOption = computed(() => {
       },
     ],
   }
-})
+}
+
+const day1PriceOption = computed(() => buildPriceCompareOption(1))
+const day2PriceOption = computed(() => buildPriceCompareOption(2))
 
 const trendAccuracyOption = computed(() => {
   if (!store.result?.predictions?.length) return {}
   const preds = store.result.predictions
   const dates = preds.map(p => p.date)
 
-  const trendValues = preds.map(p => trendToValue(p.trend))
+  const day1MatchData: number[] = []
+  const day2MatchData: number[] = []
 
-  const actualTrendValues = preds.map(p => {
-    if (p.actual_price == null || p.current_price == null) return null
-    const change = (p.actual_price - p.current_price) / p.current_price
-    return changeToTrendValue(change)
-  })
-
-  const matchData: number[] = []
-  for (let i = 0; i < preds.length; i++) {
-    if (actualTrendValues[i] === null) {
-      matchData.push(NaN)
-    } else {
-      matchData.push(trendValues[i] === actualTrendValues[i] ? 1 : 0)
-    }
+  for (const p of preds) {
+    day1MatchData.push(p.day1_trend_correct === true ? 1 : p.day1_trend_correct === false ? 0 : NaN)
+    day2MatchData.push(p.day2_trend_correct === true ? 1 : p.day2_trend_correct === false ? 0 : NaN)
   }
 
-  const hitRate = matchData.filter(v => !isNaN(v))
-  const correctCount = hitRate.filter(v => v === 1).length
-  const totalValid = hitRate.length
-  const accuracyPct = totalValid > 0 ? (correctCount / totalValid * 100).toFixed(1) : '0'
+  const day1Valid = day1MatchData.filter(v => !isNaN(v))
+  const day1Correct = day1Valid.filter(v => v === 1).length
+  const day1Pct = day1Valid.length > 0 ? (day1Correct / day1Valid.length * 100).toFixed(1) : '0'
+
+  const day2Valid = day2MatchData.filter(v => !isNaN(v))
+  const day2Correct = day2Valid.filter(v => v === 1).length
+  const day2Pct = day2Valid.length > 0 ? (day2Correct / day2Valid.length * 100).toFixed(1) : '0'
 
   return {
     backgroundColor: 'transparent',
     title: {
-      text: `趋势准确率: ${accuracyPct}%`,
+      text: `趋势准确率  Day1: ${day1Pct}%  Day2: ${day2Pct}%`,
       textStyle: { color: 'var(--text-primary)', fontSize: 13, fontWeight: 600 },
       left: 8,
       top: 4,
@@ -201,17 +175,20 @@ const trendAccuracyOption = computed(() => {
         if (!p) return ''
         let html = `<div style="font-weight:600;margin-bottom:4px">${p.date}</div>`
         html += `<div>预测: <span style="color:${getTrendColor(p.trend)}">${TREND_LABEL_MAP[p.trend] || p.trend}</span></div>`
-        const actualVal = actualTrendValues[idx]
-        if (actualVal !== null && actualVal !== undefined) {
-          const actualName = actualVal === 2 ? '大幅上涨' : actualVal === 1 ? '上涨' : actualVal === -1 ? '下跌' : actualVal === -2 ? '大幅下跌' : '震荡'
-          html += `<div>实际: <span style="color:${getTrendColor(actualVal === 2 ? 'strong_up' : actualVal === 1 ? 'up' : actualVal === -1 ? 'down' : actualVal === -2 ? 'strong_down' : 'neutral')}">${actualName}</span></div>`
+        if (p.day1_trend_correct != null) {
+          html += `<div>Day1趋势: <span style="color:${p.day1_trend_correct ? 'var(--color-up)' : 'var(--color-down)'}">${p.day1_trend_correct ? '正确' : '错误'}</span></div>`
         }
-        const matchVal = matchData[idx]
-        if (matchVal !== undefined && !isNaN(matchVal)) {
-          html += `<div>正确: <span style="color:${matchVal ? 'var(--color-up)' : 'var(--color-down)'}">${matchVal ? '是' : '否'}</span></div>`
+        if (p.day2_trend_correct != null) {
+          html += `<div>Day2趋势: <span style="color:${p.day2_trend_correct ? 'var(--color-up)' : 'var(--color-down)'}">${p.day2_trend_correct ? '正确' : '错误'}</span></div>`
         }
         return html
       },
+    },
+    legend: {
+      data: ['Day1趋势', 'Day2趋势'],
+      textStyle: { color: 'var(--text-muted)', fontSize: 11 },
+      top: 4,
+      right: 8,
     },
     grid: { left: 40, right: 16, top: 40, bottom: 56 },
     xAxis: {
@@ -236,31 +213,39 @@ const trendAccuracyOption = computed(() => {
       axisTick: { show: false },
     },
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
-    series: [{
-      type: 'bar',
-      data: matchData.map((v, i) => ({
-        value: isNaN(v) ? null : v,
-        itemStyle: {
-          color: v === 1 ? 'var(--color-up)' : v === 0 ? 'var(--color-down)' : 'var(--text-disabled)',
-          opacity: 0.7,
-        },
-      })),
-      barWidth: '60%',
-    }],
+    series: [
+      {
+        name: 'Day1趋势',
+        type: 'bar',
+        data: day1MatchData.map((v, i) => ({
+          value: isNaN(v) ? null : v,
+          itemStyle: {
+            color: v === 1 ? 'var(--color-up)' : v === 0 ? 'var(--color-down)' : 'var(--text-disabled)',
+            opacity: 0.7,
+          },
+        })),
+        barWidth: '30%',
+        barGap: '10%',
+      },
+      {
+        name: 'Day2趋势',
+        type: 'bar',
+        data: day2MatchData.map((v, i) => ({
+          value: isNaN(v) ? null : v,
+          itemStyle: {
+            color: v === 1 ? 'rgba(0, 212, 170, 0.5)' : v === 0 ? 'rgba(255, 71, 87, 0.5)' : 'var(--text-disabled)',
+            opacity: 0.7,
+          },
+        })),
+        barWidth: '30%',
+      },
+    ],
   }
 })
 
-async function runBacktest() {
-  const data: BacktestRequest = {
-    stock_code: form.value.stock_code,
-    mode: activeTab.value as 'builtin' | 'custom',
-  }
-  if (activeTab.value === 'builtin') {
-    data.params = form.value.params
-  } else {
-    data.algorithm_code = customCode.value
-    data.algorithm_name = 'custom_strategy'
-  }
+async function runValidation() {
+  if (!stockCode.value.trim()) return
+  const data: BacktestRequest = { stock_code: stockCode.value.trim() }
   try {
     await store.executeBacktest(data)
   } catch (e) {
@@ -270,22 +255,29 @@ async function runBacktest() {
 
 function exportCSV() {
   if (!store.result?.predictions?.length) return
-  const headers = ['日期', '趋势', '预测区间低', '预测区间高', '当日收盘', '次日实际', '涨跌幅%', '是否命中']
-  const rows = store.result.predictions.map(p => {
-    const chg = (p.actual_price != null && p.current_price != null)
-      ? ((p.actual_price - p.current_price) / p.current_price * 100).toFixed(2)
-      : ''
-    return [
-      p.date, TREND_LABEL_MAP[p.trend] || p.trend, p.predicted_low, p.predicted_high,
-      p.current_price ?? '', p.actual_price ?? '', chg,
-      p.hit ? '是' : '否',
-    ]
-  })
+  const headers = ['日期', '趋势', 'Day1预测上限', 'Day1预测下限', 'Day2预测上限', 'Day2预测下限', '当日收盘', 'Day1实际', 'Day2实际', 'Day1命中', 'Day2命中', 'Day1趋势正确', 'Day2趋势正确', 'Day1方向正确', 'Day2方向正确']
+  const rows = store.result.predictions.map(p => [
+    p.date,
+    TREND_LABEL_MAP[p.trend] || p.trend,
+    p.day1_pred_high ?? '',
+    p.day1_pred_low ?? '',
+    p.day2_pred_high ?? '',
+    p.day2_pred_low ?? '',
+    p.current_price ?? '',
+    p.actual_day1 ?? '',
+    p.actual_day2 ?? '',
+    p.day1_hit === true ? '是' : p.day1_hit === false ? '否' : '',
+    p.day2_hit === true ? '是' : p.day2_hit === false ? '否' : '',
+    p.day1_trend_correct === true ? '是' : p.day1_trend_correct === false ? '否' : '',
+    p.day2_trend_correct === true ? '是' : p.day2_trend_correct === false ? '否' : '',
+    p.day1_direction_correct === true ? '是' : p.day1_direction_correct === false ? '否' : '',
+    p.day2_direction_correct === true ? '是' : p.day2_direction_correct === false ? '否' : '',
+  ])
   const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
   const link = document.createElement('a')
   link.href = URL.createObjectURL(blob)
-  link.download = `backtest_${store.result.stock_code}.csv`
+  link.download = `prediction_validation_${store.result.stock_code}.csv`
   link.click()
 }
 </script>
@@ -295,45 +287,46 @@ function exportCSV() {
     <div class="page-header">
       <div class="header-title">
         <el-icon><DataAnalysis /></el-icon>
-        <span>回测中心</span>
+        <span>预测验证中心</span>
       </div>
     </div>
 
     <div class="backtest-layout">
       <div class="config-panel">
-        <el-tabs v-model="activeTab" class="dark-tabs">
-          <el-tab-pane label="内置策略" name="builtin">
-            <div class="config-form">
-              <el-form label-position="top">
-                <el-form-item label="股票代码">
-                  <el-input v-model="form.stock_code" placeholder="如 603956" />
-                </el-form-item>
-                <el-form-item label="ATR乘数">
-                  <el-input-number v-model="form.params!.atr_multiplier" :precision="1" :step="0.1" :min="0.1" />
-                </el-form-item>
-                <el-form-item label="回看天数">
-                  <el-input-number v-model="form.params!.lookback_days" :step="5" :min="30" :max="252" />
-                </el-form-item>
-              </el-form>
-            </div>
-          </el-tab-pane>
-          <el-tab-pane label="自定义算法" name="custom">
-            <div class="config-form">
-              <el-form label-position="top">
-                <el-form-item label="股票代码">
-                  <el-input v-model="form.stock_code" placeholder="如 603956" />
-                </el-form-item>
-                <el-form-item label="算法代码 (Python)">
-                  <el-input v-model="customCode" type="textarea" :rows="16" class="code-editor" />
-                </el-form-item>
-              </el-form>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
-        <el-button type="primary" class="run-btn" :loading="store.loading" @click="runBacktest">
+        <div class="config-form">
+          <el-form label-position="top">
+            <el-form-item label="股票代码">
+              <el-input v-model="stockCode" placeholder="如 603956" @keyup.enter="runValidation" />
+            </el-form-item>
+          </el-form>
+        </div>
+        <el-button type="primary" class="run-btn" :loading="store.loading" @click="runValidation">
           <el-icon><VideoPlay /></el-icon>
-          <span>开始回测</span>
+          <span>开始验证</span>
         </el-button>
+
+        <div v-if="store.result" class="info-section">
+          <div class="info-item">
+            <span class="info-label">股票代码</span>
+            <span class="info-value font-mono">{{ store.result.stock_code }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">数据范围</span>
+            <span class="info-value font-mono">{{ store.result.data_range }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">预测记录</span>
+            <span class="info-value font-mono">{{ store.result.total_predictions }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Day1有效数</span>
+            <span class="info-value font-mono">{{ store.result.day1_valid_count }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Day2有效数</span>
+            <span class="info-value font-mono">{{ store.result.day2_valid_count }}</span>
+          </div>
+        </div>
       </div>
 
       <div class="result-panel">
@@ -346,39 +339,66 @@ function exportCSV() {
           <div class="stats-grid">
             <div class="stat-card">
               <span class="stat-label">Day1命中率</span>
-              <span class="stat-value font-mono">{{ (store.result.statistics.day1_accuracy * 100).toFixed(1) }}%</span>
+              <span class="stat-value font-mono">{{ store.result.statistics.day1_hit_rate.toFixed(1) }}%</span>
             </div>
             <div class="stat-card">
               <span class="stat-label">Day2命中率</span>
-              <span class="stat-value font-mono">{{ (store.result.statistics.day2_accuracy * 100).toFixed(1) }}%</span>
+              <span class="stat-value font-mono">{{ store.result.statistics.day2_hit_rate.toFixed(1) }}%</span>
             </div>
             <div class="stat-card">
               <span class="stat-label">Day1趋势准确率</span>
-              <span class="stat-value font-mono">{{ (store.result.statistics.day1_trend_accuracy * 100).toFixed(1) }}%</span>
+              <span class="stat-value font-mono">{{ store.result.statistics.day1_trend_accuracy.toFixed(1) }}%</span>
             </div>
             <div class="stat-card">
               <span class="stat-label">Day2趋势准确率</span>
-              <span class="stat-value font-mono">{{ (store.result.statistics.day2_trend_accuracy * 100).toFixed(1) }}%</span>
+              <span class="stat-value font-mono">{{ store.result.statistics.day2_trend_accuracy.toFixed(1) }}%</span>
             </div>
             <div class="stat-card">
-              <span class="stat-label">夏普比率</span>
-              <span class="stat-value font-mono">{{ store.result.statistics.sharpe_ratio.toFixed(2) }}</span>
+              <span class="stat-label">Day1方向准确率</span>
+              <span class="stat-value font-mono" :class="(store.result.statistics.day1_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ (store.result.statistics.day1_direction_accuracy ?? 0).toFixed(1) }}%</span>
             </div>
             <div class="stat-card">
-              <span class="stat-label">最大回撤</span>
-              <span class="stat-value loss font-mono">{{ (store.result.statistics.max_drawdown * 100).toFixed(1) }}%</span>
+              <span class="stat-label">Day2方向准确率</span>
+              <span class="stat-value font-mono" :class="(store.result.statistics.day2_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ (store.result.statistics.day2_direction_accuracy ?? 0).toFixed(1) }}%</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">Day1区间宽度</span>
+              <span class="stat-value font-mono">{{ (store.result.statistics.day1_mean_width_pct * 100).toFixed(2) }}%</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">Day2区间宽度</span>
+              <span class="stat-value font-mono">{{ (store.result.statistics.day2_mean_width_pct * 100).toFixed(2) }}%</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">Day1中点误差</span>
+              <span class="stat-value loss font-mono">{{ (store.result.statistics.day1_midpoint_mae_pct * 100).toFixed(2) }}%</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">Day2中点误差</span>
+              <span class="stat-value loss font-mono">{{ (store.result.statistics.day2_midpoint_mae_pct * 100).toFixed(2) }}%</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">Day1覆盖宽度比</span>
+              <span class="stat-value font-mono" :class="store.result.statistics.day1_coverage_width_score >= 0 ? '' : 'loss'">{{ (store.result.statistics.day1_coverage_width_score * 100).toFixed(2) }}%</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">Day2覆盖宽度比</span>
+              <span class="stat-value font-mono" :class="store.result.statistics.day2_coverage_width_score >= 0 ? '' : 'loss'">{{ (store.result.statistics.day2_coverage_width_score * 100).toFixed(2) }}%</span>
             </div>
           </div>
 
           <div class="chart-block">
             <div class="chart-header">
-              <span class="chart-title">预测区间 vs 实际价格</span>
-              <el-button size="small" text class="export-btn" @click="exportCSV">
-                <el-icon><Download /></el-icon>
-                <span>导出CSV</span>
-              </el-button>
+              <span class="chart-title">Day1 预测区间 vs 实际价格</span>
             </div>
-            <v-chart class="chart chart-lg" :option="priceCompareOption" autoresize />
+            <v-chart class="chart chart-lg" :option="day1PriceOption" autoresize />
+          </div>
+
+          <div class="chart-block">
+            <div class="chart-header">
+              <span class="chart-title">Day2 预测区间 vs 实际价格</span>
+            </div>
+            <v-chart class="chart chart-lg" :option="day2PriceOption" autoresize />
           </div>
 
           <div class="chart-block">
@@ -387,7 +407,13 @@ function exportCSV() {
           </div>
 
           <div class="predictions-table">
-            <div class="chart-title">逐日预测明细</div>
+            <div class="chart-header">
+              <span class="chart-title">逐日预测明细</span>
+              <el-button size="small" text class="export-btn" @click="exportCSV">
+                <el-icon><Download /></el-icon>
+                <span>导出CSV</span>
+              </el-button>
+            </div>
             <el-table :data="store.result.predictions.slice((currentPage - 1) * pageSize, currentPage * pageSize)" size="small" class="dark-table">
               <el-table-column prop="date" label="日期" width="110" />
               <el-table-column prop="trend" label="趋势" width="80">
@@ -402,9 +428,14 @@ function exportCSV() {
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="预测区间" width="130">
+              <el-table-column label="Day1预测区间" width="130">
                 <template #default="{ row }">
-                  {{ (row.predicted_low ?? 0).toFixed(2) }} ~ {{ (row.predicted_high ?? 0).toFixed(2) }}
+                  {{ row.day1_pred_low != null ? row.day1_pred_low.toFixed(2) : '-' }} ~ {{ row.day1_pred_high != null ? row.day1_pred_high.toFixed(2) : '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="Day2预测区间" width="130">
+                <template #default="{ row }">
+                  {{ row.day2_pred_low != null ? row.day2_pred_low.toFixed(2) : '-' }} ~ {{ row.day2_pred_high != null ? row.day2_pred_high.toFixed(2) : '-' }}
                 </template>
               </el-table-column>
               <el-table-column label="当日收盘" width="90">
@@ -412,24 +443,62 @@ function exportCSV() {
                   {{ row.current_price != null ? row.current_price.toFixed(2) : '-' }}
                 </template>
               </el-table-column>
-              <el-table-column prop="actual_price" label="次日实际" width="90">
+              <el-table-column label="Day1实际" width="90">
                 <template #default="{ row }">
-                  {{ row.actual_price != null ? row.actual_price.toFixed(2) : '-' }}
+                  {{ row.actual_day1 != null ? row.actual_day1.toFixed(2) : '-' }}
                 </template>
               </el-table-column>
-              <el-table-column label="涨跌幅" width="80">
+              <el-table-column label="Day2实际" width="90">
                 <template #default="{ row }">
-                  <span v-if="row.actual_price != null && row.current_price != null" :style="{ color: ((row.actual_price - row.current_price) / row.current_price * 100) >= 0 ? 'var(--color-up)' : 'var(--color-down)' }">
-                    {{ ((row.actual_price - row.current_price) / row.current_price * 100).toFixed(2) }}%
-                  </span>
+                  {{ row.actual_day2 != null ? row.actual_day2.toFixed(2) : '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="Day1命中" width="80">
+                <template #default="{ row }">
+                  <el-tag v-if="row.day1_hit != null" :type="row.day1_hit ? 'success' : 'danger'" size="small" effect="dark">
+                    {{ row.day1_hit ? '是' : '否' }}
+                  </el-tag>
                   <span v-else>-</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="hit" label="命中" width="70">
+              <el-table-column label="Day2命中" width="80">
                 <template #default="{ row }">
-                  <el-tag :type="row.hit ? 'success' : 'danger'" size="small" effect="dark">
-                    {{ row.hit ? '是' : '否' }}
+                  <el-tag v-if="row.day2_hit != null" :type="row.day2_hit ? 'success' : 'danger'" size="small" effect="dark">
+                    {{ row.day2_hit ? '是' : '否' }}
                   </el-tag>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Day1趋势" width="80">
+                <template #default="{ row }">
+                  <el-tag v-if="row.day1_trend_correct != null" :type="row.day1_trend_correct ? 'success' : 'danger'" size="small" effect="dark">
+                    {{ row.day1_trend_correct ? '对' : '错' }}
+                  </el-tag>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Day2趋势" width="80">
+                <template #default="{ row }">
+                  <el-tag v-if="row.day2_trend_correct != null" :type="row.day2_trend_correct ? 'success' : 'danger'" size="small" effect="dark">
+                    {{ row.day2_trend_correct ? '对' : '错' }}
+                  </el-tag>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Day1方向" width="80">
+                <template #default="{ row }">
+                  <el-tag v-if="row.day1_direction_correct != null" :type="row.day1_direction_correct ? 'success' : 'danger'" size="small" effect="dark">
+                    {{ row.day1_direction_correct ? '对' : '错' }}
+                  </el-tag>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Day2方向" width="80">
+                <template #default="{ row }">
+                  <el-tag v-if="row.day2_direction_correct != null" :type="row.day2_direction_correct ? 'success' : 'danger'" size="small" effect="dark">
+                    {{ row.day2_direction_correct ? '对' : '错' }}
+                  </el-tag>
+                  <span v-else>-</span>
                 </template>
               </el-table-column>
             </el-table>
@@ -448,8 +517,8 @@ function exportCSV() {
 
         <div v-else class="empty-state">
           <el-icon class="empty-icon"><DataAnalysis /></el-icon>
-          <h3>配置参数并开始回测</h3>
-          <p>选择内置策略或编写自定义算法进行回测验证</p>
+          <h3>输入股票代码开始预测验证</h3>
+          <p>验证历史预测区间与实际价格的匹配度，评估预测可靠性</p>
         </div>
       </div>
     </div>
@@ -487,7 +556,7 @@ function exportCSV() {
 
 .backtest-layout {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: 320px 1fr;
   gap: 20px;
 }
 
@@ -501,16 +570,6 @@ function exportCSV() {
 
 .config-form {
   margin-bottom: 16px;
-}
-
-.code-editor :deep(.el-textarea__inner) {
-  font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  background: var(--bg-secondary);
-  border-color: var(--border-default);
-  color: var(--text-primary);
-  border-radius: var(--radius-sm);
 }
 
 .run-btn {
@@ -530,6 +589,32 @@ function exportCSV() {
   background: linear-gradient(135deg, #4db6ac 0%, #1e88e5 100%) !important;
   box-shadow: 0 4px 16px rgba(0, 212, 170, 0.3) !important;
   transform: translateY(-1px);
+}
+
+.info-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.info-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.info-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.info-value {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 500;
 }
 
 .result-panel {
@@ -555,7 +640,7 @@ function exportCSV() {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 12px;
 }
 
@@ -563,10 +648,10 @@ function exportCSV() {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  padding: 16px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   transition: var(--transition-fast);
 }
 
@@ -581,7 +666,7 @@ function exportCSV() {
 }
 
 .stat-value {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
   color: var(--color-up);
   letter-spacing: -0.02em;
@@ -678,23 +763,6 @@ function exportCSV() {
 
 .empty-state p {
   font-size: 13px;
-}
-
-.dark-tabs :deep(.el-tabs__item) {
-  color: var(--text-muted);
-  font-weight: 500;
-}
-
-.dark-tabs :deep(.el-tabs__item.is-active) {
-  color: var(--color-up);
-}
-
-.dark-tabs :deep(.el-tabs__active-bar) {
-  background-color: var(--color-up);
-}
-
-.dark-tabs :deep(.el-tabs__nav-wrap::after) {
-  background-color: var(--border-subtle);
 }
 
 @media (max-width: 1200px) {

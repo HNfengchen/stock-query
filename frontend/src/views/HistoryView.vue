@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed, onUnmounted } from 'vue'
 import { useStockStore } from '@/stores/stockStore'
 import { useRouter } from 'vue-router'
 import type { AnalysisRequest } from '@/types'
 import { DataAnalysis } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 const store = useStockStore()
 const router = useRouter()
@@ -11,11 +12,54 @@ const router = useRouter()
 const dialogVisible = ref(false)
 const editDialogVisible = ref(false)
 const editingStock = ref<any>(null)
+const batchStartTime = ref<number | null>(null)
+const tickCounter = ref(0)
+let tickTimer: ReturnType<typeof setInterval> | null = null
+
+function startTick() {
+  stopTick()
+  tickTimer = setInterval(() => { tickCounter.value++ }, 1000)
+}
+
+function stopTick() {
+  if (tickTimer) {
+    clearInterval(tickTimer)
+    tickTimer = null
+  }
+}
+
+onUnmounted(() => { stopTick() })
 
 const newStock = ref<AnalysisRequest>({
   stock_input: '',
   position_status: '未持有',
   cost_price: null,
+})
+
+const isBatchAnalyzing = computed(() => store.loading && store.batchProgress.status === 'analyzing')
+
+const batchElapsed = computed(() => {
+  tickCounter.value
+  if (!batchStartTime.value || !isBatchAnalyzing.value) return ''
+  const sec = Math.round((Date.now() - batchStartTime.value) / 1000)
+  if (sec < 60) return `${sec}秒`
+  return `${Math.floor(sec / 60)}分${sec % 60}秒`
+})
+
+const batchEta = computed(() => {
+  tickCounter.value
+  if (!batchStartTime.value || !isBatchAnalyzing.value || store.batchProgress.current === 0) return ''
+  const elapsed = (Date.now() - batchStartTime.value) / 1000
+  const perItem = elapsed / store.batchProgress.current
+  const remaining = Math.round(perItem * (store.batchProgress.total - store.batchProgress.current))
+  if (remaining < 0) return ''
+  if (remaining < 60) return `约${remaining}秒`
+  return `约${Math.floor(remaining / 60)}分${remaining % 60}秒`
+})
+
+const batchPercentage = computed(() => {
+  if (store.batchProgress.total === 0) return 0
+  return Math.round((store.batchProgress.current / store.batchProgress.total) * 100)
 })
 
 onMounted(() => {
@@ -69,11 +113,28 @@ async function batchQuickAnalyze() {
     position_status: item.position_status,
     cost_price: item.cost_price ?? undefined,
   }))
+  batchStartTime.value = Date.now()
+  startTick()
   try {
     await store.runBatchQuickAnalysis(stocks)
-  } catch (e) {
-    console.error(e)
+    if (store.batchError) {
+      ElMessage.warning(store.batchError)
+    } else if (store.batchProgress.status === 'completed') {
+      ElMessage.success(`分析完成: ${store.batchProgress.total}只股票`)
+    }
+  } catch (e: any) {
+    ElMessage.error(e.message || '分析失败')
+  } finally {
+    batchStartTime.value = null
+    stopTick()
   }
+}
+
+function cancelBatch() {
+  store.cancelBatchAnalysis()
+  batchStartTime.value = null
+  stopTick()
+  ElMessage.info('已取消分析')
 }
 
 async function confirmEdit() {
@@ -107,14 +168,23 @@ async function removeStock(stockCode: string) {
       </div>
       <div class="header-actions">
         <el-button
+          v-if="!isBatchAnalyzing"
           type="success"
           size="small"
-          :loading="store.loading && store.batchProgress.status === 'analyzing'"
           :disabled="store.watchlist.length === 0"
           @click="batchQuickAnalyze"
         >
           <el-icon><DataAnalysis /></el-icon>
           <span>一键分析 ({{ store.watchlist.length }})</span>
+        </el-button>
+        <el-button
+          v-else
+          type="danger"
+          size="small"
+          @click="cancelBatch"
+        >
+          <el-icon><Close /></el-icon>
+          <span>取消分析</span>
         </el-button>
         <el-button type="primary" size="small" class="add-btn" @click="openAddDialog">
           <el-icon><Plus /></el-icon>
@@ -123,16 +193,42 @@ async function removeStock(stockCode: string) {
       </div>
     </div>
 
-    <div v-if="store.loading && store.batchProgress.status === 'analyzing'" class="batch-progress">
+    <div v-if="isBatchAnalyzing" class="batch-progress">
+      <div class="progress-header">
+        <span class="progress-title">批量分析中</span>
+        <span class="progress-stats font-mono">
+          {{ store.batchProgress.current }}/{{ store.batchProgress.total }}
+          <span class="progress-pct">{{ batchPercentage }}%</span>
+        </span>
+      </div>
       <el-progress
-        :percentage="Math.round((store.batchProgress.current / store.batchProgress.total) * 100)"
-        :format="() => `${store.batchProgress.current}/${store.batchProgress.total}`"
+        :percentage="batchPercentage"
+        :stroke-width="20"
         status="success"
-        :stroke-width="18"
         striped
         striped-flow
+        :show-text="false"
       />
-      <span class="progress-text">正在批量分析...</span>
+      <div class="progress-footer">
+        <span class="progress-current" v-if="store.batchProgress.currentStock">
+          正在分析: {{ store.batchProgress.currentStock }}
+        </span>
+        <span class="progress-time">
+          <span v-if="batchElapsed">已用 {{ batchElapsed }}</span>
+          <span v-if="batchEta" class="progress-eta"> · 预计剩余 {{ batchEta }}</span>
+        </span>
+      </div>
+      <div v-if="store.batchErrorStocks.length > 0" class="progress-errors">
+        <span class="error-label">失败股票:</span>
+        <span v-for="(err, idx) in store.batchErrorStocks" :key="idx" class="error-item">
+          {{ err.stock_input }}: {{ err.error }}
+        </span>
+      </div>
+    </div>
+
+    <div v-if="store.batchError && !isBatchAnalyzing" class="batch-error-banner">
+      <el-icon><WarningFilled /></el-icon>
+      <span>{{ store.batchError }}</span>
     </div>
 
     <div class="stock-grid">
@@ -284,22 +380,95 @@ async function removeStock(stockCode: string) {
 
 .batch-progress {
   margin: 12px 0;
-  padding: 16px;
+  padding: 16px 20px;
   background: var(--surface-2);
-  border-radius: 8px;
+  border: 1px solid rgba(0, 212, 170, 0.15);
+  border-radius: var(--radius-md);
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.progress-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.progress-stats {
+  font-size: 13px;
+  color: var(--color-up);
+  font-weight: 600;
+}
+
+.progress-pct {
+  margin-left: 6px;
+  font-size: 15px;
+}
+
+.progress-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.progress-current {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.progress-time {
+  color: var(--text-muted);
+}
+
+.progress-eta {
+  color: var(--color-up);
+  opacity: 0.8;
+}
+
+.progress-errors {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(255, 71, 87, 0.08);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--color-down);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.error-label {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.error-item {
+  padding: 1px 6px;
+  background: rgba(255, 71, 87, 0.12);
+  border-radius: 3px;
+}
+
+.batch-error-banner {
   display: flex;
   align-items: center;
-  gap: 12px;
-}
-
-.batch-progress .el-progress {
-  flex: 1;
-}
-
-.progress-text {
-  color: var(--text-secondary);
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px 16px;
+  background: rgba(255, 71, 87, 0.08);
+  border: 1px solid rgba(255, 71, 87, 0.2);
+  border-radius: var(--radius-md);
+  color: var(--color-down);
   font-size: 13px;
-  white-space: nowrap;
+  font-weight: 500;
 }
 
 .signal-time {

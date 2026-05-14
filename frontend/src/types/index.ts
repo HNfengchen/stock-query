@@ -146,56 +146,49 @@ export interface AnalysisResult {
 
 export interface BacktestRequest {
   stock_code: string
-  mode: 'builtin' | 'custom'
-  params?: {
-    atr_multiplier?: number
-    lookback_days?: number
-  }
-  algorithm_code?: string
-  algorithm_name?: string
+}
+
+export interface BacktestPrediction {
+  date: string
+  current_price: number | null
+  trend: TrendType
+  day1_pred_high: number | null
+  day1_pred_low: number | null
+  day2_pred_high: number | null
+  day2_pred_low: number | null
+  actual_day1: number | null
+  actual_day2: number | null
+  day1_hit: boolean | null
+  day2_hit: boolean | null
+  day1_trend_correct: boolean | null
+  day2_trend_correct: boolean | null
+  day1_direction_correct: boolean | null
+  day2_direction_correct: boolean | null
 }
 
 export interface BacktestResult {
   stock_code: string
-  effective_params?: {
-    atr_multiplier: number
-    lookback_days: number
-  }
+  data_range: string
+  total_predictions: number
+  day1_valid_count: number
+  day2_valid_count: number
   statistics: {
-    day1_accuracy: number
-    day2_accuracy: number
+    day1_hit_rate: number
+    day2_hit_rate: number
     day1_trend_accuracy: number
     day2_trend_accuracy: number
-    sharpe_ratio: number
-    max_drawdown: number
-    total_predictions?: number
-    mean_width_pct?: number
-    median_width_pct?: number
-    midpoint_mae_pct?: number
-    coverage_width_score?: number
-    total_return?: number
-    total_cost?: number
-    turnover?: number
-    trades?: number
-    win_rate?: number
+    day1_direction_accuracy: number
+    day2_direction_accuracy: number
+    day1_mean_width_pct: number
+    day1_median_width_pct: number
+    day1_midpoint_mae_pct: number
+    day1_coverage_width_score: number
+    day2_mean_width_pct: number
+    day2_median_width_pct: number
+    day2_midpoint_mae_pct: number
+    day2_coverage_width_score: number
   }
-  predictions: Array<{
-    date: string
-    trend: TrendType
-    predicted_low: number
-    predicted_high: number
-    actual_price: number | null
-    current_price: number | null
-    hit: boolean
-  }>
-  equity_curve: Array<{
-    date: string
-    value: number
-    position?: number
-    daily_return?: number
-    turnover?: number
-    cost?: number
-  }>
+  predictions: BacktestPrediction[]
 }
 
 export interface BatchAnalysisRequest {

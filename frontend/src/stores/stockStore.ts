@@ -9,6 +9,10 @@ export const useStockStore = defineStore('stock', () => {
   const watchlist = ref<WatchlistItem[]>([])
   const loading = ref(false)
   const batchProgress = ref({ current: 0, total: 0, currentStock: '', status: '' as 'analyzing' | 'completed' | 'error' | '' })
+  const batchError = ref<string>('')
+  const batchErrorStocks = ref<Array<{ stock_input: string; error: string }>>([])
+
+  let batchAbortController: AbortController | null = null
 
   const hasResult = computed(() => currentResult.value !== null)
 
@@ -40,14 +44,22 @@ export const useStockStore = defineStore('stock', () => {
 
   async function runBatchQuickAnalysis(stocks: AnalysisRequest[]) {
     loading.value = true
+    batchError.value = ''
+    batchErrorStocks.value = []
     batchProgress.value = { current: 0, total: stocks.length, currentStock: '', status: 'analyzing' }
+    batchAbortController = new AbortController()
+
     try {
       await batchQuickAnalyzeStream(
         stocks,
         (event) => {
-          batchProgress.value.current = event.current
-          batchProgress.value.total = event.total
-          if (event.summary) {
+          if (event.type === 'analyzing' && event.stock_input) {
+            batchProgress.value.currentStock = event.stock_input
+          }
+          if (event.type === 'completed' && event.summary) {
+            batchProgress.value.current = event.current
+            batchProgress.value.total = event.total
+            batchProgress.value.currentStock = event.summary.stock_name || event.summary.stock_code
             const idx = watchlist.value.findIndex(w => w.stock_code === event.summary!.stock_code)
             if (idx >= 0) {
               const existing = watchlist.value[idx]!
@@ -63,17 +75,39 @@ export const useStockStore = defineStore('stock', () => {
               }
             }
           }
+          if (event.type === 'error' && event.error) {
+            batchProgress.value.current = event.current
+            batchErrorStocks.value.push({
+              stock_input: event.error.stock_input,
+              error: event.error.error,
+            })
+          }
         },
         (event) => {
           batchProgress.value.status = 'completed'
           batchProgress.value.current = event.total
+          if (event.error_count > 0) {
+            batchError.value = `${event.error_count}只股票分析失败`
+            batchErrorStocks.value = event.errors || []
+          }
         },
         (error) => {
           batchProgress.value.status = 'error'
-          console.error('Batch quick analysis error:', error)
+          batchError.value = error
         },
+        batchAbortController.signal,
       )
     } finally {
+      loading.value = false
+      batchAbortController = null
+    }
+  }
+
+  function cancelBatchAnalysis() {
+    if (batchAbortController) {
+      batchAbortController.abort()
+      batchAbortController = null
+      batchProgress.value.status = ''
       loading.value = false
     }
   }
@@ -113,10 +147,13 @@ export const useStockStore = defineStore('stock', () => {
     watchlist,
     loading,
     batchProgress,
+    batchError,
+    batchErrorStocks,
     hasResult,
     runAnalysis,
     runBatchAnalysis,
     runBatchQuickAnalysis,
+    cancelBatchAnalysis,
     loadWatchlist,
     addStock,
     removeStock,

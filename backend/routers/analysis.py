@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 import traceback
 import asyncio
+import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from backend.services.analysis_service import run_analysis
@@ -10,7 +12,11 @@ from backend.utils import sanitize_for_json
 
 router = APIRouter()
 
-_executor = ThreadPoolExecutor(max_workers=5)
+_executor = ThreadPoolExecutor(max_workers=8)
+
+logger = logging.getLogger("stock_query")
+
+BATCH_CONCURRENCY = 5
 
 
 class AnalysisRequest(BaseModel):
@@ -60,20 +66,32 @@ async def batch_analyze(req: BatchAnalysisRequest):
 
 @router.post("/analysis/batch-quick")
 async def batch_quick_analyze(req: BatchAnalysisRequest):
-    """批量快速分析，并发执行，SSE流式返回进度"""
     from sse_starlette.sse import EventSourceResponse
-    import json
-    import asyncio
+
+    if not req.stocks:
+        raise HTTPException(status_code=400, detail="股票列表不能为空")
 
     total = len(req.stocks)
-    completed = {"count": 0}
     progress_queue: asyncio.Queue = asyncio.Queue()
+    completed_count = 0
+    all_errors: List[dict] = []
+    all_summaries: List[dict] = []
+    lock = asyncio.Lock()
 
     async def run_single(i: int, stock_req: AnalysisRequest):
+        nonlocal completed_count
         loop = asyncio.get_event_loop()
         try:
+            await progress_queue.put({
+                "type": "analyzing",
+                "current": i,
+                "total": total,
+                "stock_input": stock_req.stock_input,
+                "index": i,
+            })
+
             def _run(sr=stock_req):
-                return run_analysis(sr.stock_input, sr.position_status, sr.cost_price)
+                return run_analysis(sr.stock_input, sr.position_status, sr.cost_price, skip_signal_cache=True)
 
             result = await loop.run_in_executor(_executor, _run)
             signal = result.get("trading_signal", {})
@@ -86,21 +104,89 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "recommendation": result.get("analysis", {}).get("recommendation", ""),
                 "index": i,
             }
-            completed["count"] += 1
-            await progress_queue.put({"current": completed["count"], "total": total, "summary": summary})
+            async with lock:
+                completed_count += 1
+                all_summaries.append(summary)
+            await progress_queue.put({
+                "type": "completed",
+                "current": completed_count,
+                "total": total,
+                "summary": summary,
+            })
         except Exception as e:
             err = {"stock_input": stock_req.stock_input, "error": str(e), "index": i}
-            completed["count"] += 1
-            await progress_queue.put({"current": completed["count"], "total": total, "error": err})
+            async with lock:
+                completed_count += 1
+                all_errors.append(err)
+            await progress_queue.put({
+                "type": "error",
+                "current": completed_count,
+                "total": total,
+                "error": err,
+            })
 
     async def event_generator():
-        tasks = [asyncio.create_task(run_single(i, sr)) for i, sr in enumerate(req.stocks)]
+        semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
+        cancel_event = asyncio.Event()
 
-        while completed["count"] < total:
-            event_data = await progress_queue.get()
-            yield {"event": "progress", "data": json.dumps(event_data, ensure_ascii=False)}
+        async def limited_run(i: int, sr: AnalysisRequest):
+            async with semaphore:
+                if cancel_event.is_set():
+                    return
+                await run_single(i, sr)
 
-        await asyncio.gather(*tasks, return_exceptions=True)
-        yield {"event": "complete", "data": json.dumps({"total": total}, ensure_ascii=False)}
+        tasks = [asyncio.create_task(limited_run(i, sr)) for i, sr in enumerate(req.stocks)]
+
+        try:
+            sent_completed = 0
+            while sent_completed < total:
+                event_data = await progress_queue.get()
+                yield {"event": "progress", "data": json.dumps(event_data, ensure_ascii=False)}
+                if event_data.get("type") in ("completed", "error"):
+                    sent_completed += 1
+
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except (asyncio.CancelledError, GeneratorExit):
+            cancel_event.set()
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return
+
+        try:
+            from backend.services.history_service import batch_update_signal_cache
+            cache_updates = []
+            stock_map = {sr.stock_input: sr for sr in req.stocks}
+            for summary in all_summaries:
+                sr = stock_map.get(summary.get("stock_code", ""))
+                if sr is None:
+                    for s in req.stocks:
+                        if s.stock_input in (summary.get("stock_code", ""), summary.get("stock_name", "")):
+                            sr = s
+                            break
+                cache_updates.append({
+                    "stock_code": summary.get("stock_code", ""),
+                    "trading_signal": {
+                        "signal_text": summary.get("signal_text", ""),
+                        "score": summary.get("score", 0),
+                    },
+                    "position_status": sr.position_status if sr else None,
+                    "cost_price": sr.cost_price if sr else None,
+                })
+            batch_update_signal_cache(cache_updates)
+        except Exception as e:
+            logger.warning(f"批量更新信号缓存失败: {e}")
+
+        yield {
+            "event": "complete",
+            "data": json.dumps({
+                "total": total,
+                "success_count": total - len(all_errors),
+                "error_count": len(all_errors),
+                "errors": all_errors,
+                "summaries": sorted(all_summaries, key=lambda x: x.get("index", 0)),
+            }, ensure_ascii=False),
+        }
 
     return EventSourceResponse(event_generator())

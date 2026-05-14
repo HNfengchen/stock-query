@@ -107,24 +107,18 @@ def main():
         print(f"交易信号：{signal['signal_text']} (评分：{signal['score']})")
 
         if args.backtest:
-            history_df = data.get("history_data")
-            stock_name = data.get("stock_name", "")
-            if history_df is not None and not history_df.empty:
-                print("正在运行回测...")
-                from scripts.core.backtest import Backtester
-
-                backtester = Backtester(stock_code=data.get("stock_code", ""), stock_name=stock_name)
-                bt_result = backtester.run_backtest(history_df, data["stock_code"])
-                if "error" not in bt_result:
-                    stats = bt_result.get("statistics", {})
-                    print(f"\n=== 回测结果 ===")
-                    print(f"数据范围: {bt_result.get('data_range', 'N/A')}")
-                    print(f"Day1预测命中率: {stats.get('day1_hit_rate', 'N/A')}%")
-                    print(f"Day2预测命中率: {stats.get('day2_hit_rate', 'N/A')}%")
-                    print(f"Day1趋势准确率: {stats.get('day1_trend_accuracy', 'N/A')}%")
-                    print(f"Day2趋势准确率: {stats.get('day2_trend_accuracy', 'N/A')}%")
-                else:
-                    print(f"回测失败: {bt_result.get('error')}")
+            try:
+                from backend.services.backtest_service import run_prediction_validation
+                bt_result = run_prediction_validation(data.get("stock_code", ""))
+                stats = bt_result.get("statistics", {})
+                print(f"\n=== 预测验证结果 ===")
+                print(f"数据范围: {bt_result.get('data_range', 'N/A')}")
+                print(f"Day1命中率: {stats.get('day1_hit_rate', 'N/A')}%")
+                print(f"Day2命中率: {stats.get('day2_hit_rate', 'N/A')}%")
+                print(f"Day1趋势准确率: {stats.get('day1_trend_accuracy', 'N/A')}%")
+                print(f"Day2趋势准确率: {stats.get('day2_trend_accuracy', 'N/A')}%")
+            except Exception as e:
+                print(f"预测验证失败: {e}")
 
         generator = ReportGenerator(config)
         html = generator.generate_html_report(data, analysis, position_status=position_status)
