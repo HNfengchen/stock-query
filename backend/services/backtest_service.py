@@ -3,10 +3,13 @@ import os
 import math
 from typing import Dict, List, Optional
 
+import pandas as pd
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from scripts.database import get_connection
 from scripts.core.backtest import _get_trend_from_change, _is_trend_consistent, _trend_direction
+from scripts.core.walk_forward import WalkForwardValidator
 from backend.utils import sanitize_for_json
 
 
@@ -229,5 +232,116 @@ def run_prediction_validation(stock_code: str) -> Dict:
         },
         "predictions": predictions,
     }
+
+    return sanitize_for_json(result)
+
+
+def run_walk_forward_validation(stock_code: str, train_window: int = 60, test_window: int = 20, step: int = 20) -> Dict:
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        table_name = f"stock_{stock_code}"
+        cur.execute(f"""
+            SELECT trade_date, close, day1_pred_high, day1_pred_low, change_pct
+            FROM {table_name}
+            WHERE day1_pred_high IS NOT NULL AND day1_pred_low IS NOT NULL
+            ORDER BY trade_date ASC
+        """)
+        pred_rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not pred_rows:
+        raise ValueError(f"股票 {stock_code} 暂无预测数据，请先运行分析")
+
+    conn2 = get_connection()
+    cur2 = conn2.cursor()
+    try:
+        table_name = f"stock_{stock_code}"
+        cur2.execute(f"""
+            SELECT trade_date, open, high, low, close
+            FROM {table_name}
+            ORDER BY trade_date ASC
+        """)
+        price_rows = cur2.fetchall()
+    finally:
+        cur2.close()
+        conn2.close()
+
+    price_map = {}
+    for r in price_rows:
+        if r[4] is not None:
+            price_map[str(r[0])] = {
+                "open": float(r[1]) if r[1] is not None else None,
+                "high": float(r[2]) if r[2] is not None else None,
+                "low": float(r[3]) if r[3] is not None else None,
+                "close": float(r[4]),
+            }
+
+    sorted_dates = sorted(price_map.keys())
+
+    pred_records = []
+    for row in pred_rows:
+        trade_date = str(row[0])
+        current_close = float(row[1]) if row[1] is not None else None
+        day1_pred_high = float(row[2]) if row[2] is not None else None
+        day1_pred_low = float(row[3]) if row[3] is not None else None
+        change_pct = float(row[4]) if row[4] is not None else 0.0
+
+        pred_direction = _get_trend_from_change(change_pct)
+
+        try:
+            idx = sorted_dates.index(trade_date)
+        except ValueError:
+            continue
+
+        actual_day1_close = None
+        if idx + 1 < len(sorted_dates):
+            day1_info = price_map.get(sorted_dates[idx + 1])
+            if day1_info:
+                actual_day1_close = day1_info["close"]
+
+        if day1_pred_high is None or day1_pred_low is None or actual_day1_close is None:
+            continue
+
+        pred_records.append({
+            "date": trade_date[:10],
+            "predicted_low": day1_pred_low,
+            "predicted_high": day1_pred_high,
+            "predicted_direction": pred_direction,
+            "current_close": current_close,
+            "close": actual_day1_close,
+        })
+
+    if not pred_records:
+        raise ValueError(f"股票 {stock_code} 有效预测数据不足，无法进行Walk-Forward验证")
+
+    predictions_df = pd.DataFrame(pred_records)
+
+    actual_records = []
+    for d, info in price_map.items():
+        if info["close"] is not None:
+            actual_records.append({
+                "date": d[:10],
+                "open": info["open"],
+                "high": info["high"],
+                "low": info["low"],
+                "close": info["close"],
+            })
+
+    actual_df = pd.DataFrame(actual_records)
+
+    validator = WalkForwardValidator(
+        train_window=train_window,
+        test_window=test_window,
+        step=step,
+    )
+    result = validator.validate(predictions_df, actual_df)
+    result["stock_code"] = stock_code
+    result["train_window"] = train_window
+    result["test_window"] = test_window
+    result["step"] = step
+    result["total_predictions"] = len(pred_records)
 
     return sanitize_for_json(result)

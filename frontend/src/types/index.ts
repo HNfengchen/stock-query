@@ -1,3 +1,11 @@
+export type AnalysisStage = 'stage_basic' | 'stage_technical' | 'stage_risk' | 'stage_prediction' | 'stage_complete'
+
+export interface StageResult {
+  stage: AnalysisStage
+  data: Partial<AnalysisResult>
+  timestamp: number
+}
+
 export type TrendType = 'strong_up' | 'up' | 'neutral' | 'down' | 'strong_down'
 
 export interface StockInput {
@@ -45,6 +53,8 @@ export interface PricePrediction {
   day2: PricePredictionDay
   validation_confidence?: number | null
   validation_note?: string
+  hybrid_alpha?: number | null
+  ml_prediction?: MlPrediction | null
 }
 
 export interface AnalysisValidation {
@@ -61,6 +71,20 @@ export interface AnalysisValidation {
   active_weight_total?: number
   missing_dimensions?: string[]
   signal_persistence?: Record<string, { direction: string; days: number }>
+  stress_test?: StressTestResult
+}
+
+export interface StressTestResult {
+  signal_flip_rate: number
+  is_robust: boolean
+  risk_metrics: {
+    max_drawdown: number
+    sharpe: number
+    sortino: number
+    calmar: number
+  }
+  original_signal: string
+  simulation_count: number
 }
 
 export interface PositionStrategyHeld {
@@ -142,6 +166,7 @@ export interface AnalysisResult {
     technical: TechnicalChartData
     fund_flow: FundFlowData
   }
+  hmm_state?: HmmState
 }
 
 export interface BacktestRequest {
@@ -217,4 +242,102 @@ export interface ProgressMessage {
   total: number
   current_stock: string
   status: 'analyzing' | 'completed' | 'error'
+}
+
+export interface WalkForwardWindow {
+  window_id: number
+  train_start: string
+  train_end: string
+  test_start: string
+  test_end: string
+  hit_rate: number
+  direction_accuracy: number
+  trend_accuracy: number
+  n_predictions: number
+}
+
+export interface WalkForwardResult {
+  stock_code: string
+  train_window: number
+  test_window: number
+  step: number
+  total_predictions: number
+  windows: WalkForwardWindow[]
+  overall: {
+    avg_hit_rate: number
+    avg_direction_accuracy: number
+    avg_trend_accuracy: number
+  }
+  stability: {
+    hit_rate_std: number
+    direction_accuracy_std: number
+    trend_accuracy_std: number
+    sharpe_ratio: number
+  }
+}
+
+export interface WalkForwardRequest {
+  stock_code: string
+  train_window?: number
+  test_window?: number
+  step?: number
+}
+
+export interface MlPrediction {
+  next_day_return?: number | null
+  volatility?: number | null
+  direction?: number | null
+  confidence?: number | null
+}
+
+export interface HmmState {
+  current_state: string
+  state_probabilities: Record<string, number>
+  transition_matrix?: number[][] | null
+}
+
+export interface MarketStatus {
+  indexChange: number | null
+  sentiment: string
+  volatilityState: string
+  riskLevel: string
+  hmmState: string | null
+}
+
+export interface StressTestResult {
+  signalFlipRate: number | null
+  isRobust: boolean | null
+  riskMetrics: {
+    maxDrawdown: number | null
+    sharpe: number | null
+    sortino: number | null
+    calmar: number | null
+  }
+}
+
+export interface RiskAssessment {
+  var95: number | null
+  var99: number | null
+  cvar95: number | null
+  cvar99: number | null
+  stressTest: StressTestResult | null
+  tailRiskWarning: string | null
+}
+
+export interface PredictionResult {
+  hybridPrediction: {
+    day1Low: number | null
+    day1High: number | null
+    day2Low: number | null
+    day2High: number | null
+  }
+  rulePrediction: {
+    day1Low: number | null
+    day1High: number | null
+    day2Low: number | null
+    day2High: number | null
+  } | null
+  mlPrediction: MlPrediction | null
+  alpha: number | null
+  confidence: number | null
 }

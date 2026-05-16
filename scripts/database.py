@@ -4,6 +4,7 @@ PostgreSQL数据库操作模块
 """
 
 import psycopg2
+import json
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, date as date_type
@@ -715,6 +716,81 @@ class StockDataManager:
 
         return df
 
+    def _ensure_indicator_states_table(self):
+        conn = get_connection()
+        conn.autocommit = True
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'indicator_states'
+            """)
+            if not cur.fetchone():
+                cur.execute("""
+                    CREATE TABLE indicator_states (
+                        id SERIAL PRIMARY KEY,
+                        stock_code VARCHAR(10) NOT NULL,
+                        indicator_name VARCHAR(50) NOT NULL,
+                        state_json JSONB NOT NULL,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_indicator_states_stock
+                    ON indicator_states (stock_code, indicator_name)
+                """)
+                db_logger.info("indicator_states表创建成功")
+        finally:
+            cur.close()
+            conn.close()
+
+    def save_indicator_states(self, states: Dict):
+        self._ensure_indicator_states_table()
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            for indicator_name, state in states.items():
+                state_json = json.dumps(state, default=str)
+                cur.execute(
+                    """
+                    INSERT INTO indicator_states (stock_code, indicator_name, state_json, updated_at)
+                    VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (stock_code, indicator_name) DO UPDATE SET
+                        state_json = EXCLUDED.state_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (self.stock_code, indicator_name, state_json),
+                )
+            conn.commit()
+            db_logger.info(f"[{self.stock_code}] 指标状态已保存: {list(states.keys())}")
+        finally:
+            cur.close()
+            conn.close()
+
+    def load_indicator_states(self) -> Dict:
+        self._ensure_indicator_states_table()
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT indicator_name, state_json
+                FROM indicator_states
+                WHERE stock_code = %s
+                """,
+                (self.stock_code,),
+            )
+            rows = cur.fetchall()
+            states = {}
+            for row in rows:
+                state_data = row[1] if isinstance(row[1], dict) else json.loads(row[1]) if row[1] else {}
+                states[row[0]] = state_data
+            db_logger.debug(f"[{self.stock_code}] 加载指标状态: {list(states.keys())}")
+            return states
+        finally:
+            cur.close()
+            conn.close()
+
 
 def _enrich_history_df(df: pd.DataFrame, stock_code: str = "") -> pd.DataFrame:
     """补充历史DataFrame中缺失的衍生字段
@@ -921,6 +997,102 @@ def get_or_fetch_stock_data(
     except Exception as e:
         db_logger.error(f"[{stock_code}] 创建表失败: {e}")
         return {"source": "error", "error": str(e)}
+
+
+def _ensure_ml_models_table():
+    conn = get_connection()
+    conn.autocommit = True
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT 1 FROM information_schema.tables
+            WHERE table_name = 'ml_models'
+        """)
+        if not cur.fetchone():
+            cur.execute("""
+                CREATE TABLE ml_models (
+                    id SERIAL PRIMARY KEY,
+                    stock_code VARCHAR(10) NOT NULL,
+                    model_path TEXT NOT NULL,
+                    metrics JSONB,
+                    params JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ml_models_stock_code
+                ON ml_models (stock_code, created_at DESC)
+            """)
+            db_logger.info("ml_models表创建成功")
+    finally:
+        cur.close()
+        conn.close()
+
+
+def save_model_record(stock_code: str, model_path: str, metrics: dict, params: dict):
+    _ensure_ml_models_table()
+
+    metrics_clean = {}
+    for k, v in metrics.items():
+        if k == "feature_importance":
+            continue
+        try:
+            metrics_clean[k] = to_python_type(v)
+        except (TypeError, ValueError):
+            metrics_clean[k] = str(v)
+
+    params_clean = {}
+    for k, v in params.items():
+        try:
+            params_clean[k] = to_python_type(v)
+        except (TypeError, ValueError):
+            params_clean[k] = str(v)
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO ml_models (stock_code, model_path, metrics, params)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (stock_code.zfill(6), model_path, json.dumps(metrics_clean), json.dumps(params_clean)),
+        )
+        conn.commit()
+        db_logger.info(f"[{stock_code}] 模型记录已保存")
+    finally:
+        cur.close()
+        conn.close()
+
+
+def load_model_record(stock_code: str) -> dict:
+    _ensure_ml_models_table()
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT model_path, metrics, params, created_at
+            FROM ml_models
+            WHERE stock_code = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (stock_code.zfill(6),),
+        )
+        row = cur.fetchone()
+        if row:
+            return {
+                "model_path": row[0],
+                "metrics": row[1] if isinstance(row[1], dict) else json.loads(row[1]) if row[1] else {},
+                "params": row[2] if isinstance(row[2], dict) else json.loads(row[2]) if row[2] else {},
+                "created_at": row[3],
+            }
+        return {}
+    finally:
+        cur.close()
+        conn.close()
 
     try:
         from .stock_query import get_stock_info, get_fund_flow, get_history_data

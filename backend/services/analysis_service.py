@@ -204,6 +204,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     position_strategy = analysis.get("position_strategy", {})
     analysis_data = analysis.get("analysis", {})
     validation = analysis.get("validation", {})
+    hmm_state = analysis.get("hmm_state")
 
     action_gate = validation.get("action_gate", "")
     action_gate_text_map = {
@@ -241,6 +242,8 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
             "resistance": clean_float(price_prediction.get("resistance")),
             "validation_confidence": clean_float(price_prediction.get("validation_confidence")),
             "validation_note": price_prediction.get("validation_note", ""),
+            "hybrid_alpha": clean_float(price_prediction.get("hybrid_alpha")),
+            "ml_prediction": price_prediction.get("ml_prediction"),
             "day1": {
                 "target_low": clean_float(price_prediction.get("day1", {}).get("target_low")),
                 "target_high": clean_float(price_prediction.get("day1", {}).get("target_high")),
@@ -260,6 +263,9 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
         "stock_info": {k: clean_float(v) for k, v in info.items()},
         "charts": charts,
     }
+
+    if hmm_state:
+        result["hmm_state"] = clean_nested(hmm_state)
 
     result = deep_clean_nan(result)
     _result_cache[cache_key] = (result, now)
@@ -351,6 +357,118 @@ def _clean_indicators(indicators: Dict) -> Dict:
         else:
             result[key] = clean_float(val)
     return result
+
+
+def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_price: float = None, stage_callback=None):
+    fetcher = get_fetcher()
+    analyzer = get_analyzer()
+
+    all_data = {}
+
+    try:
+        all_data = fetcher.fetch_all_data(stock_code)
+        if stage_callback:
+            stage_callback('stage_basic', {
+                'stock_info': all_data.get('stock_info'),
+                'stock_name': all_data.get('stock_name'),
+                'history_data': all_data.get('history_data'),
+                'fund_flow': all_data.get('fund_flow'),
+            })
+    except Exception as e:
+        if stage_callback:
+            stage_callback('stage_basic', {'error': str(e)})
+
+    indicators = {}
+    try:
+        history_df = all_data.get('history_data')
+        if history_df is not None and len(history_df) > 0:
+            indicators = calculate_all_indicators(history_df)
+        if stage_callback:
+            stage_callback('stage_technical', {
+                'indicators': indicators,
+                'technical_chart_data': build_chart_data(history_df, indicators, 'technical') if indicators else None,
+            })
+    except Exception as e:
+        if stage_callback:
+            stage_callback('stage_technical', {'error': str(e)})
+
+    try:
+        stock_info = all_data.get('stock_info', {})
+        current_price = 0
+        try:
+            current_price = float(stock_info.get('最新价', 0)) if stock_info.get('最新价') else 0
+        except (TypeError, ValueError):
+            current_price = 0
+
+        technical_analysis = analyzer.analyze_technical(indicators, current_price) if indicators else {"score": 0.5}
+        fund_flow_analysis = analyzer.analyze_fund_flow(all_data.get('fund_flow', {}), stock_info)
+        market_data = all_data.get('market_data')
+        sentiment_analysis = analyzer.analyze_market_sentiment(all_data, market_data)
+
+        analysis = {
+            "technical": technical_analysis,
+            "fund_flow": fund_flow_analysis,
+            "sentiment": sentiment_analysis,
+        }
+
+        trading_signal = analyzer.generate_trading_signal(analysis, position_type, market_data)
+
+        resolved_code = all_data.get('stock_code', stock_code)
+        price_prediction = analyzer.predict_price_range(all_data, indicators, resolved_code, trading_signal)
+
+        validation = analyzer.cross_validate_analysis(
+            analysis, price_prediction, indicators,
+            trading_signal, position_type, current_price,
+            history_df=all_data.get('history_data'),
+        )
+
+        if stage_callback:
+            stage_callback('stage_risk', {
+                'tech_score': technical_analysis.get('score', 0.5),
+                'fund_score': fund_flow_analysis.get('score', 0.5),
+                'sentiment_score': sentiment_analysis.get('score', 0.5),
+                'signal': trading_signal,
+                'validation': validation,
+            })
+    except Exception as e:
+        if stage_callback:
+            stage_callback('stage_risk', {'error': str(e)})
+
+    try:
+        stock_info = all_data.get('stock_info', {})
+        current_price = 0
+        try:
+            current_price = float(stock_info.get('最新价', 0)) if stock_info.get('最新价') else 0
+        except (TypeError, ValueError):
+            current_price = 0
+
+        if position_type == "已持有" and cost_price:
+            strategy = analyzer.generate_position_strategy(
+                all_data, indicators, current_price, cost_price, trading_signal, validation
+            )
+        else:
+            strategy = analyzer.generate_buy_strategy(
+                all_data, indicators, current_price, trading_signal, validation
+            )
+
+        if stage_callback:
+            stage_callback('stage_prediction', {
+                'price_prediction': price_prediction,
+                'position_strategy': strategy,
+            })
+    except Exception as e:
+        if stage_callback:
+            stage_callback('stage_prediction', {'error': str(e)})
+
+    try:
+        full_result = run_analysis(stock_code, position_type, cost_price)
+        if stage_callback:
+            stage_callback('stage_complete', full_result)
+        return full_result
+    except Exception as e:
+        if stage_callback:
+            stage_callback('stage_complete', {'error': str(e)})
+        return None
 
 
 def _safe_item(v):

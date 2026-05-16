@@ -8,6 +8,10 @@ import KlineChart from '@/components/KlineChart.vue'
 import TechnicalChart from '@/components/TechnicalChart.vue'
 import FundFlowChart from '@/components/FundFlowChart.vue'
 import ReportPanel from '@/components/ReportPanel.vue'
+import MarketStatusPanel from '@/components/MarketStatusPanel.vue'
+import RiskCenter from '@/components/RiskCenter.vue'
+import PredictionCenter from '@/components/PredictionCenter.vue'
+import ValidationPanel from '@/components/ValidationPanel.vue'
 import type { AnalysisRequest } from '@/types'
 import { fmtNum, fmtMarketCap, fmtVolume } from '@/utils/format'
 
@@ -19,6 +23,9 @@ const form = ref<AnalysisRequest>({
   position_status: '未持有',
   cost_price: null,
 })
+
+const leftCollapsed = ref(false)
+const rightCollapsed = ref(false)
 
 let lastAnalyzedCode = ''
 let lastAnalyzedPosition = ''
@@ -203,33 +210,59 @@ const emptyFundFlow = {
         </div>
       </div>
 
-      <div class="report-section">
-        <ReportPanel :result="store.currentResult" />
-      </div>
+      <div class="cockpit-layout">
+        <aside class="cockpit-left" :class="{ collapsed: leftCollapsed }">
+          <div class="sidebar-toggle" @click="leftCollapsed = !leftCollapsed">
+            <el-icon :class="{ flipped: leftCollapsed }"><DArrowLeft /></el-icon>
+          </div>
+          <div v-show="!leftCollapsed" class="sidebar-content">
+            <MarketStatusPanel :status="store.marketStatus" />
+          </div>
+        </aside>
 
-      <div class="charts-grid">
-        <div class="chart-card chart-main">
-          <div class="chart-header">
-            <span class="chart-title">K 线走势</span>
-            <div class="chart-legend">
-              <span class="legend-item up"><span class="legend-dot" />涨</span>
-              <span class="legend-item down"><span class="legend-dot" />跌</span>
+        <main class="cockpit-center">
+          <ReportPanel :result="store.currentResult" />
+          <PredictionCenter :prediction="store.predictionResult" />
+
+          <div class="charts-grid">
+            <div class="chart-card chart-main">
+              <div class="chart-header">
+                <span class="chart-title">K 线走势</span>
+                <div class="chart-legend">
+                  <span class="legend-item up"><span class="legend-dot" />涨</span>
+                  <span class="legend-item down"><span class="legend-dot" />跌</span>
+                </div>
+              </div>
+              <KlineChart :data="store.currentResult.charts?.kline || emptyKline" />
+            </div>
+            <div class="chart-card">
+              <div class="chart-header">
+                <span class="chart-title">技术指标</span>
+              </div>
+              <TechnicalChart :data="store.currentResult.charts?.technical || emptyTechnical" />
+            </div>
+            <div class="chart-card">
+              <div class="chart-header">
+                <span class="chart-title">资金流向</span>
+              </div>
+              <FundFlowChart :data="store.currentResult.charts?.fund_flow || emptyFundFlow" />
             </div>
           </div>
-          <KlineChart :data="store.currentResult.charts?.kline || emptyKline" />
-        </div>
-        <div class="chart-card">
-          <div class="chart-header">
-            <span class="chart-title">技术指标</span>
+        </main>
+
+        <aside class="cockpit-right" :class="{ collapsed: rightCollapsed }">
+          <div class="sidebar-toggle" @click="rightCollapsed = !rightCollapsed">
+            <el-icon :class="{ flipped: rightCollapsed }"><DArrowRight /></el-icon>
           </div>
-          <TechnicalChart :data="store.currentResult.charts?.technical || emptyTechnical" />
-        </div>
-        <div class="chart-card">
-          <div class="chart-header">
-            <span class="chart-title">资金流向</span>
+          <div v-show="!rightCollapsed" class="sidebar-content">
+            <RiskCenter :risk="store.riskAssessment" />
+            <ValidationPanel
+              v-if="store.currentResult.validation"
+              :validation="store.currentResult.validation"
+              class="right-validation"
+            />
           </div>
-          <FundFlowChart :data="store.currentResult.charts?.fund_flow || emptyFundFlow" />
-        </div>
+        </aside>
       </div>
     </div>
 
@@ -245,7 +278,7 @@ const emptyFundFlow = {
 
 <style scoped>
 .analysis-view {
-  max-width: 1400px;
+  max-width: 1600px;
   margin: 0 auto;
 }
 
@@ -449,8 +482,97 @@ const emptyFundFlow = {
   margin: 4px 0;
 }
 
-.report-section {
-  margin-bottom: 20px;
+.cockpit-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.cockpit-left {
+  width: 250px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 20px;
+  display: flex;
+  align-items: flex-start;
+  transition: width 0.3s ease;
+}
+
+.cockpit-left.collapsed {
+  width: 32px;
+}
+
+.cockpit-right {
+  width: 300px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 20px;
+  display: flex;
+  align-items: flex-start;
+  transition: width 0.3s ease;
+}
+
+.cockpit-right.collapsed {
+  width: 32px;
+}
+
+.sidebar-toggle {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: var(--transition-fast);
+  z-index: 1;
+}
+
+.sidebar-toggle:hover {
+  border-color: var(--border-active);
+  color: var(--text-primary);
+}
+
+.sidebar-toggle .el-icon.flipped {
+  transform: rotate(180deg);
+}
+
+.cockpit-left .sidebar-toggle {
+  margin-right: 8px;
+}
+
+.cockpit-right .sidebar-toggle {
+  margin-left: 8px;
+  order: 1;
+}
+
+.sidebar-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cockpit-right .sidebar-content {
+  order: 0;
+}
+
+.right-validation {
+  margin-top: 0;
+}
+
+.cockpit-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .charts-grid {
@@ -543,6 +665,40 @@ const emptyFundFlow = {
 
 .empty-state p {
   font-size: 13px;
+}
+
+@media (max-width: 1200px) {
+  .cockpit-layout {
+    flex-direction: column;
+  }
+
+  .cockpit-left,
+  .cockpit-right {
+    width: 100%;
+    position: static;
+  }
+
+  .cockpit-left.collapsed,
+  .cockpit-right.collapsed {
+    width: 100%;
+  }
+
+  .sidebar-toggle {
+    display: none;
+  }
+
+  .cockpit-left .sidebar-content,
+  .cockpit-right .sidebar-content {
+    display: flex !important;
+  }
+
+  .cockpit-right .sidebar-toggle {
+    order: 0;
+  }
+
+  .cockpit-right .sidebar-content {
+    order: 1;
+  }
 }
 
 @media (max-width: 768px) {

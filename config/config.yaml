@@ -73,3 +73,93 @@ report:
 output:
   directory: output/reports
   filename_pattern: "{stock_code}_{date}"
+
+# 特征正交化配置
+feature_engineering:
+  enabled: false
+  variance_threshold: 0.95
+  correlation_threshold: 0.7
+  method: "pca"
+
+# 动态权重配置
+dynamic_weights:
+  enabled: true
+  smoothing_alpha: 0.3
+  regimes:
+    趋势牛市:
+      technical: 0.6
+      fund_flow: 0.2
+      sentiment: 0.2
+    极端恐慌:
+      technical: 0.2
+      fund_flow: 0.2
+      sentiment: 0.6
+    机构行情:
+      technical: 0.3
+      fund_flow: 0.5
+      sentiment: 0.2
+    缩量震荡:
+      technical: 0.4
+      fund_flow: 0.3
+      sentiment: 0.3
+
+# HMM市场状态识别配置
+hmm:
+  enabled: false
+  n_components: 4
+  model_path: "models/hmm_regime.pkl"
+  training_index: "000300"
+
+# LightGBM混合预测模型配置
+ml_model:
+  enabled: false
+  model_dir: "models/"
+  alpha: 0.5
+  hyperparams:
+    num_leaves: 31
+    learning_rate: 0.05
+    n_estimators: 200
+    min_child_samples: 20
+  min_training_days: 60
+
+# 蒙特卡洛压力测试配置
+stress_test:
+  enabled: false
+  n_simulations: 1000
+  noise_scale: 0.5
+
+# 数据预处理配置
+preprocessing:
+  robust_z_threshold: 3.0
+  outlier_method: "winsorize"
+  mad_fallback: "iqr"
+  enabled: true
+  denoise:
+    method: "kalman"
+    kalman_Q: 1e-5
+    kalman_R: 1e-2
+    ema_alpha_range: [0.05, 0.3]
+
+# 数据验证配置
+data_validation:
+  price_diff_threshold: 0.01
+  volume_diff_threshold: 0.20
+  circuit_breaker_timeout: 300
+  enabled: true
+
+# 波动率配置
+volatility:
+  hv_windows: [20, 60]
+  parkinson_window: 20
+  garman_klass_window: 20
+  realized_vol_window: 20
+  low_vol_percentile: 25
+  high_vol_percentile: 75
+
+# Celery异步任务配置
+celery:
+  broker_url: "redis://localhost:6379/0"
+  result_backend: "redis://localhost:6379/1"
+  worker_concurrency: 4
+  task_timeout: 300
+  enabled: false

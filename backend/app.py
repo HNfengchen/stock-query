@@ -17,6 +17,15 @@ logger = logging.getLogger("stock_query")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        from backend.celery_app import init_celery, is_celery_enabled
+        init_celery()
+        if is_celery_enabled():
+            logger.info("Celery 异步任务功能已启用")
+        else:
+            logger.info("Celery 异步任务功能未启用，使用同步模式")
+    except Exception as e:
+        logger.warning(f"Celery 初始化失败: {e}，使用同步模式")
     yield
 
 

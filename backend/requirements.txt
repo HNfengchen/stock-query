@@ -1,4 +1,17 @@
+# 后端专用依赖（与根目录 requirements.txt 合并使用）
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.5.0
 python-multipart>=0.0.6
+sse-starlette>=1.6.0
+psycopg2-binary>=2.9.0
+Jinja2>=3.1.0
+requests>=2.28.0
+
+# ===== 可选依赖 =====
+# LightGBM 混合预测模型
+# lightgbm>=4.0.0
+
+# Celery 异步任务队列
+# celery>=5.3.0
+# redis>=5.0.0

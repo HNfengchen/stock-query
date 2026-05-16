@@ -3,9 +3,18 @@
 负责综合分析：技术指标、资金流向、市场情绪，生成买卖建议
 """
 
+import os
 import pandas as pd
+import numpy as np
 from typing import Dict, Optional
 from scripts.logger import get_logger
+from scripts.core.feature_engineering import (
+    extract_feature_vector,
+    compute_feature_correlation,
+    orthogonalize_features,
+)
+from scripts.core.regime_detector import DynamicWeightManager, HMMRegimeDetector
+from scripts.core.ml_model import LightGBMPredictor, hybrid_predict
 
 analyzer_logger = get_logger("Analyzer")
 
@@ -36,6 +45,29 @@ class StockAnalyzer:
         self.thresholds = config.get("analyzer", {}).get("thresholds", {})
         self.prediction_config = config.get("analyzer", {}).get("price_prediction", {})
         self.validation_config = config.get("analyzer", {}).get("validation", {})
+        self._dynamic_weight_manager = DynamicWeightManager(config)
+        self._market_regime = None
+
+        self._ml_config = config.get("ml_model", {})
+        self._ml_enabled = self._ml_config.get("enabled", False)
+        self._ml_alpha = self._ml_config.get("alpha", 0.5)
+        self._ml_predictor = LightGBMPredictor(config)
+        self._ml_loaded = False
+
+        hmm_config = config.get("hmm", {})
+        self._hmm_detector = None
+        if hmm_config.get("enabled", False):
+            self._hmm_detector = HMMRegimeDetector(
+                n_components=hmm_config.get("n_components", 4),
+                config=hmm_config,
+            )
+            model_path = hmm_config.get("model_path", "")
+            if model_path:
+                self._hmm_detector.load(model_path)
+            if self._hmm_detector.is_ready():
+                self._dynamic_weight_manager.set_hmm_detector(self._hmm_detector)
+
+        self._stress_test_config = config.get("stress_test", {})
 
     def analyze_technical(self, indicators: Dict, current_price: float = 0) -> Dict:
         """分析技术指标"""
@@ -250,6 +282,54 @@ class StockAnalyzer:
         }
         result["signals"] = signals
 
+        fe_config = self.config.get("feature_engineering", {})
+        if fe_config.get("enabled", False):
+            try:
+                feature_names, feature_values = extract_feature_vector(indicators)
+                if len(feature_values) >= 2:
+                    feature_dict = dict(zip(feature_names, feature_values))
+                    corr_result = compute_feature_correlation(feature_dict)
+                    result["feature_correlation"] = {
+                        "high_correlation_pairs": corr_result["high_correlation_pairs"],
+                        "feature_names": corr_result["feature_names"],
+                    }
+
+                    corr_threshold = fe_config.get("correlation_threshold", 0.7)
+                    if corr_result["high_correlation_pairs"]:
+                        variance_threshold = fe_config.get("variance_threshold", 0.95)
+                        single_row = feature_values.reshape(1, -1)
+                        orth_result = orthogonalize_features(
+                            single_row, feature_names, variance_threshold
+                        )
+                        if orth_result["n_components"] > 0:
+                            orth_features = orth_result["orthogonal_features"][0]
+                            orth_score = np.sum(orth_features)
+                            max_possible = np.sum(np.abs(orth_features)) if np.sum(np.abs(orth_features)) > 0 else 1.0
+                            if max_possible > 0:
+                                orth_normalized = (orth_score / max_possible + 1) / 2
+                            else:
+                                orth_normalized = 0.5
+                            orth_normalized = max(0, min(1, orth_normalized))
+
+                            blend = 0.3
+                            result["score"] = normalized_score * (1 - blend) + orth_normalized * blend
+                            result["feature_correlation"]["orthogonalized"] = True
+                            result["feature_correlation"]["n_components"] = orth_result["n_components"]
+                            result["feature_correlation"]["explained_variance_ratio"] = orth_result["explained_variance_ratio"].tolist()
+                            analyzer_logger.info(
+                                f"特征正交化: {orth_result['n_components']}个主成分, "
+                                f"原始评分={normalized_score:.3f}, 正交评分={orth_normalized:.3f}, "
+                                f"混合评分={result['score']:.3f}"
+                            )
+                        else:
+                            result["feature_correlation"]["orthogonalized"] = False
+                    else:
+                        result["feature_correlation"]["orthogonalized"] = False
+                        analyzer_logger.info("特征相关性低，无需正交化")
+            except Exception as e:
+                analyzer_logger.warning(f"特征正交化处理异常: {e}")
+                result["feature_correlation"] = {"error": str(e)}
+
         return result
 
     def analyze_fund_flow(self, fund_flow: Dict, stock_info: Dict = None) -> Dict:
@@ -445,7 +525,7 @@ class StockAnalyzer:
 
         return result
 
-    def generate_trading_signal(self, analysis: Dict, position_status: str = "未持有") -> Dict:
+    def generate_trading_signal(self, analysis: Dict, position_status: str = "未持有", market_data: dict = None) -> Dict:
         """生成交易信号"""
         analyzer_logger.info("=" * 50)
         analyzer_logger.info("开始生成交易信号...")
@@ -458,11 +538,30 @@ class StockAnalyzer:
         analyzer_logger.info(f"资金评分: {fund_flow_score:.3f}")
         analyzer_logger.info(f"情绪评分: {sentiment_score:.3f}")
 
-        weights = self.weights
+        dwm = self._dynamic_weight_manager
+        if dwm.enabled and market_data is not None:
+            dynamic_weights = dwm.detect_and_update(market_data)
+            self._market_regime = dwm.get_regime()
+            w_technical = dynamic_weights.get("technical", 0.5)
+            w_fund_flow = dynamic_weights.get("fund_flow", 0.3)
+            w_sentiment = dynamic_weights.get("sentiment", 0.2)
+            weight_total = w_technical + w_fund_flow + w_sentiment
+            if weight_total > 0:
+                w_technical /= weight_total
+                w_fund_flow /= weight_total
+                w_sentiment /= weight_total
+            weights = {"technical": w_technical, "fund_flow": w_fund_flow, "sentiment": w_sentiment}
+            analyzer_logger.info(f"动态权重: {weights}, 市场状态: {self._market_regime}")
+        else:
+            weights = self.weights
+            w_technical = weights.get("technical", 0.5)
+            w_fund_flow = weights.get("fund_flow", 0.3)
+            w_sentiment = weights.get("sentiment", 0.2)
+
         total_score = (
-            technical_score * weights.get("technical", 0.5)
-            + fund_flow_score * weights.get("fund_flow", 0.3)
-            + sentiment_score * weights.get("sentiment", 0.2)
+            technical_score * w_technical
+            + fund_flow_score * w_fund_flow
+            + sentiment_score * w_sentiment
         )
 
         analyzer_logger.info(f"权重配置: {weights}")
@@ -505,11 +604,14 @@ class StockAnalyzer:
                 "sell": "回避",
             }
 
-        return {
+        result = {
             "score": round(total_score, 3),
             "signal": signal,
             "signal_text": signal_text_map.get(signal, "观望"),
         }
+        if self._market_regime is not None:
+            result["market_regime"] = self._market_regime
+        return result
 
     def _safe_score(self, value, default: float = 0.5) -> float:
         """安全读取 0-1 区间评分"""
@@ -589,6 +691,7 @@ class StockAnalyzer:
         trading_signal: Optional[Dict] = None,
         position_status: str = "未持有",
         current_price: float = 0,
+        history_df: "pd.DataFrame" = None,
     ) -> Dict:
         """
         对分析结论进行交叉验证，返回可解释的一致性、风控与行动门控结果。
@@ -631,7 +734,7 @@ class StockAnalyzer:
         per_conflict_penalty = cp.get("per_conflict", 0.1)
         max_conflict_penalty = cp.get("max", 0.3)
 
-        model_weights = self.weights
+        model_weights = self._dynamic_weight_manager.get_current_weights() if self._dynamic_weight_manager.enabled else self.weights
         w_tech = model_weights.get("technical", 0.5)
         w_fund = model_weights.get("fund_flow", 0.3)
         w_sent = model_weights.get("sentiment", 0.2)
@@ -877,6 +980,66 @@ class StockAnalyzer:
                 action_gate = "hold_position"
 
         missing_note = f"缺失维度：{'、'.join(missing_dimensions)}。" if missing_dimensions else ""
+
+        distribution = indicators.get("Distribution", {})
+        dist_w20 = distribution.get("W20", {})
+        dist_w60 = distribution.get("W60", {})
+        dist_window = dist_w20 if dist_w20.get("skewness", {}).get("latest") is not None else dist_w60
+
+        skewness_val = None
+        kurtosis_val = None
+        skew_data = dist_window.get("skewness", {})
+        kurt_data = dist_window.get("kurtosis", {})
+        if isinstance(skew_data, dict):
+            skewness_val = skew_data.get("latest")
+        if isinstance(kurt_data, dict):
+            kurtosis_val = kurt_data.get("latest")
+
+        try:
+            skewness_val = float(skewness_val) if skewness_val is not None else None
+        except (TypeError, ValueError):
+            skewness_val = None
+        try:
+            kurtosis_val = float(kurtosis_val) if kurtosis_val is not None else None
+        except (TypeError, ValueError):
+            kurtosis_val = None
+
+        if skewness_val is not None and skewness_val < -0.5:
+            confidence = confidence * 0.8
+            if direction_consensus == "bullish":
+                weighted_bullish *= 0.8
+            opposing_factors.append("收益率左偏分布")
+
+        if kurtosis_val is not None and kurtosis_val > 5:
+            risk_level_map = {"low": "medium", "medium": "high"}
+            risk_level = risk_level_map.get(risk_level, risk_level)
+            conflicts.append("尾部风险显著")
+
+        market_structure = indicators.get("MarketStructure", {})
+        rs_data = market_structure.get("RelativeStrength", {})
+        beta_data = market_structure.get("Beta", {})
+
+        rs_latest = rs_data.get("latest") if isinstance(rs_data, dict) else None
+        beta_latest = beta_data.get("latest") if isinstance(beta_data, dict) else None
+
+        try:
+            rs_latest = float(rs_latest) if rs_latest is not None else None
+        except (TypeError, ValueError):
+            rs_latest = None
+        try:
+            beta_latest = float(beta_latest) if beta_latest is not None else None
+        except (TypeError, ValueError):
+            beta_latest = None
+
+        if rs_latest is not None and rs_latest > 1.2:
+            confidence = min(1.0, confidence * 1.1)
+            supporting_factors.append("相对强度强势")
+
+        if beta_latest is not None and beta_latest > 1.5:
+            risk_level_map = {"low": "medium", "medium": "high"}
+            risk_level = risk_level_map.get(risk_level, risk_level)
+            opposing_factors.append("高Beta风险")
+
         validation_note = (
             f"方向{direction_consensus}，置信度{confidence:.3f}，风险{risk_level}。"
             f"支持因素{len(supporting_factors)}项，反对因素{len(opposing_factors)}项，"
@@ -899,6 +1062,27 @@ class StockAnalyzer:
         }
         if persistence_info:
             result["signal_persistence"] = persistence_info
+
+        if self._stress_test_config.get("enabled", False) and history_df is not None:
+            try:
+                from scripts.core.stress_test import MonteCarloStressTest
+                n_sim = self._stress_test_config.get("n_simulations", 1000)
+                mc = MonteCarloStressTest(n_simulations=n_sim, config=self._stress_test_config)
+                stress_result = mc.run(self, history_df, indicators)
+                result["stress_test"] = stress_result
+
+                if stress_result.get("signal_flip_rate", 0) > 0.3:
+                    confidence = confidence * 0.8
+                    result["confidence"] = round(max(0.0, min(1.0, confidence)), 3)
+                    if "模型鲁棒性不足" not in result["conflicts"]:
+                        result["conflicts"].append("模型鲁棒性不足")
+                    result["validation_note"] = (
+                        result["validation_note"].rstrip("。")
+                        + "；蒙特卡洛压力测试：信号翻转率"
+                        + f"{stress_result['signal_flip_rate']:.1%}，模型鲁棒性不足。"
+                    )
+            except Exception as e:
+                analyzer_logger.warning(f"蒙特卡洛压力测试异常: {e}")
 
         return result
 
@@ -1288,7 +1472,38 @@ class StockAnalyzer:
             "trend": trend,
             "day1": day1,
             "day2": day2,
+            "limit_pct": limit_pct,
         }
+
+        if self._ml_enabled and stock_code:
+            try:
+                if not self._ml_loaded:
+                    model_dir = self._ml_config.get("model_dir", "models/")
+                    stock_model_dir = os.path.join(model_dir, stock_code)
+                    if os.path.isdir(stock_model_dir):
+                        self._ml_predictor.load(stock_model_dir)
+                    self._ml_loaded = True
+
+                if self._ml_predictor.is_ready():
+                    from scripts.core.feature_engineering import extract_feature_vector
+                    feature_names, feature_values = extract_feature_vector(indicators)
+                    if len(feature_values) > 0:
+                        X = feature_values.reshape(1, -1)
+                        ml_prediction = self._ml_predictor.predict(X)
+                        if ml_prediction:
+                            alpha = self._ml_alpha
+                            result = hybrid_predict(result, ml_prediction, alpha)
+                            analyzer_logger.info(
+                                f"  ML混合预测: alpha={alpha}, "
+                                f"ml_return={ml_prediction.get('next_day_return', 'N/A')}, "
+                                f"ml_direction={ml_prediction.get('direction', 'N/A')}"
+                            )
+            except Exception as e:
+                analyzer_logger.warning(f"ML混合预测异常，使用纯规则预测: {e}")
+
+        if "ml_prediction" not in result:
+            result["ml_prediction"] = None
+            result["hybrid_alpha"] = 1.0
 
         analyzer_logger.info("价格预测结果:")
         analyzer_logger.info(f"  支撑位: {result.get('support')}")
@@ -1345,7 +1560,7 @@ class StockAnalyzer:
             "sentiment": sentiment_analysis,
         }
 
-        trading_signal = self.generate_trading_signal(analysis, position_status)
+        trading_signal = self.generate_trading_signal(analysis, position_status, market_data)
         price_prediction = self.predict_price_range(
             all_data, indicators, stock_code, trading_signal
         )
@@ -1356,6 +1571,7 @@ class StockAnalyzer:
             trading_signal,
             position_status,
             current_price,
+            history_df=all_data.get("history_data"),
         )
         trading_signal["reason"] = validation.get("validation_note", "")
         price_prediction["validation_confidence"] = validation.get("confidence", 0.5)
@@ -1370,7 +1586,7 @@ class StockAnalyzer:
                 all_data, indicators, current_price, trading_signal, validation
             )
 
-        return {
+        result = {
             "analysis": analysis,
             "trading_signal": trading_signal,
             "price_prediction": price_prediction,
@@ -1379,6 +1595,30 @@ class StockAnalyzer:
             "position_strategy": position_strategy,
             "position_status": position_status,
         }
+
+        if self._hmm_detector is not None and self._hmm_detector.is_ready():
+            history_df = all_data.get("history_data")
+            if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+                try:
+                    closes = history_df["收盘"].values.astype(np.float64)
+                    returns = np.diff(closes) / closes[:-1]
+                    vols = np.zeros_like(returns)
+                    window = 20
+                    for i in range(len(returns)):
+                        start = max(0, i - window + 1)
+                        vols[i] = np.std(returns[start:i + 1]) if i > 0 else 0.0
+                    volumes = history_df["成交量"].values.astype(np.float64) if "成交量" in history_df.columns else np.ones(len(closes))
+                    volume_changes = np.diff(volumes) / (volumes[:-1] + 1e-10)
+                    hmm_result = self._hmm_detector.predict(returns, vols, volume_changes)
+                    result["hmm_state"] = {
+                        "current_state": hmm_result.get("current_state", "未知"),
+                        "state_probabilities": hmm_result.get("state_probabilities", {}),
+                        "transition_matrix": hmm_result.get("transition_matrix"),
+                    }
+                except Exception as e:
+                    analyzer_logger.warning(f"HMM状态预测失败: {e}")
+
+        return result
 
     def generate_position_strategy(
         self,
@@ -1656,6 +1896,29 @@ class StockAnalyzer:
         is_downtrend = macd_signal in ("空头", "死叉") or kdj_signal in ("死叉", "超买")
         if is_downtrend:
             position_size = max(10, position_size // 2)
+
+        distribution = indicators.get("Distribution", {})
+        dist_w20 = distribution.get("W20", {})
+        dist_w60 = distribution.get("W60", {})
+        dist_window = dist_w20 if dist_w20.get("skewness", {}).get("latest") is not None else dist_w60
+        skew_data = dist_window.get("skewness", {})
+        skewness_val = skew_data.get("latest") if isinstance(skew_data, dict) else None
+        try:
+            skewness_val = float(skewness_val) if skewness_val is not None else None
+        except (TypeError, ValueError):
+            skewness_val = None
+        if skewness_val is not None and skewness_val < -0.5:
+            position_size = max(10, position_size / 2)
+
+        market_structure = indicators.get("MarketStructure", {})
+        beta_data = market_structure.get("Beta", {})
+        beta_latest = beta_data.get("latest") if isinstance(beta_data, dict) else None
+        try:
+            beta_latest = float(beta_latest) if beta_latest is not None else None
+        except (TypeError, ValueError):
+            beta_latest = None
+        if beta_latest is not None and beta_latest > 1.5:
+            risk_price = current_price - (current_price - risk_price) * 0.7
 
         return {
             "current_price": current_price,

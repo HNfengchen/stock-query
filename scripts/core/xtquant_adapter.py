@@ -340,3 +340,46 @@ class DataValidator:
         results["overall_confidence"] = sum(confidences) / len(confidences)
 
         return results
+
+    def validate_consistency(
+        self,
+        source_a_data: Dict,
+        source_b_data: Dict,
+        price_diff_threshold: float = 0.01,
+        volume_diff_threshold: float = 0.20,
+    ) -> Dict:
+        price_a = source_a_data.get("close") or source_a_data.get("收盘") or source_a_data.get("最新价")
+        price_b = source_b_data.get("close") or source_b_data.get("收盘") or source_b_data.get("最新价")
+        volume_a = source_a_data.get("volume") or source_a_data.get("成交量")
+        volume_b = source_b_data.get("volume") or source_b_data.get("成交量")
+
+        price_diff_pct = None
+        volume_diff_pct = None
+        details = {}
+
+        if price_a is not None and price_b is not None and price_b != 0:
+            price_diff_pct = abs(float(price_a) - float(price_b)) / abs(float(price_b))
+            details["price_a"] = float(price_a)
+            details["price_b"] = float(price_b)
+        elif price_a is None or price_b is None:
+            details["price_missing"] = True
+
+        if volume_a is not None and volume_b is not None and volume_b != 0:
+            volume_diff_pct = abs(float(volume_a) - float(volume_b)) / abs(float(volume_b))
+            details["volume_a"] = float(volume_a)
+            details["volume_b"] = float(volume_b)
+        elif volume_a is None or volume_b is None:
+            details["volume_missing"] = True
+
+        is_consistent = True
+        if price_diff_pct is not None and price_diff_pct > price_diff_threshold:
+            is_consistent = False
+        if volume_diff_pct is not None and volume_diff_pct > volume_diff_threshold:
+            is_consistent = False
+
+        return {
+            "is_consistent": is_consistent,
+            "price_diff_pct": round(price_diff_pct, 6) if price_diff_pct is not None else None,
+            "volume_diff_pct": round(volume_diff_pct, 6) if volume_diff_pct is not None else None,
+            "details": details,
+        }

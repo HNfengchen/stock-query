@@ -5,7 +5,7 @@
 
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional
 
 
 def calculate_macd(
@@ -518,7 +518,482 @@ def calculate_volume_ratio(volume: Union[List, pd.Series], n: int = 5) -> Dict:
     return {"latest": vr, "signal": signal}
 
 
-def calculate_all_indicators(df: pd.DataFrame) -> Dict:
+def calculate_distribution_features(
+    df: pd.DataFrame,
+    windows: List[int] = None,
+    prev_state: Optional[Dict] = None,
+) -> Dict:
+    if windows is None:
+        windows = [20, 60]
+
+    if "收盘" in df.columns:
+        closes = df["收盘"]
+    elif "close" in df.columns:
+        closes = df["close"]
+    else:
+        return {"Distribution": {}, "state": {}}
+
+    closes = pd.Series(closes).astype(float)
+    log_returns = np.log(closes / closes.shift(1)).dropna()
+
+    result = {}
+    window_states = {}
+
+    for w in windows:
+        w_key = f"W{w}"
+        if len(log_returns) < w:
+            result[w_key] = {
+                "skewness": {"latest": None, "signal": "数据不足"},
+                "kurtosis": {"latest": None, "signal": "数据不足"},
+                "var_95": {"latest": None},
+                "var_99": {"latest": None},
+                "cvar_95": {"latest": None},
+                "cvar_99": {"latest": None},
+            }
+            continue
+
+        returns_window = log_returns.iloc[-w:].values
+
+        mean = np.mean(returns_window)
+        std = np.std(returns_window, ddof=1)
+
+        if std == 0:
+            skewness = 0.0
+            kurtosis = 0.0
+        else:
+            n = len(returns_window)
+            skewness = float(np.sum(((returns_window - mean) / std) ** 3) / n)
+            kurtosis = float(np.sum(((returns_window - mean) / std) ** 4) / n - 3)
+
+        if skewness < -0.5:
+            skew_signal = "左偏"
+        elif skewness > 0.5:
+            skew_signal = "右偏"
+        else:
+            skew_signal = "对称"
+
+        if kurtosis > 3:
+            kurt_signal = "厚尾"
+        elif kurtosis < -1:
+            kurt_signal = "轻尾"
+        else:
+            kurt_signal = "正常"
+
+        var_95 = float(np.percentile(returns_window, 5))
+        var_99 = float(np.percentile(returns_window, 1))
+
+        below_var_95 = returns_window[returns_window <= var_95]
+        below_var_99 = returns_window[returns_window <= var_99]
+
+        cvar_95 = float(np.mean(below_var_95)) if len(below_var_95) > 0 else var_95
+        cvar_99 = float(np.mean(below_var_99)) if len(below_var_99) > 0 else var_99
+
+        result[w_key] = {
+            "skewness": {"latest": round(skewness, 4), "signal": skew_signal},
+            "kurtosis": {"latest": round(kurtosis, 4), "signal": kurt_signal},
+            "var_95": {"latest": round(var_95, 6)},
+            "var_99": {"latest": round(var_99, 6)},
+            "cvar_95": {"latest": round(cvar_95, 6)},
+            "cvar_99": {"latest": round(cvar_99, 6)},
+        }
+
+        window_states[w_key] = {
+            "skewness": skewness,
+            "kurtosis": kurtosis,
+            "var_95": var_95,
+            "var_99": var_99,
+            "cvar_95": cvar_95,
+            "cvar_99": cvar_99,
+        }
+
+    state = {
+        "windows": list(windows),
+        "window_states": window_states,
+    }
+
+    return {"Distribution": result, "state": state}
+
+
+def calculate_relative_strength(
+    stock_returns: pd.Series, index_returns: pd.Series, window: int = 20
+) -> Dict:
+    if index_returns is None or (hasattr(index_returns, "empty") and index_returns.empty) or len(index_returns) == 0:
+        return {"RelativeStrength": {"latest": 1.0, "series": [], "signal": "数据不可用"}}
+
+    stock_ret = pd.Series(stock_returns).iloc[-window:] if len(stock_returns) >= window else pd.Series(stock_returns)
+    index_ret = pd.Series(index_returns).iloc[-window:] if len(index_returns) >= window else pd.Series(index_returns)
+
+    min_len = min(len(stock_ret), len(index_ret))
+    stock_ret = stock_ret.iloc[-min_len:]
+    index_ret = index_ret.iloc[-min_len:]
+
+    stock_cum = (1 + stock_ret).prod()
+    index_cum = (1 + index_ret).prod()
+
+    if index_cum == 0:
+        rs = 1.0
+    else:
+        rs = stock_cum / index_cum
+
+    rs = round(float(rs), 4)
+
+    if rs > 1.2:
+        signal = "强势"
+    elif rs > 1.0:
+        signal = "偏强"
+    elif rs > 0.8:
+        signal = "偏弱"
+    else:
+        signal = "弱势"
+
+    series = []
+    step = max(1, min_len // 20)
+    for i in range(step, min_len + 1, step):
+        s_cum = (1 + stock_ret.iloc[:i]).prod()
+        i_cum = (1 + index_ret.iloc[:i]).prod()
+        series.append(round(float(s_cum / i_cum), 4) if i_cum != 0 else 1.0)
+
+    return {"RelativeStrength": {"latest": rs, "series": series, "signal": signal}}
+
+
+def calculate_beta(
+    stock_returns: pd.Series, index_returns: pd.Series, window: int = 60
+) -> Dict:
+    if index_returns is None or (hasattr(index_returns, "empty") and index_returns.empty) or len(index_returns) < 2:
+        return {"Beta": {"latest": 1.0, "series": [], "signal": "数据不可用"}}
+
+    stock_ret = pd.Series(stock_returns)
+    index_ret = pd.Series(index_returns)
+
+    min_len = min(len(stock_ret), len(index_ret))
+    stock_ret = stock_ret.iloc[-min_len:].values
+    index_ret = index_ret.iloc[-min_len:].values
+
+    series = []
+    step = max(1, min(window, min_len) // 10)
+    for i in range(window, min_len + 1, step):
+        s = stock_ret[i - window:i]
+        idx = index_ret[i - window:i]
+        cov_mat = np.cov(s, idx)
+        var_idx = np.var(idx)
+        if var_idx != 0:
+            b = cov_mat[0, 1] / var_idx
+        else:
+            b = 1.0
+        series.append(round(float(b), 4))
+
+    s_w = stock_ret[-window:]
+    idx_w = index_ret[-window:]
+    cov_mat = np.cov(s_w, idx_w)
+    var_idx = np.var(idx_w)
+    if var_idx != 0:
+        beta = cov_mat[0, 1] / var_idx
+    else:
+        beta = 1.0
+
+    beta = round(float(beta), 4)
+
+    if beta > 1.5:
+        signal = "高Beta"
+    elif beta > 1.0:
+        signal = "中高Beta"
+    elif beta > 0.5:
+        signal = "中低Beta"
+    else:
+        signal = "低Beta"
+
+    return {"Beta": {"latest": beta, "series": series, "signal": signal}}
+
+
+def calculate_industry_strength(
+    industry_returns: pd.Series, index_returns: pd.Series, window: int = 20
+) -> Dict:
+    if industry_returns is None or (hasattr(industry_returns, "empty") and industry_returns.empty) or len(industry_returns) == 0:
+        return {"IndustryStrength": {"latest": 0.0, "series": [], "signal": "数据不可用"}}
+
+    ind_ret = pd.Series(industry_returns).iloc[-window:] if len(industry_returns) >= window else pd.Series(industry_returns)
+
+    if index_returns is not None and len(index_returns) > 0:
+        idx_ret = pd.Series(index_returns).iloc[-window:] if len(index_returns) >= window else pd.Series(index_returns)
+        min_len = min(len(ind_ret), len(idx_ret))
+        ind_ret = ind_ret.iloc[-min_len:]
+        idx_ret = idx_ret.iloc[-min_len:]
+        index_cum = (1 + idx_ret).prod()
+    else:
+        index_cum = 1.0
+
+    industry_cum = (1 + ind_ret).prod()
+    strength = industry_cum - index_cum
+    strength = round(float(strength), 4)
+
+    if strength > 0.05:
+        signal = "强势"
+    elif strength > 0:
+        signal = "偏强"
+    elif strength > -0.05:
+        signal = "偏弱"
+    else:
+        signal = "弱势"
+
+    series = []
+    step = max(1, len(ind_ret) // 20)
+    for i in range(step, len(ind_ret) + 1, step):
+        i_cum = (1 + ind_ret.iloc[:i]).prod()
+        if index_returns is not None and len(index_returns) > 0:
+            x_cum = (1 + idx_ret.iloc[:i]).prod()
+        else:
+            x_cum = 1.0
+        series.append(round(float(i_cum - x_cum), 4))
+
+    return {"IndustryStrength": {"latest": strength, "series": series, "signal": signal}}
+
+
+def calculate_sector_fund_flow(sector_fund_data: dict = None) -> Dict:
+    if sector_fund_data is None:
+        return {"SectorFundFlow": {"latest": 0.0, "signal": "数据不可用"}}
+
+    net_inflow = sector_fund_data.get("net_inflow", sector_fund_data.get("主力净流入", 0))
+    try:
+        net_inflow = float(net_inflow) if net_inflow else 0.0
+    except (TypeError, ValueError):
+        net_inflow = 0.0
+
+    if net_inflow > 1e9:
+        signal = "大幅流入"
+    elif net_inflow > 0:
+        signal = "流入"
+    elif net_inflow > -1e9:
+        signal = "流出"
+    else:
+        signal = "大幅流出"
+
+    return {"SectorFundFlow": {"latest": net_inflow, "signal": signal}}
+
+
+def calculate_market_structure(
+    stock_df: pd.DataFrame,
+    index_df: pd.DataFrame = None,
+    industry_df: pd.DataFrame = None,
+    sector_fund_data: dict = None,
+    config: dict = None,
+) -> Dict:
+    if config is None:
+        config = {}
+
+    rs_window = config.get("rs_window", 20)
+    beta_window = config.get("beta_window", 60)
+    is_window = config.get("is_window", 20)
+
+    if "收盘" in stock_df.columns:
+        stock_closes = stock_df["收盘"].astype(float)
+    elif "close" in stock_df.columns:
+        stock_closes = stock_df["close"].astype(float)
+    else:
+        return {"MarketStructure": {}}
+
+    stock_returns = stock_closes.pct_change().dropna()
+
+    index_returns = None
+    if index_df is not None and not index_df.empty:
+        if "收盘" in index_df.columns:
+            index_closes = index_df["收盘"].astype(float)
+        elif "close" in index_df.columns:
+            index_closes = index_df["close"].astype(float)
+        else:
+            index_closes = None
+        if index_closes is not None:
+            index_returns = index_closes.pct_change().dropna()
+
+    industry_returns = None
+    if industry_df is not None and not industry_df.empty:
+        if "收盘" in industry_df.columns:
+            industry_closes = industry_df["收盘"].astype(float)
+        elif "close" in industry_df.columns:
+            industry_closes = industry_df["close"].astype(float)
+        else:
+            industry_closes = None
+        if industry_closes is not None:
+            industry_returns = industry_closes.pct_change().dropna()
+
+    rs_result = calculate_relative_strength(stock_returns, index_returns, rs_window)
+    beta_result = calculate_beta(stock_returns, index_returns, beta_window)
+    is_result = calculate_industry_strength(industry_returns, index_returns, is_window)
+    fund_result = calculate_sector_fund_flow(sector_fund_data)
+
+    return {
+        "MarketStructure": {
+            "RelativeStrength": rs_result["RelativeStrength"],
+            "Beta": beta_result["Beta"],
+            "IndustryStrength": is_result["IndustryStrength"],
+            "SectorFundFlow": fund_result["SectorFundFlow"],
+        }
+    }
+
+
+def _get_column(df, cn_name, en_name):
+    if cn_name in df.columns:
+        return df[cn_name].astype(float)
+    elif en_name in df.columns:
+        return df[en_name].astype(float)
+    return None
+
+
+def _vol_signal(series, low_pct, high_pct):
+    if len(series) < 20:
+        return "数据不足"
+    valid = series.dropna()
+    if len(valid) < 20:
+        return "数据不足"
+    latest = valid.iloc[-1]
+    low_threshold = valid.rolling(window=len(valid), min_periods=20).quantile(low_pct / 100.0).iloc[-1]
+    high_threshold = valid.rolling(window=len(valid), min_periods=20).quantile(high_pct / 100.0).iloc[-1]
+    if pd.isna(low_threshold) or pd.isna(high_threshold):
+        return "正常"
+    if latest <= low_threshold:
+        return "低波动"
+    elif latest >= high_threshold:
+        return "高波动"
+    else:
+        return "正常"
+
+
+def calculate_historical_volatility(
+    df: pd.DataFrame,
+    windows: Union[int, List[int]] = 20,
+    prev_state: Optional[Dict] = None,
+) -> Dict:
+    closes = _get_column(df, "收盘", "close")
+    if closes is None:
+        return {"latest": None, "series": {}, "signal": "数据不足", "state": {}}
+
+    log_returns = np.log(closes / closes.shift(1)).dropna()
+    if isinstance(windows, int):
+        windows = [windows]
+
+    result_series = {}
+    result_latest = {}
+    states = {}
+    low_pct = 25
+    high_pct = 75
+
+    for w in windows:
+        if len(log_returns) < w:
+            result_series[f"HV{w}"] = pd.Series([None] * len(closes))
+            result_latest[f"HV{w}"] = None
+            continue
+        hv = log_returns.rolling(window=w).std() * np.sqrt(252)
+        result_series[f"HV{w}"] = hv.round(4)
+        result_latest[f"HV{w}"] = round(hv.iloc[-1], 4) if not pd.isna(hv.iloc[-1]) else None
+        states[f"HV{w}"] = {"window": w, "last_value": result_latest[f"HV{w}"]}
+
+    combined = pd.DataFrame(result_series)
+    first_key = list(result_series.keys())[0] if result_series else None
+    if first_key and result_series[first_key] is not None:
+        signal = _vol_signal(result_series[first_key], low_pct, high_pct)
+    else:
+        signal = "数据不足"
+
+    return {
+        "latest": result_latest,
+        "series": result_series,
+        "signal": signal,
+        "state": states,
+    }
+
+
+def calculate_parkinson_volatility(
+    df: pd.DataFrame,
+    window: int = 20,
+    prev_state: Optional[Dict] = None,
+) -> Dict:
+    high = _get_column(df, "最高", "high")
+    low = _get_column(df, "最低", "low")
+    if high is None or low is None:
+        return {"latest": None, "series": pd.Series(), "signal": "数据不足", "state": {}}
+
+    if len(high) < window:
+        return {"latest": None, "series": pd.Series([None] * len(high)), "signal": "数据不足", "state": {}}
+
+    log_hl_sq = (np.log(high / low)) ** 2
+    factor = 1.0 / (4.0 * np.log(2.0))
+    pv = np.sqrt(log_hl_sq.rolling(window=window).mean() * factor) * np.sqrt(252)
+
+    latest = round(pv.iloc[-1], 4) if not pd.isna(pv.iloc[-1]) else None
+    signal = _vol_signal(pv, 25, 75)
+
+    return {
+        "latest": latest,
+        "series": pv.round(4),
+        "signal": signal,
+        "state": {"window": window, "last_value": latest},
+    }
+
+
+def calculate_garman_klass_volatility(
+    df: pd.DataFrame,
+    window: int = 20,
+    prev_state: Optional[Dict] = None,
+) -> Dict:
+    high = _get_column(df, "最高", "high")
+    low = _get_column(df, "最低", "low")
+    close = _get_column(df, "收盘", "close")
+    open_ = _get_column(df, "开盘", "open")
+    if high is None or low is None or close is None:
+        return {"latest": None, "series": pd.Series(), "signal": "数据不足", "state": {}}
+    if open_ is None:
+        open_ = close.shift(1)
+    if len(high) < window:
+        return {"latest": None, "series": pd.Series([None] * len(high)), "signal": "数据不足", "state": {}}
+
+    log_hl = 0.5 * (np.log(high / low)) ** 2
+    log_co = (2 * np.log(2) - 1) * (np.log(close / open_)) ** 2
+    gk = log_hl - log_co
+    gk_vol = np.sqrt(gk.rolling(window=window).mean()) * np.sqrt(252)
+
+    latest = round(gk_vol.iloc[-1], 4) if not pd.isna(gk_vol.iloc[-1]) else None
+    signal = _vol_signal(gk_vol, 25, 75)
+
+    return {
+        "latest": latest,
+        "series": gk_vol.round(4),
+        "signal": signal,
+        "state": {"window": window, "last_value": latest},
+    }
+
+
+def calculate_realized_volatility(
+    df: pd.DataFrame,
+    window: int = 20,
+    prev_state: Optional[Dict] = None,
+) -> Dict:
+    closes = _get_column(df, "收盘", "close")
+    if closes is None:
+        return {"latest": None, "series": pd.Series(), "signal": "数据不足", "state": {}}
+
+    log_returns = np.log(closes / closes.shift(1))
+    if len(log_returns) < window:
+        return {"latest": None, "series": pd.Series([None] * len(closes)), "signal": "数据不足", "state": {}}
+
+    rv = np.sqrt((log_returns ** 2).rolling(window=window).sum()) * np.sqrt(252 / window)
+
+    latest = round(rv.iloc[-1], 4) if not pd.isna(rv.iloc[-1]) else None
+    signal = _vol_signal(rv, 25, 75)
+
+    return {
+        "latest": latest,
+        "series": rv.round(4),
+        "signal": signal,
+        "state": {"window": window, "last_value": latest},
+    }
+
+
+def calculate_all_indicators(
+    df: pd.DataFrame,
+    index_df: pd.DataFrame = None,
+    industry_df: pd.DataFrame = None,
+    sector_fund_data: dict = None,
+    config: dict = None,
+) -> Dict:
     """
     计算所有技术指标
 
@@ -565,9 +1040,75 @@ def calculate_all_indicators(df: pd.DataFrame) -> Dict:
     result["BOLL"] = calculate_boll(closes)
     result["ATR"] = calculate_atr(highs, lows, closes)
 
+    dist_result = calculate_distribution_features(df)
+    result["Distribution"] = dist_result["Distribution"]
+
     if volumes is not None:
         result["Volume_Ratio"] = calculate_volume_ratio(volumes)
         result["OBV"] = calculate_obv(closes, volumes)
         result["Volume_MA"] = calculate_volume_ma(volumes)
 
+    ms_result = calculate_market_structure(df, index_df, industry_df, sector_fund_data, config)
+    result["MarketStructure"] = ms_result["MarketStructure"]
+
+    vol_config = (config or {}).get("volatility", {})
+    hv_windows = vol_config.get("hv_windows", [20, 60])
+    parkinson_window = vol_config.get("parkinson_window", 20)
+    garman_klass_window = vol_config.get("garman_klass_window", 20)
+    realized_vol_window = vol_config.get("realized_vol_window", 20)
+
+    hv_result = calculate_historical_volatility(df, windows=hv_windows)
+    pk_result = calculate_parkinson_volatility(df, window=parkinson_window)
+    gk_result = calculate_garman_klass_volatility(df, window=garman_klass_window)
+    rv_result = calculate_realized_volatility(df, window=realized_vol_window)
+
+    result["Volatility"] = {
+        "Historical": hv_result,
+        "Parkinson": pk_result,
+        "GarmanKlass": gk_result,
+        "Realized": rv_result,
+    }
+
     return result
+
+
+def calculate_all_indicators_incremental(
+    df: pd.DataFrame,
+    prev_states: Optional[Dict] = None,
+    index_df: pd.DataFrame = None,
+    industry_df: pd.DataFrame = None,
+    sector_fund_data: dict = None,
+    config: dict = None,
+) -> Dict:
+    if prev_states is None:
+        prev_states = {}
+
+    result = calculate_all_indicators(df, index_df, industry_df, sector_fund_data, config)
+
+    new_states = {}
+
+    dist_result = calculate_distribution_features(df, prev_state=prev_states.get("Distribution"))
+    if "state" in dist_result:
+        new_states["Distribution"] = dist_result["state"]
+
+    vol_config = (config or {}).get("volatility", {})
+    hv_windows = vol_config.get("hv_windows", [20, 60])
+    parkinson_window = vol_config.get("parkinson_window", 20)
+    garman_klass_window = vol_config.get("garman_klass_window", 20)
+    realized_vol_window = vol_config.get("realized_vol_window", 20)
+
+    hv = calculate_historical_volatility(df, windows=hv_windows, prev_state=prev_states.get("Volatility_Historical"))
+    pk = calculate_parkinson_volatility(df, window=parkinson_window, prev_state=prev_states.get("Volatility_Parkinson"))
+    gk = calculate_garman_klass_volatility(df, window=garman_klass_window, prev_state=prev_states.get("Volatility_GarmanKlass"))
+    rv = calculate_realized_volatility(df, window=realized_vol_window, prev_state=prev_states.get("Volatility_Realized"))
+
+    if "state" in hv:
+        new_states["Volatility_Historical"] = hv["state"]
+    if "state" in pk:
+        new_states["Volatility_Parkinson"] = pk["state"]
+    if "state" in gk:
+        new_states["Volatility_GarmanKlass"] = gk["state"]
+    if "state" in rv:
+        new_states["Volatility_Realized"] = rv["state"]
+
+    return {"indicators": result, "states": new_states}

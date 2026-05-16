@@ -6,7 +6,7 @@ import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, BarChart, CustomChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, TitleComponent } from 'echarts/components'
-import type { BacktestRequest, BacktestPrediction } from '@/types'
+import type { BacktestRequest, BacktestPrediction, WalkForwardRequest } from '@/types'
 import { TREND_LABEL_MAP, getTrendColor, getTrendTagType, getTrendClass, trendToValue, changeToTrendValue } from '@/utils/format'
 
 use([CanvasRenderer, LineChart, BarChart, CustomChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, TitleComponent])
@@ -16,6 +16,11 @@ const store = useBacktestStore()
 const stockCode = ref('')
 const currentPage = ref(1)
 const pageSize = ref(20)
+const activeTab = ref('backtest')
+
+const wfTrainWindow = ref(60)
+const wfTestWindow = ref(20)
+const wfStep = ref(20)
 
 function buildPriceCompareOption(day: 1 | 2) {
   if (!store.result?.predictions?.length) return {}
@@ -243,11 +248,108 @@ const trendAccuracyOption = computed(() => {
   }
 })
 
+const wfAccuracyOption = computed(() => {
+  if (!store.wfResult?.windows?.length) return {}
+  const windows = store.wfResult.windows
+  const labels = windows.map(w => `W${w.window_id + 1}`)
+
+  return {
+    backgroundColor: 'transparent',
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(10, 14, 26, 0.95)',
+      borderColor: 'rgba(0, 212, 170, 0.2)',
+      textStyle: { color: '#f1f5f9', fontSize: 11 },
+      formatter: (params: any[]) => {
+        const idx = params[0]?.dataIndex
+        if (idx === undefined || idx < 0) return ''
+        const w = windows[idx]
+        if (!w) return ''
+        let html = `<div style="font-weight:600;margin-bottom:6px">窗口 W${w.window_id + 1}</div>`
+        html += `<div>训练期: ${w.train_start} ~ ${w.train_end}</div>`
+        html += `<div>测试期: ${w.test_start} ~ ${w.test_end}</div>`
+        html += `<div>预测数: ${w.n_predictions}</div>`
+        for (const p of params) {
+          html += `<div>${p.seriesName}: <span style="font-weight:600">${p.value}%</span></div>`
+        }
+        return html
+      },
+    },
+    legend: {
+      data: ['命中率', '方向准确率', '趋势准确率'],
+      textStyle: { color: 'var(--text-muted)', fontSize: 11 },
+      top: 4,
+    },
+    grid: { left: 48, right: 16, top: 40, bottom: 40 },
+    xAxis: {
+      type: 'category',
+      data: labels,
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+      axisLabel: { color: '#475569', fontSize: 10, fontFamily: 'SF Mono, JetBrains Mono, monospace' },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      axisLine: { show: false },
+      axisLabel: { color: '#475569', fontSize: 10, formatter: '{value}%', fontFamily: 'SF Mono, JetBrains Mono, monospace' },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)', type: [4, 4] } },
+      axisTick: { show: false },
+    },
+    series: [
+      {
+        name: '命中率',
+        type: 'line',
+        data: windows.map(w => w.hit_rate),
+        smooth: true,
+        lineStyle: { color: 'var(--color-up)', width: 2 },
+        symbol: 'circle',
+        symbolSize: 6,
+        itemStyle: { color: 'var(--color-up)', borderWidth: 0 },
+      },
+      {
+        name: '方向准确率',
+        type: 'line',
+        data: windows.map(w => w.direction_accuracy),
+        smooth: true,
+        lineStyle: { color: 'var(--color-accent)', width: 2 },
+        symbol: 'diamond',
+        symbolSize: 6,
+        itemStyle: { color: 'var(--color-accent)', borderWidth: 0 },
+      },
+      {
+        name: '趋势准确率',
+        type: 'line',
+        data: windows.map(w => w.trend_accuracy),
+        smooth: true,
+        lineStyle: { color: '#f59e0b', width: 2 },
+        symbol: 'triangle',
+        symbolSize: 6,
+        itemStyle: { color: '#f59e0b', borderWidth: 0 },
+      },
+    ],
+  }
+})
+
 async function runValidation() {
   if (!stockCode.value.trim()) return
   const data: BacktestRequest = { stock_code: stockCode.value.trim() }
   try {
     await store.executeBacktest(data)
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+async function runWalkForward() {
+  if (!stockCode.value.trim()) return
+  const data: WalkForwardRequest = {
+    stock_code: stockCode.value.trim(),
+    train_window: wfTrainWindow.value,
+    test_window: wfTestWindow.value,
+    step: wfStep.value,
+  }
+  try {
+    await store.executeWalkForward(data)
   } catch (e) {
     console.error(e)
   }
@@ -296,16 +398,36 @@ function exportCSV() {
         <div class="config-form">
           <el-form label-position="top">
             <el-form-item label="股票代码">
-              <el-input v-model="stockCode" placeholder="如 603956" @keyup.enter="runValidation" />
+              <el-input v-model="stockCode" placeholder="如 603956" @keyup.enter="activeTab === 'backtest' ? runValidation() : runWalkForward()" />
             </el-form-item>
           </el-form>
         </div>
-        <el-button type="primary" class="run-btn" :loading="store.loading" @click="runValidation">
+
+        <el-button v-if="activeTab === 'backtest'" type="primary" class="run-btn" :loading="store.loading" @click="runValidation">
           <el-icon><VideoPlay /></el-icon>
           <span>开始验证</span>
         </el-button>
+        <el-button v-else type="primary" class="run-btn" :loading="store.wfLoading" @click="runWalkForward">
+          <el-icon><VideoPlay /></el-icon>
+          <span>Walk-Forward验证</span>
+        </el-button>
 
-        <div v-if="store.result" class="info-section">
+        <div v-if="activeTab === 'walkforward'" class="wf-params">
+          <div class="info-item">
+            <span class="info-label">训练窗口</span>
+            <el-input-number v-model="wfTrainWindow" :min="20" :max="200" :step="10" size="small" controls-position="right" />
+          </div>
+          <div class="info-item">
+            <span class="info-label">测试窗口</span>
+            <el-input-number v-model="wfTestWindow" :min="5" :max="60" :step="5" size="small" controls-position="right" />
+          </div>
+          <div class="info-item">
+            <span class="info-label">滑动步长</span>
+            <el-input-number v-model="wfStep" :min="5" :max="60" :step="5" size="small" controls-position="right" />
+          </div>
+        </div>
+
+        <div v-if="store.result && activeTab === 'backtest'" class="info-section">
           <div class="info-item">
             <span class="info-label">股票代码</span>
             <span class="info-value font-mono">{{ store.result.stock_code }}</span>
@@ -327,199 +449,322 @@ function exportCSV() {
             <span class="info-value font-mono">{{ store.result.day2_valid_count }}</span>
           </div>
         </div>
+
+        <div v-if="store.wfResult && activeTab === 'walkforward'" class="info-section">
+          <div class="info-item">
+            <span class="info-label">股票代码</span>
+            <span class="info-value font-mono">{{ store.wfResult.stock_code }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">预测记录</span>
+            <span class="info-value font-mono">{{ store.wfResult.total_predictions }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">窗口数量</span>
+            <span class="info-value font-mono">{{ store.wfResult.windows.length }}</span>
+          </div>
+        </div>
       </div>
 
       <div class="result-panel">
-        <div v-if="store.error" class="error-message">
-          <el-icon><Warning /></el-icon>
-          <span>{{ store.error }}</span>
-        </div>
+        <el-tabs v-model="activeTab" class="backtest-tabs">
+          <el-tab-pane label="预测验证" name="backtest">
+            <div v-if="store.error" class="error-message">
+              <el-icon><Warning /></el-icon>
+              <span>{{ store.error }}</span>
+            </div>
 
-        <div v-else-if="store.result" class="result-content">
-          <div class="stats-grid">
-            <div class="stat-card">
-              <span class="stat-label">Day1命中率</span>
-              <span class="stat-value font-mono">{{ store.result.statistics.day1_hit_rate.toFixed(1) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day2命中率</span>
-              <span class="stat-value font-mono">{{ store.result.statistics.day2_hit_rate.toFixed(1) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day1趋势准确率</span>
-              <span class="stat-value font-mono">{{ store.result.statistics.day1_trend_accuracy.toFixed(1) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day2趋势准确率</span>
-              <span class="stat-value font-mono">{{ store.result.statistics.day2_trend_accuracy.toFixed(1) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day1方向准确率</span>
-              <span class="stat-value font-mono" :class="(store.result.statistics.day1_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ (store.result.statistics.day1_direction_accuracy ?? 0).toFixed(1) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day2方向准确率</span>
-              <span class="stat-value font-mono" :class="(store.result.statistics.day2_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ (store.result.statistics.day2_direction_accuracy ?? 0).toFixed(1) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day1区间宽度</span>
-              <span class="stat-value font-mono">{{ (store.result.statistics.day1_mean_width_pct * 100).toFixed(2) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day2区间宽度</span>
-              <span class="stat-value font-mono">{{ (store.result.statistics.day2_mean_width_pct * 100).toFixed(2) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day1中点误差</span>
-              <span class="stat-value loss font-mono">{{ (store.result.statistics.day1_midpoint_mae_pct * 100).toFixed(2) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day2中点误差</span>
-              <span class="stat-value loss font-mono">{{ (store.result.statistics.day2_midpoint_mae_pct * 100).toFixed(2) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day1覆盖宽度比</span>
-              <span class="stat-value font-mono" :class="store.result.statistics.day1_coverage_width_score >= 0 ? '' : 'loss'">{{ (store.result.statistics.day1_coverage_width_score * 100).toFixed(2) }}%</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Day2覆盖宽度比</span>
-              <span class="stat-value font-mono" :class="store.result.statistics.day2_coverage_width_score >= 0 ? '' : 'loss'">{{ (store.result.statistics.day2_coverage_width_score * 100).toFixed(2) }}%</span>
-            </div>
-          </div>
+            <div v-else-if="store.result" class="result-content">
+              <div class="stats-grid">
+                <div class="stat-card">
+                  <span class="stat-label">Day1命中率</span>
+                  <span class="stat-value font-mono">{{ store.result.statistics.day1_hit_rate.toFixed(1) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day2命中率</span>
+                  <span class="stat-value font-mono">{{ store.result.statistics.day2_hit_rate.toFixed(1) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day1趋势准确率</span>
+                  <span class="stat-value font-mono">{{ store.result.statistics.day1_trend_accuracy.toFixed(1) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day2趋势准确率</span>
+                  <span class="stat-value font-mono">{{ store.result.statistics.day2_trend_accuracy.toFixed(1) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day1方向准确率</span>
+                  <span class="stat-value font-mono" :class="(store.result.statistics.day1_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ (store.result.statistics.day1_direction_accuracy ?? 0).toFixed(1) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day2方向准确率</span>
+                  <span class="stat-value font-mono" :class="(store.result.statistics.day2_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ (store.result.statistics.day2_direction_accuracy ?? 0).toFixed(1) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day1区间宽度</span>
+                  <span class="stat-value font-mono">{{ (store.result.statistics.day1_mean_width_pct * 100).toFixed(2) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day2区间宽度</span>
+                  <span class="stat-value font-mono">{{ (store.result.statistics.day2_mean_width_pct * 100).toFixed(2) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day1中点误差</span>
+                  <span class="stat-value loss font-mono">{{ (store.result.statistics.day1_midpoint_mae_pct * 100).toFixed(2) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day2中点误差</span>
+                  <span class="stat-value loss font-mono">{{ (store.result.statistics.day2_midpoint_mae_pct * 100).toFixed(2) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day1覆盖宽度比</span>
+                  <span class="stat-value font-mono" :class="store.result.statistics.day1_coverage_width_score >= 0 ? '' : 'loss'">{{ (store.result.statistics.day1_coverage_width_score * 100).toFixed(2) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Day2覆盖宽度比</span>
+                  <span class="stat-value font-mono" :class="store.result.statistics.day2_coverage_width_score >= 0 ? '' : 'loss'">{{ (store.result.statistics.day2_coverage_width_score * 100).toFixed(2) }}%</span>
+                </div>
+              </div>
 
-          <div class="chart-block">
-            <div class="chart-header">
-              <span class="chart-title">Day1 预测区间 vs 实际价格</span>
-            </div>
-            <v-chart class="chart chart-lg" :option="day1PriceOption" autoresize />
-          </div>
+              <div class="chart-block">
+                <div class="chart-header">
+                  <span class="chart-title">Day1 预测区间 vs 实际价格</span>
+                </div>
+                <v-chart class="chart chart-lg" :option="day1PriceOption" autoresize />
+              </div>
 
-          <div class="chart-block">
-            <div class="chart-header">
-              <span class="chart-title">Day2 预测区间 vs 实际价格</span>
-            </div>
-            <v-chart class="chart chart-lg" :option="day2PriceOption" autoresize />
-          </div>
+              <div class="chart-block">
+                <div class="chart-header">
+                  <span class="chart-title">Day2 预测区间 vs 实际价格</span>
+                </div>
+                <v-chart class="chart chart-lg" :option="day2PriceOption" autoresize />
+              </div>
 
-          <div class="chart-block">
-            <div class="chart-title">趋势预测准确性</div>
-            <v-chart class="chart" :option="trendAccuracyOption" autoresize />
-          </div>
+              <div class="chart-block">
+                <div class="chart-title">趋势预测准确性</div>
+                <v-chart class="chart" :option="trendAccuracyOption" autoresize />
+              </div>
 
-          <div class="predictions-table">
-            <div class="chart-header">
-              <span class="chart-title">逐日预测明细</span>
-              <el-button size="small" text class="export-btn" @click="exportCSV">
-                <el-icon><Download /></el-icon>
-                <span>导出CSV</span>
-              </el-button>
+              <div class="predictions-table">
+                <div class="chart-header">
+                  <span class="chart-title">逐日预测明细</span>
+                  <el-button size="small" text class="export-btn" @click="exportCSV">
+                    <el-icon><Download /></el-icon>
+                    <span>导出CSV</span>
+                  </el-button>
+                </div>
+                <el-table :data="store.result.predictions.slice((currentPage - 1) * pageSize, currentPage * pageSize)" size="small" class="dark-table">
+                  <el-table-column prop="date" label="日期" width="110" />
+                  <el-table-column prop="trend" label="趋势" width="80">
+                    <template #default="{ row }">
+                      <el-tag
+                        :type="getTrendTagType(row.trend)"
+                        :class="getTrendClass(row.trend)"
+                        size="small"
+                        effect="dark"
+                      >
+                        {{ TREND_LABEL_MAP[row.trend] || row.trend }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day1预测区间" width="130">
+                    <template #default="{ row }">
+                      {{ row.day1_pred_low != null ? row.day1_pred_low.toFixed(2) : '-' }} ~ {{ row.day1_pred_high != null ? row.day1_pred_high.toFixed(2) : '-' }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day2预测区间" width="130">
+                    <template #default="{ row }">
+                      {{ row.day2_pred_low != null ? row.day2_pred_low.toFixed(2) : '-' }} ~ {{ row.day2_pred_high != null ? row.day2_pred_high.toFixed(2) : '-' }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="当日收盘" width="90">
+                    <template #default="{ row }">
+                      {{ row.current_price != null ? row.current_price.toFixed(2) : '-' }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day1实际" width="90">
+                    <template #default="{ row }">
+                      {{ row.actual_day1 != null ? row.actual_day1.toFixed(2) : '-' }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day2实际" width="90">
+                    <template #default="{ row }">
+                      {{ row.actual_day2 != null ? row.actual_day2.toFixed(2) : '-' }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day1命中" width="80">
+                    <template #default="{ row }">
+                      <el-tag v-if="row.day1_hit != null" :type="row.day1_hit ? 'success' : 'danger'" size="small" effect="dark">
+                        {{ row.day1_hit ? '是' : '否' }}
+                      </el-tag>
+                      <span v-else>-</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day2命中" width="80">
+                    <template #default="{ row }">
+                      <el-tag v-if="row.day2_hit != null" :type="row.day2_hit ? 'success' : 'danger'" size="small" effect="dark">
+                        {{ row.day2_hit ? '是' : '否' }}
+                      </el-tag>
+                      <span v-else>-</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day1趋势" width="80">
+                    <template #default="{ row }">
+                      <el-tag v-if="row.day1_trend_correct != null" :type="row.day1_trend_correct ? 'success' : 'danger'" size="small" effect="dark">
+                        {{ row.day1_trend_correct ? '对' : '错' }}
+                      </el-tag>
+                      <span v-else>-</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day2趋势" width="80">
+                    <template #default="{ row }">
+                      <el-tag v-if="row.day2_trend_correct != null" :type="row.day2_trend_correct ? 'success' : 'danger'" size="small" effect="dark">
+                        {{ row.day2_trend_correct ? '对' : '错' }}
+                      </el-tag>
+                      <span v-else>-</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day1方向" width="80">
+                    <template #default="{ row }">
+                      <el-tag v-if="row.day1_direction_correct != null" :type="row.day1_direction_correct ? 'success' : 'danger'" size="small" effect="dark">
+                        {{ row.day1_direction_correct ? '对' : '错' }}
+                      </el-tag>
+                      <span v-else>-</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Day2方向" width="80">
+                    <template #default="{ row }">
+                      <el-tag v-if="row.day2_direction_correct != null" :type="row.day2_direction_correct ? 'success' : 'danger'" size="small" effect="dark">
+                        {{ row.day2_direction_correct ? '对' : '错' }}
+                      </el-tag>
+                      <span v-else>-</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+                <div class="pagination-wrapper" v-if="store.result.predictions.length > pageSize">
+                  <el-pagination
+                    v-model:current-page="currentPage"
+                    :page-size="pageSize"
+                    :total="store.result.predictions.length"
+                    layout="prev, pager, next"
+                    background
+                    small
+                  />
+                </div>
+              </div>
             </div>
-            <el-table :data="store.result.predictions.slice((currentPage - 1) * pageSize, currentPage * pageSize)" size="small" class="dark-table">
-              <el-table-column prop="date" label="日期" width="110" />
-              <el-table-column prop="trend" label="趋势" width="80">
-                <template #default="{ row }">
-                  <el-tag
-                    :type="getTrendTagType(row.trend)"
-                    :class="getTrendClass(row.trend)"
-                    size="small"
-                    effect="dark"
-                  >
-                    {{ TREND_LABEL_MAP[row.trend] || row.trend }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="Day1预测区间" width="130">
-                <template #default="{ row }">
-                  {{ row.day1_pred_low != null ? row.day1_pred_low.toFixed(2) : '-' }} ~ {{ row.day1_pred_high != null ? row.day1_pred_high.toFixed(2) : '-' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="Day2预测区间" width="130">
-                <template #default="{ row }">
-                  {{ row.day2_pred_low != null ? row.day2_pred_low.toFixed(2) : '-' }} ~ {{ row.day2_pred_high != null ? row.day2_pred_high.toFixed(2) : '-' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="当日收盘" width="90">
-                <template #default="{ row }">
-                  {{ row.current_price != null ? row.current_price.toFixed(2) : '-' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="Day1实际" width="90">
-                <template #default="{ row }">
-                  {{ row.actual_day1 != null ? row.actual_day1.toFixed(2) : '-' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="Day2实际" width="90">
-                <template #default="{ row }">
-                  {{ row.actual_day2 != null ? row.actual_day2.toFixed(2) : '-' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="Day1命中" width="80">
-                <template #default="{ row }">
-                  <el-tag v-if="row.day1_hit != null" :type="row.day1_hit ? 'success' : 'danger'" size="small" effect="dark">
-                    {{ row.day1_hit ? '是' : '否' }}
-                  </el-tag>
-                  <span v-else>-</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="Day2命中" width="80">
-                <template #default="{ row }">
-                  <el-tag v-if="row.day2_hit != null" :type="row.day2_hit ? 'success' : 'danger'" size="small" effect="dark">
-                    {{ row.day2_hit ? '是' : '否' }}
-                  </el-tag>
-                  <span v-else>-</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="Day1趋势" width="80">
-                <template #default="{ row }">
-                  <el-tag v-if="row.day1_trend_correct != null" :type="row.day1_trend_correct ? 'success' : 'danger'" size="small" effect="dark">
-                    {{ row.day1_trend_correct ? '对' : '错' }}
-                  </el-tag>
-                  <span v-else>-</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="Day2趋势" width="80">
-                <template #default="{ row }">
-                  <el-tag v-if="row.day2_trend_correct != null" :type="row.day2_trend_correct ? 'success' : 'danger'" size="small" effect="dark">
-                    {{ row.day2_trend_correct ? '对' : '错' }}
-                  </el-tag>
-                  <span v-else>-</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="Day1方向" width="80">
-                <template #default="{ row }">
-                  <el-tag v-if="row.day1_direction_correct != null" :type="row.day1_direction_correct ? 'success' : 'danger'" size="small" effect="dark">
-                    {{ row.day1_direction_correct ? '对' : '错' }}
-                  </el-tag>
-                  <span v-else>-</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="Day2方向" width="80">
-                <template #default="{ row }">
-                  <el-tag v-if="row.day2_direction_correct != null" :type="row.day2_direction_correct ? 'success' : 'danger'" size="small" effect="dark">
-                    {{ row.day2_direction_correct ? '对' : '错' }}
-                  </el-tag>
-                  <span v-else>-</span>
-                </template>
-              </el-table-column>
-            </el-table>
-            <div class="pagination-wrapper" v-if="store.result.predictions.length > pageSize">
-              <el-pagination
-                v-model:current-page="currentPage"
-                :page-size="pageSize"
-                :total="store.result.predictions.length"
-                layout="prev, pager, next"
-                background
-                small
-              />
-            </div>
-          </div>
-        </div>
 
-        <div v-else class="empty-state">
-          <el-icon class="empty-icon"><DataAnalysis /></el-icon>
-          <h3>输入股票代码开始预测验证</h3>
-          <p>验证历史预测区间与实际价格的匹配度，评估预测可靠性</p>
-        </div>
+            <div v-else class="empty-state">
+              <el-icon class="empty-icon"><DataAnalysis /></el-icon>
+              <h3>输入股票代码开始预测验证</h3>
+              <p>验证历史预测区间与实际价格的匹配度，评估预测可靠性</p>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="Walk-Forward" name="walkforward">
+            <div v-if="store.wfError" class="error-message">
+              <el-icon><Warning /></el-icon>
+              <span>{{ store.wfError }}</span>
+            </div>
+
+            <div v-else-if="store.wfResult" class="result-content">
+              <div class="stats-grid">
+                <div class="stat-card">
+                  <span class="stat-label">平均命中率</span>
+                  <span class="stat-value font-mono">{{ store.wfResult.overall.avg_hit_rate.toFixed(1) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">平均方向准确率</span>
+                  <span class="stat-value font-mono" :class="store.wfResult.overall.avg_direction_accuracy >= 50 ? '' : 'loss'">{{ store.wfResult.overall.avg_direction_accuracy.toFixed(1) }}%</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">平均趋势准确率</span>
+                  <span class="stat-value font-mono" :class="store.wfResult.overall.avg_trend_accuracy >= 50 ? '' : 'loss'">{{ store.wfResult.overall.avg_trend_accuracy.toFixed(1) }}%</span>
+                </div>
+              </div>
+
+              <div class="chart-block">
+                <div class="chart-header">
+                  <span class="chart-title">逐窗口准确率</span>
+                </div>
+                <v-chart class="chart chart-lg" :option="wfAccuracyOption" autoresize />
+              </div>
+
+              <div class="chart-block">
+                <div class="chart-header">
+                  <span class="chart-title">稳定性指标</span>
+                </div>
+                <div class="stability-grid">
+                  <div class="stability-card">
+                    <span class="stability-label">命中率标准差</span>
+                    <span class="stability-value font-mono" :class="store.wfResult.stability.hit_rate_std <= 15 ? '' : 'loss'">{{ store.wfResult.stability.hit_rate_std.toFixed(2) }}%</span>
+                    <span class="stability-hint">越小越稳定</span>
+                  </div>
+                  <div class="stability-card">
+                    <span class="stability-label">方向准确率标准差</span>
+                    <span class="stability-value font-mono" :class="store.wfResult.stability.direction_accuracy_std <= 15 ? '' : 'loss'">{{ store.wfResult.stability.direction_accuracy_std.toFixed(2) }}%</span>
+                    <span class="stability-hint">越小越稳定</span>
+                  </div>
+                  <div class="stability-card">
+                    <span class="stability-label">趋势准确率标准差</span>
+                    <span class="stability-value font-mono" :class="store.wfResult.stability.trend_accuracy_std <= 15 ? '' : 'loss'">{{ store.wfResult.stability.trend_accuracy_std.toFixed(2) }}%</span>
+                    <span class="stability-hint">越小越稳定</span>
+                  </div>
+                  <div class="stability-card">
+                    <span class="stability-label">Sharpe比率</span>
+                    <span class="stability-value font-mono" :class="store.wfResult.stability.sharpe_ratio >= 1 ? '' : 'loss'">{{ store.wfResult.stability.sharpe_ratio.toFixed(3) }}</span>
+                    <span class="stability-hint">命中率均值/标准差</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="predictions-table">
+                <div class="chart-header">
+                  <span class="chart-title">窗口明细</span>
+                </div>
+                <el-table :data="store.wfResult.windows" size="small" class="dark-table">
+                  <el-table-column prop="window_id" label="窗口" width="70">
+                    <template #default="{ row }">
+                      W{{ row.window_id + 1 }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="训练期" width="200">
+                    <template #default="{ row }">
+                      {{ row.train_start }} ~ {{ row.train_end }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="测试期" width="200">
+                    <template #default="{ row }">
+                      {{ row.test_start }} ~ {{ row.test_end }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="n_predictions" label="预测数" width="80" />
+                  <el-table-column prop="hit_rate" label="命中率" width="90">
+                    <template #default="{ row }">
+                      <span class="font-mono" :style="{ color: row.hit_rate >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ row.hit_rate.toFixed(1) }}%</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="direction_accuracy" label="方向准确率" width="100">
+                    <template #default="{ row }">
+                      <span class="font-mono" :style="{ color: row.direction_accuracy >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ row.direction_accuracy.toFixed(1) }}%</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="trend_accuracy" label="趋势准确率" width="100">
+                    <template #default="{ row }">
+                      <span class="font-mono" :style="{ color: row.trend_accuracy >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ row.trend_accuracy.toFixed(1) }}%</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+            </div>
+
+            <div v-else class="empty-state">
+              <el-icon class="empty-icon"><DataAnalysis /></el-icon>
+              <h3>输入股票代码开始 Walk-Forward 验证</h3>
+              <p>通过滚动窗口验证预测模型的稳定性，评估不同时间段的表现一致性</p>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
       </div>
     </div>
   </div>
@@ -591,6 +836,19 @@ function exportCSV() {
   transform: translateY(-1px);
 }
 
+.wf-params {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wf-params .info-item {
+  align-items: center;
+}
+
 .info-section {
   margin-top: 20px;
   padding-top: 16px;
@@ -619,6 +877,23 @@ function exportCSV() {
 
 .result-panel {
   min-height: 600px;
+}
+
+.backtest-tabs :deep(.el-tabs__nav-wrap::after) {
+  background-color: var(--border-subtle);
+}
+
+.backtest-tabs :deep(.el-tabs__item) {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.backtest-tabs :deep(.el-tabs__item.is-active) {
+  color: var(--color-up);
+}
+
+.backtest-tabs :deep(.el-tabs__active-bar) {
+  background-color: var(--color-up);
 }
 
 .error-message {
@@ -723,6 +998,44 @@ function exportCSV() {
 
 .chart-lg {
   height: 360px;
+}
+
+.stability-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.stability-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: rgba(0, 212, 170, 0.04);
+  border: 1px solid rgba(0, 212, 170, 0.1);
+  border-radius: var(--radius-md);
+}
+
+.stability-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.stability-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--color-up);
+}
+
+.stability-value.loss {
+  color: var(--color-down);
+}
+
+.stability-hint {
+  font-size: 10px;
+  color: var(--text-disabled);
 }
 
 .predictions-table {

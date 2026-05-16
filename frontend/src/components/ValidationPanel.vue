@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { AnalysisValidation } from '@/types'
+import type { AnalysisValidation, StressTestResult } from '@/types'
 
 const props = defineProps<{ validation: AnalysisValidation }>()
 
@@ -60,8 +60,36 @@ const confidenceDesc = computed(() => {
   return '信号不可靠'
 })
 
+const stressTest = computed(() => props.validation.stress_test)
+
+const flipRatePct = computed(() => {
+  if (!stressTest.value) return 0
+  return Math.round(stressTest.value.signal_flip_rate * 100)
+})
+
+const flipRateColor = computed(() => {
+  if (!stressTest.value) return 'var(--text-muted)'
+  const rate = stressTest.value.signal_flip_rate
+  if (rate < 0.15) return 'var(--color-up)'
+  if (rate < 0.30) return 'var(--color-warn)'
+  return 'var(--color-down)'
+})
+
+const flipRateType = computed(() => {
+  if (!stressTest.value) return 'info'
+  const rate = stressTest.value.signal_flip_rate
+  if (rate < 0.15) return 'success'
+  if (rate < 0.30) return 'warning'
+  return 'danger'
+})
+
 function hasItems(list: string[] | undefined | null): boolean {
   return Array.isArray(list) && list.length > 0
+}
+
+function formatMetric(value: number | undefined, fallback: string = 'N/A'): string {
+  if (value === undefined || value === null || !isFinite(value)) return fallback
+  return value.toFixed(2)
 }
 </script>
 
@@ -136,6 +164,52 @@ function hasItems(list: string[] | undefined | null): boolean {
         >
           {{ key === 'macd_persistence' ? 'MACD' : 'RSI' }} {{ info.direction === 'bullish' ? '多头' : info.direction === 'bearish' ? '空头' : info.direction === 'overbought' ? '超买' : '超卖' }} {{ info.days }}日
         </el-tag>
+      </div>
+    </div>
+
+    <div v-if="stressTest" class="v-stress-test">
+      <span class="stress-label">🎲 蒙特卡洛压力测试</span>
+      <div class="stress-content">
+        <div class="stress-row">
+          <div class="stress-item">
+            <span class="stress-item-label">信号翻转率</span>
+            <el-tag :type="flipRateType" effect="dark" size="small">
+              {{ flipRatePct }}%
+            </el-tag>
+          </div>
+          <div class="stress-item">
+            <span class="stress-item-label">鲁棒性</span>
+            <el-tag :type="stressTest.is_robust ? 'success' : 'danger'" effect="dark" size="small">
+              {{ stressTest.is_robust ? '✅ 鲁棒' : '⚠️ 不鲁棒' }}
+            </el-tag>
+          </div>
+          <div class="stress-item">
+            <span class="stress-item-label">原始信号</span>
+            <el-tag type="info" size="small" effect="plain">{{ stressTest.original_signal }}</el-tag>
+          </div>
+          <div class="stress-item">
+            <span class="stress-item-label">模拟次数</span>
+            <span class="stress-metric-val">{{ stressTest.simulation_count }}</span>
+          </div>
+        </div>
+        <div class="stress-metrics">
+          <div class="stress-metric">
+            <span class="stress-metric-label">最大回撤</span>
+            <span class="stress-metric-val">{{ formatMetric(stressTest.risk_metrics.max_drawdown * 100) }}%</span>
+          </div>
+          <div class="stress-metric">
+            <span class="stress-metric-label">Sharpe</span>
+            <span class="stress-metric-val">{{ formatMetric(stressTest.risk_metrics.sharpe) }}</span>
+          </div>
+          <div class="stress-metric">
+            <span class="stress-metric-label">Sortino</span>
+            <span class="stress-metric-val">{{ formatMetric(stressTest.risk_metrics.sortino) }}</span>
+          </div>
+          <div class="stress-metric">
+            <span class="stress-metric-label">Calmar</span>
+            <span class="stress-metric-val">{{ formatMetric(stressTest.risk_metrics.calmar) }}</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -324,6 +398,76 @@ function hasItems(list: string[] | undefined | null): boolean {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.v-stress-test {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.stress-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding-top: 3px;
+  min-width: 120px;
+}
+
+.stress-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stress-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.stress-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stress-item-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.stress-metrics {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.stress-metric {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stress-metric-label {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  white-space: nowrap;
+}
+
+.stress-metric-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'JetBrains Mono', monospace;
 }
 
 .v-weighted {

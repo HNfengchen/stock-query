@@ -7,7 +7,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-from backend.services.analysis_service import run_analysis
+from backend.services.analysis_service import run_analysis, run_analysis_staged
 from backend.utils import sanitize_for_json
 
 router = APIRouter()
@@ -188,5 +188,57 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "summaries": sorted(all_summaries, key=lambda x: x.get("index", 0)),
             }, ensure_ascii=False),
         }
+
+    return EventSourceResponse(event_generator())
+
+
+@router.get("/analysis/stream")
+async def analysis_stream(stock_input: str, position_status: str = "未持有", cost_price: Optional[float] = None):
+    from sse_starlette.sse import EventSourceResponse
+
+    async def event_generator():
+        stage_queue: asyncio.Queue = asyncio.Queue()
+
+        def stage_callback(stage: str, data):
+            asyncio.run_coroutine_threadsafe(
+                stage_queue.put({"stage": stage, "data": data}),
+                asyncio.get_event_loop(),
+            )
+
+        loop = asyncio.get_event_loop()
+
+        def _run_staged():
+            try:
+                run_analysis_staged(stock_input, position_status, cost_price, stage_callback=stage_callback)
+            except Exception as e:
+                asyncio.run_coroutine_threadsafe(
+                    stage_queue.put({"stage": "error", "data": {"error": str(e)}}),
+                    asyncio.get_event_loop(),
+                )
+
+        task = loop.run_in_executor(_executor, _run_staged)
+
+        try:
+            while True:
+                try:
+                    event_data = await asyncio.wait_for(stage_queue.get(), timeout=600)
+                    stage = event_data.get("stage")
+                    data = event_data.get("data", {})
+
+                    if stage == "stage_complete":
+                        yield {"event": "stage_complete", "data": json.dumps(sanitize_for_json(data), ensure_ascii=False)}
+                        break
+                    elif stage == "error":
+                        yield {"event": "error", "data": json.dumps(sanitize_for_json(data), ensure_ascii=False)}
+                        break
+                    else:
+                        yield {"event": stage, "data": json.dumps(sanitize_for_json(data), ensure_ascii=False)}
+                except asyncio.TimeoutError:
+                    yield {"event": "heartbeat", "data": ""}
+        except (asyncio.CancelledError, GeneratorExit):
+            return
+        finally:
+            if not task.done():
+                task.cancel()
 
     return EventSourceResponse(event_generator())

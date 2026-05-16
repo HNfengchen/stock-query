@@ -189,6 +189,113 @@ class DataFetcher:
             return self._validator.cross_validate(xtquant_data, backup_data)
         return {"is_valid": True, "source": "backup", "overall_confidence": 0.5}
 
+    def fetch_index_data(self, index_code: str = "000300") -> pd.DataFrame:
+        try:
+            import efinance as ef
+
+            prefix = "sh" if index_code.startswith(("000", "9")) else "sz"
+            ef_code = f"{prefix}{index_code}"
+            df = ef.stock.get_quote_history(ef_code)
+            if df is not None and not df.empty:
+                col_map = {}
+                if "收盘" not in df.columns and "close" in df.columns:
+                    col_map["close"] = "收盘"
+                if "日期" not in df.columns and "date" in df.columns:
+                    col_map["date"] = "日期"
+                if col_map:
+                    df = df.rename(columns=col_map)
+                if "收盘" in df.columns:
+                    return df
+        except Exception as e:
+            fetcher_logger.debug(f"[DataFetcher] efinance获取指数数据失败: {e}")
+
+        try:
+            import baostock as bs
+
+            lg = bs.login()
+            prefix = "sh" if index_code.startswith(("000", "9")) else "sz"
+            bs_code = f"{prefix}.{index_code}"
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,close",
+                start_date="2024-01-01",
+                frequency="d",
+            )
+            rows = []
+            while rs.error_code == "0" and rs.next():
+                rows.append(rs.get_row_data())
+            bs.logout()
+            if rows:
+                df = pd.DataFrame(rows, columns=["日期", "收盘"])
+                df["收盘"] = df["收盘"].astype(float)
+                return df
+        except Exception as e:
+            fetcher_logger.debug(f"[DataFetcher] baostock获取指数数据失败: {e}")
+
+        return pd.DataFrame()
+
+    def fetch_industry_data(self, stock_code: str) -> pd.DataFrame:
+        if self._xtquant_adapter:
+            try:
+                sectors = self._xtquant_adapter.get_sector_list()
+                for sector in sectors:
+                    stocks = self._xtquant_adapter.get_stock_list_in_sector(sector)
+                    if stock_code in stocks:
+                        industry_index_code = self._resolve_industry_index(sector)
+                        if industry_index_code:
+                            return self.fetch_index_data(industry_index_code)
+                        break
+            except Exception as e:
+                fetcher_logger.debug(f"[DataFetcher] xtquant获取行业数据失败: {e}")
+
+        try:
+            import efinance as ef
+
+            sector_df = ef.stock.get_quote_snapshot(stock_code)
+            if sector_df is not None and not sector_df.empty:
+                pass
+        except Exception:
+            pass
+
+        return pd.DataFrame()
+
+    def _resolve_industry_index(self, industry_name: str) -> Optional[str]:
+        industry_map = {
+            "银行": "000801",
+            "证券": "000802",
+            "保险": "000803",
+            "房地产": "000804",
+            "医药生物": "000805",
+            "食品饮料": "000806",
+            "计算机": "000807",
+            "电子": "000808",
+            "通信": "000809",
+            "传媒": "000810",
+            "电力设备": "000811",
+            "汽车": "000812",
+            "机械设备": "000813",
+            "化工": "000814",
+            "钢铁": "000815",
+            "有色金属": "000816",
+            "采掘": "000817",
+            "建筑材料": "000818",
+            "建筑装饰": "000819",
+            "国防军工": "000820",
+            "家用电器": "000821",
+            "轻工制造": "000822",
+            "纺织服饰": "000823",
+            "商贸零售": "000824",
+            "社会服务": "000825",
+            "农林牧渔": "000826",
+            "公用事业": "000827",
+            "交通运输": "000828",
+            "综合": "000829",
+        }
+        for key, code in industry_map.items():
+            if key in industry_name:
+                return code
+        return None
+
     def fetch_all_data(self, stock_input: str) -> Dict:
         """
         获取所有需要的数据
