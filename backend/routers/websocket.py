@@ -1,3 +1,6 @@
+# DEPRECATED: This WebSocket endpoint is not used. Progress updates are handled via SSE.
+# This module will be removed in a future version.
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import asyncio
 import uuid

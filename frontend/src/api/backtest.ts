@@ -3,7 +3,7 @@ import type { BacktestRequest, BacktestResult, WalkForwardRequest, WalkForwardRe
 
 const api = axios.create({
   baseURL: '',
-  timeout: 120000,
+  timeout: 300000,
 })
 
 export async function runBacktest(data: BacktestRequest): Promise<BacktestResult> {

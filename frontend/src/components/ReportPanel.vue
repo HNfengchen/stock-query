@@ -56,9 +56,9 @@ const trendType = computed(() => {
   return 'warning'
 })
 
-const ps = computed<any>(() => props.result.position_strategy || ({} as any))
+const ps = computed<Record<string, any>>(() => props.result.position_strategy || ({} as any))
 
-const isHeld = computed(() => 'avg_cost' in ps.value)
+const isHeld = computed(() => ps.value.avg_cost != null)
 
 const profitBelowCost = computed(() => {
   return isHeld.value && ps.value.stop_profit_price != null && ps.value.avg_cost != null && ps.value.stop_profit_price < ps.value.avg_cost

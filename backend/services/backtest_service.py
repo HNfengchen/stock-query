@@ -1,6 +1,7 @@
 import sys
 import os
 import math
+import re
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -11,6 +12,11 @@ from scripts.database import get_connection
 from scripts.core.backtest import _get_trend_from_change, _is_trend_consistent, _trend_direction
 from scripts.core.walk_forward import WalkForwardValidator
 from backend.utils import sanitize_for_json
+
+
+def _validate_stock_code(stock_code: str):
+    if not re.match(r'^\d{6}$', stock_code):
+        raise ValueError(f"无效的股票代码格式: {stock_code}，必须为6位数字")
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -26,6 +32,7 @@ def _safe_float(value, default: float = 0.0) -> float:
 
 
 def run_prediction_validation(stock_code: str) -> Dict:
+    _validate_stock_code(stock_code)
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -39,28 +46,23 @@ def run_prediction_validation(stock_code: str) -> Dict:
             ORDER BY trade_date ASC
         """)
         rows = cur.fetchall()
+
+        if not rows:
+            cur.close()
+            conn.close()
+            raise ValueError(f"股票 {stock_code} 暂无预测数据，请先运行分析")
+
+        cur.execute(f"""
+            SELECT trade_date, close FROM {table_name}
+            ORDER BY trade_date ASC
+        """)
+        all_price_rows = cur.fetchall()
     finally:
         cur.close()
         conn.close()
 
-    if not rows:
-        raise ValueError(f"股票 {stock_code} 暂无预测数据，请先运行分析")
-
     all_dates = [r[0] for r in rows]
     all_closes = {r[0]: float(r[1]) if r[1] is not None else None for r in rows}
-
-    conn2 = get_connection()
-    cur2 = conn2.cursor()
-    try:
-        table_name = f"stock_{stock_code}"
-        cur2.execute(f"""
-            SELECT trade_date, close FROM {table_name}
-            ORDER BY trade_date ASC
-        """)
-        all_price_rows = cur2.fetchall()
-    finally:
-        cur2.close()
-        conn2.close()
 
     price_map = {}
     for r in all_price_rows:
@@ -68,6 +70,7 @@ def run_prediction_validation(stock_code: str) -> Dict:
             price_map[str(r[0])] = float(r[1])
 
     sorted_dates = sorted(price_map.keys())
+    date_index_map = {d: i for i, d in enumerate(sorted_dates)}
 
     predictions: List[Dict] = []
     day1_hit = 0
@@ -90,17 +93,16 @@ def run_prediction_validation(stock_code: str) -> Dict:
     for row in rows:
         trade_date = str(row[0])
         current_close = all_closes.get(row[0])
-        day1_pred_high = row[2]
-        day1_pred_low = row[3]
-        day2_pred_high = row[4]
-        day2_pred_low = row[5]
-        change_pct = row[6]
+        day1_pred_high = float(row[2]) if row[2] is not None else None
+        day1_pred_low = float(row[3]) if row[3] is not None else None
+        day2_pred_high = float(row[4]) if row[4] is not None else None
+        day2_pred_low = float(row[5]) if row[5] is not None else None
+        change_pct = float(row[6]) if row[6] is not None else None
 
-        pred_trend = _get_trend_from_change(float(change_pct) if change_pct is not None else 0.0)
+        pred_trend = _get_trend_from_change(change_pct if change_pct is not None else 0.0)
 
-        try:
-            idx = sorted_dates.index(trade_date)
-        except ValueError:
+        idx = date_index_map.get(trade_date)
+        if idx is None:
             continue
 
         actual_day1_close = None
@@ -237,6 +239,7 @@ def run_prediction_validation(stock_code: str) -> Dict:
 
 
 def run_walk_forward_validation(stock_code: str, train_window: int = 60, test_window: int = 20, step: int = 20) -> Dict:
+    _validate_stock_code(stock_code)
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -248,26 +251,21 @@ def run_walk_forward_validation(stock_code: str, train_window: int = 60, test_wi
             ORDER BY trade_date ASC
         """)
         pred_rows = cur.fetchall()
-    finally:
-        cur.close()
-        conn.close()
 
-    if not pred_rows:
-        raise ValueError(f"股票 {stock_code} 暂无预测数据，请先运行分析")
+        if not pred_rows:
+            cur.close()
+            conn.close()
+            raise ValueError(f"股票 {stock_code} 暂无预测数据，请先运行分析")
 
-    conn2 = get_connection()
-    cur2 = conn2.cursor()
-    try:
-        table_name = f"stock_{stock_code}"
-        cur2.execute(f"""
+        cur.execute(f"""
             SELECT trade_date, open, high, low, close
             FROM {table_name}
             ORDER BY trade_date ASC
         """)
-        price_rows = cur2.fetchall()
+        price_rows = cur.fetchall()
     finally:
-        cur2.close()
-        conn2.close()
+        cur.close()
+        conn.close()
 
     price_map = {}
     for r in price_rows:
@@ -280,6 +278,7 @@ def run_walk_forward_validation(stock_code: str, train_window: int = 60, test_wi
             }
 
     sorted_dates = sorted(price_map.keys())
+    date_index_map = {d: i for i, d in enumerate(sorted_dates)}
 
     pred_records = []
     for row in pred_rows:
@@ -291,9 +290,8 @@ def run_walk_forward_validation(stock_code: str, train_window: int = 60, test_wi
 
         pred_direction = _get_trend_from_change(change_pct)
 
-        try:
-            idx = sorted_dates.index(trade_date)
-        except ValueError:
+        idx = date_index_map.get(trade_date)
+        if idx is None:
             continue
 
         actual_day1_close = None

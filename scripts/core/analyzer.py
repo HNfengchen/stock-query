@@ -52,7 +52,7 @@ class StockAnalyzer:
         self._ml_enabled = self._ml_config.get("enabled", False)
         self._ml_alpha = self._ml_config.get("alpha", 0.5)
         self._ml_predictor = LightGBMPredictor(config)
-        self._ml_loaded = False
+        self._ml_attempted_stocks: set = set()
 
         hmm_config = config.get("hmm", {})
         self._hmm_detector = None
@@ -68,6 +68,7 @@ class StockAnalyzer:
                 self._dynamic_weight_manager.set_hmm_detector(self._hmm_detector)
 
         self._stress_test_config = config.get("stress_test", {})
+        self._pending_stress_test = None
 
     def analyze_technical(self, indicators: Dict, current_price: float = 0) -> Dict:
         """分析技术指标"""
@@ -853,6 +854,7 @@ class StockAnalyzer:
             rsi_latest = self._latest_indicator_value(rsi_12)
             rsi_signal = ""
         rsi_weight = 0.07
+        rsi_value = None
         try:
             rsi_value = float(rsi_latest) if rsi_latest is not None else None
             if rsi_value is not None and rsi_value >= 70:
@@ -1066,23 +1068,23 @@ class StockAnalyzer:
         if self._stress_test_config.get("enabled", False) and history_df is not None:
             try:
                 from scripts.core.stress_test import MonteCarloStressTest
-                n_sim = self._stress_test_config.get("n_simulations", 1000)
-                mc = MonteCarloStressTest(n_simulations=n_sim, config=self._stress_test_config)
-                stress_result = mc.run(self, history_df, indicators)
-                result["stress_test"] = stress_result
-
-                if stress_result.get("signal_flip_rate", 0) > 0.3:
-                    confidence = confidence * 0.8
-                    result["confidence"] = round(max(0.0, min(1.0, confidence)), 3)
-                    if "模型鲁棒性不足" not in result["conflicts"]:
-                        result["conflicts"].append("模型鲁棒性不足")
-                    result["validation_note"] = (
-                        result["validation_note"].rstrip("。")
-                        + "；蒙特卡洛压力测试：信号翻转率"
-                        + f"{stress_result['signal_flip_rate']:.1%}，模型鲁棒性不足。"
-                    )
+                original_signal = trading_signal.get("signal", "hold")
+                self._pending_stress_test = {
+                    "analyzer": self,
+                    "history_df": history_df,
+                    "indicators": indicators,
+                    "original_signal": original_signal,
+                }
+                result["stress_test"] = {
+                    "status": "computing",
+                    "signal_flip_rate": None,
+                    "is_robust": None,
+                    "risk_metrics": None,
+                    "simulation_count": 0,
+                    "original_signal": original_signal,
+                }
             except Exception as e:
-                analyzer_logger.warning(f"蒙特卡洛压力测试异常: {e}")
+                analyzer_logger.warning(f"蒙特卡洛压力测试配置异常: {e}")
 
         return result
 
@@ -1477,12 +1479,17 @@ class StockAnalyzer:
 
         if self._ml_enabled and stock_code:
             try:
-                if not self._ml_loaded:
+                if stock_code not in self._ml_attempted_stocks:
                     model_dir = self._ml_config.get("model_dir", "models/")
                     stock_model_dir = os.path.join(model_dir, stock_code)
                     if os.path.isdir(stock_model_dir):
                         self._ml_predictor.load(stock_model_dir)
-                    self._ml_loaded = True
+                    self._ml_attempted_stocks.add(stock_code)
+                elif not self._ml_predictor.is_ready():
+                    model_dir = self._ml_config.get("model_dir", "models/")
+                    stock_model_dir = os.path.join(model_dir, stock_code)
+                    if os.path.isdir(stock_model_dir):
+                        self._ml_predictor.load(stock_model_dir)
 
                 if self._ml_predictor.is_ready():
                     from scripts.core.feature_engineering import extract_feature_vector

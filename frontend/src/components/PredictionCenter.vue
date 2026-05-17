@@ -31,15 +31,15 @@ const confidenceColor = computed(() => {
 const mlDirection = computed(() => {
   const d = props.prediction.mlPrediction?.direction
   if (d === null || d === undefined) return '-'
-  if (d >= 1) return '看涨'
-  if (d <= 0) return '看跌'
+  if (d > 0.6) return '看涨'
+  if (d < 0.4) return '看跌'
   return '中性'
 })
 const mlDirectionType = computed(() => {
   const d = props.prediction.mlPrediction?.direction
   if (d === null || d === undefined) return 'info'
-  if (d >= 1) return 'success'
-  if (d <= 0) return 'danger'
+  if (d > 0.6) return 'success'
+  if (d < 0.4) return 'danger'
   return 'warning'
 })
 </script>

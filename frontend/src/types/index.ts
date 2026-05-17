@@ -1,5 +1,11 @@
 export type AnalysisStage = 'stage_basic' | 'stage_technical' | 'stage_risk' | 'stage_prediction' | 'stage_complete'
 
+export interface LogEntry {
+  timestamp: string
+  level: 'INFO' | 'WARN' | 'ERROR'
+  message: string
+}
+
 export interface StageResult {
   stage: AnalysisStage
   data: Partial<AnalysisResult>
@@ -28,7 +34,7 @@ export interface WatchlistItem {
 export interface AnalysisRequest {
   stock_input: string
   position_status: '已持有' | '未持有'
-  cost_price?: number | null
+  cost_price?: number | undefined
 }
 
 export interface TradingSignal {
@@ -36,6 +42,7 @@ export interface TradingSignal {
   signal: string
   signal_text: string
   reason?: string
+  action_gate?: string
 }
 
 export interface PricePredictionDay {
@@ -62,9 +69,9 @@ export interface AnalysisValidation {
   confidence: number
   risk_level: string
   action_gate: string
-  supporting_factors: string[]
-  opposing_factors: string[]
-  conflicts: string[]
+  supporting_factors: string[] | null
+  opposing_factors: string[] | null
+  conflicts: string[] | null
   validation_note: string
   weighted_bullish?: number
   weighted_bearish?: number
@@ -75,37 +82,38 @@ export interface AnalysisValidation {
 }
 
 export interface StressTestResult {
-  signal_flip_rate: number
-  is_robust: boolean
+  signal_flip_rate: number | null
+  is_robust: boolean | null
   risk_metrics: {
-    max_drawdown: number
-    sharpe: number
-    sortino: number
-    calmar: number
-  }
+    max_drawdown: number | null
+    sharpe: number | null
+    sortino: number | null
+    calmar: number | null
+  } | null
   original_signal: string
   simulation_count: number
+  status?: string
 }
 
 export interface PositionStrategyHeld {
-  avg_cost: number
-  current_price: number
-  price_change_pct: number
-  stop_profit_price: number
-  stop_profit_pct: number
-  stop_loss_price: number
-  stop_loss_pct: number
-  position_adjust: string
-  reason: string
+  avg_cost?: number | null
+  current_price?: number | null
+  price_change_pct?: number | null
+  stop_profit_price?: number | null
+  stop_profit_pct?: number | null
+  stop_loss_price?: number | null
+  stop_loss_pct?: number | null
+  position_adjust?: string
+  reason?: string
 }
 
 export interface PositionStrategyNotHeld {
-  current_price: number
-  buy_timing: string
-  position_size_pct: number
-  stop_loss_price: number
-  risk_level: string
-  risk_control: string
+  current_price?: number | null
+  buy_timing?: string
+  position_size_pct?: number | null
+  stop_loss_price?: number | null
+  risk_level?: string
+  risk_control?: string
 }
 
 export interface KlineData {
@@ -167,6 +175,7 @@ export interface AnalysisResult {
     fund_flow: FundFlowData
   }
   hmm_state?: HmmState
+  analysis_log?: LogEntry[]
 }
 
 export interface BacktestRequest {
@@ -302,17 +311,6 @@ export interface MarketStatus {
   volatilityState: string
   riskLevel: string
   hmmState: string | null
-}
-
-export interface StressTestResult {
-  signalFlipRate: number | null
-  isRobust: boolean | null
-  riskMetrics: {
-    maxDrawdown: number | null
-    sharpe: number | null
-    sortino: number | null
-    calmar: number | null
-  }
 }
 
 export interface RiskAssessment {

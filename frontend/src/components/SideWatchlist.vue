@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useStockStore } from '@/stores/stockStore'
 import { useRouter } from 'vue-router'
+import type { WatchlistItem } from '@/types'
 
 const props = defineProps<{ collapsed: boolean }>()
 const emit = defineEmits<{ (e: 'update:collapsed', v: boolean): void }>()
@@ -17,7 +18,7 @@ function toggleCollapse() {
   emit('update:collapsed', !props.collapsed)
 }
 
-function analyzeStock(item: any) {
+function analyzeStock(item: WatchlistItem) {
   const query: Record<string, string> = { code: item.stock_code }
   if (item.position_status) {
     query.position = item.position_status

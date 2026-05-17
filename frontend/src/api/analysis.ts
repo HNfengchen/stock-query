@@ -1,9 +1,9 @@
 import axios from 'axios'
-import type { AnalysisRequest, AnalysisResult, BatchAnalysisRequest, BatchAnalysisResult, BatchQuickSummary, AnalysisStage } from '@/types'
+import type { AnalysisRequest, AnalysisResult, BatchAnalysisRequest, BatchAnalysisResult, BatchQuickSummary } from '@/types'
 
 const api = axios.create({
   baseURL: '',
-  timeout: 300000,
+  timeout: 120000,
 })
 
 export async function analyzeStock(data: AnalysisRequest): Promise<AnalysisResult> {
@@ -34,7 +34,7 @@ export interface QuickCompleteEvent {
   error_count: number
 }
 
-const SSE_TIMEOUT_MS = 600000
+const SSE_TIMEOUT_MS = 120000
 
 export async function batchQuickAnalyzeStream(
   stocks: AnalysisRequest[],
@@ -84,7 +84,6 @@ export async function batchQuickAnalyzeStream(
     return
   }
 
-  clearTimeout(timeoutId)
   if (signal) signal.removeEventListener('abort', onExternalAbort)
 
   if (!response.ok) {
@@ -100,6 +99,19 @@ export async function batchQuickAnalyzeStream(
 
   const decoder = new TextDecoder()
   let buffer = ''
+  let currentEvent = ''
+
+  const resetStreamTimeout = () => {
+    clearTimeout(timeoutId)
+    setTimeout(() => {
+      if (!aborted) {
+        aborted = true
+        controller.abort()
+        onError('流读取超时')
+      }
+    }, SSE_TIMEOUT_MS)
+  }
+  resetStreamTimeout()
 
   try {
     while (true) {
@@ -112,11 +124,11 @@ export async function batchQuickAnalyzeStream(
       const { done, value } = await reader.read()
       if (done) break
 
+      resetStreamTimeout()
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
 
-      let currentEvent = ''
       for (const line of lines) {
         if (line.startsWith('event: ')) {
           currentEvent = line.slice(7).trim()
@@ -136,7 +148,9 @@ export async function batchQuickAnalyzeStream(
         }
       }
     }
+    clearTimeout(timeoutId)
   } catch (e: any) {
+    clearTimeout(timeoutId)
     if (e.name === 'AbortError') {
       onError('分析已取消')
     } else {
@@ -145,97 +159,3 @@ export async function batchQuickAnalyzeStream(
   }
 }
 
-export interface StageCallbacks {
-  onBasic?: (data: any) => void
-  onTechnical?: (data: any) => void
-  onRisk?: (data: any) => void
-  onPrediction?: (data: any) => void
-  onComplete?: (data: AnalysisResult) => void
-  onError?: (error: string) => void
-}
-
-export function analyzeStockStream(
-  stockInput: string,
-  positionStatus: string = '未持有',
-  costPrice?: number | null,
-  callbacks: StageCallbacks = {},
-): AbortController {
-  const controller = new AbortController()
-  const params = new URLSearchParams({ stock_input: stockInput, position_status: positionStatus })
-  if (costPrice != null) {
-    params.set('cost_price', String(costPrice))
-  }
-
-  const stageCallbackMap: Record<string, (data: any) => void> = {
-    stage_basic: callbacks.onBasic || (() => {}),
-    stage_technical: callbacks.onTechnical || (() => {}),
-    stage_risk: callbacks.onRisk || (() => {}),
-    stage_prediction: callbacks.onPrediction || (() => {}),
-  }
-
-  fetch(`/api/analysis/stream?${params.toString()}`, { signal: controller.signal })
-    .then((response) => {
-      if (!response.ok) {
-        callbacks.onError?.(`HTTP ${response.status}`)
-        return
-      }
-      const reader = response.body?.getReader()
-      if (!reader) {
-        callbacks.onError?.('No response body')
-        return
-      }
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      const processChunk = (): Promise<void> => {
-        return reader.read().then(({ done, value }) => {
-          if (done) return
-
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
-
-          let currentEvent = ''
-          for (const line of lines) {
-            if (line.startsWith('event: ')) {
-              currentEvent = line.slice(7).trim()
-            } else if (line.startsWith('data: ')) {
-              const dataStr = line.slice(6)
-              try {
-                const data = JSON.parse(dataStr)
-                if (currentEvent === 'stage_complete') {
-                  callbacks.onComplete?.(data)
-                } else if (currentEvent === 'error') {
-                  callbacks.onError?.(data.error || '分析失败')
-                } else if (currentEvent === 'heartbeat') {
-                  // ignore
-                } else if (currentEvent && stageCallbackMap[currentEvent]) {
-                  stageCallbackMap[currentEvent](data)
-                }
-              } catch {
-                // ignore parse errors
-              }
-              currentEvent = ''
-            }
-          }
-
-          return processChunk()
-        })
-      }
-
-      return processChunk()
-    })
-    .catch((e: any) => {
-      if (e.name !== 'AbortError') {
-        callbacks.onError?.(`请求失败: ${e.message}`)
-      }
-    })
-
-  return controller
-}
-
-export function createProgressWebSocket(taskId: string): WebSocket {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const host = window.location.host
-  return new WebSocket(`${protocol}//${host}/ws/progress/${taskId}`)
-}

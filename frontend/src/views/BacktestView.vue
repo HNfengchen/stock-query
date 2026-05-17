@@ -7,7 +7,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, BarChart, CustomChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, TitleComponent } from 'echarts/components'
 import type { BacktestRequest, BacktestPrediction, WalkForwardRequest } from '@/types'
-import { TREND_LABEL_MAP, getTrendColor, getTrendTagType, getTrendClass, trendToValue, changeToTrendValue } from '@/utils/format'
+import { TREND_LABEL_MAP, getTrendColor, getTrendTagType, getTrendClass } from '@/utils/format'
 
 use([CanvasRenderer, LineChart, BarChart, CustomChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, TitleComponent])
 
@@ -22,17 +22,21 @@ const wfTrainWindow = ref(60)
 const wfTestWindow = ref(20)
 const wfStep = ref(20)
 
+function fmtPct(val: number | null | undefined, decimals: number = 1): string {
+  return val != null ? val.toFixed(decimals) : '-'
+}
+
 function buildPriceCompareOption(day: 1 | 2) {
   if (!store.result?.predictions?.length) return {}
   const preds = store.result.predictions
   const dates = preds.map(p => p.date)
 
-  const predHighKey = day === 1 ? 'day1_pred_high' : 'day2_pred_high'
-  const predLowKey = day === 1 ? 'day1_pred_low' : 'day2_pred_low'
-  const actualKey = day === 1 ? 'actual_day1' : 'actual_day2'
-  const hitKey = day === 1 ? 'day1_hit' : 'day2_hit'
+  const predHighKey: keyof BacktestPrediction = day === 1 ? 'day1_pred_high' : 'day2_pred_high'
+  const predLowKey: keyof BacktestPrediction = day === 1 ? 'day1_pred_low' : 'day2_pred_low'
+  const actualKey: keyof BacktestPrediction = day === 1 ? 'actual_day1' : 'actual_day2'
+  const hitKey: keyof BacktestPrediction = day === 1 ? 'day1_hit' : 'day2_hit'
 
-  const actualPrices = preds.map(p => (p as any)[actualKey])
+  const actualPrices = preds.map(p => p[actualKey] as number | null)
 
   return {
     backgroundColor: 'transparent',
@@ -46,10 +50,10 @@ function buildPriceCompareOption(day: 1 | 2) {
         if (idx === undefined || idx < 0) return ''
         const p = preds[idx]
         if (!p) return ''
-        const predHigh = (p as any)[predHighKey]
-        const predLow = (p as any)[predLowKey]
-        const actual = (p as any)[actualKey]
-        const hit = (p as any)[hitKey]
+        const predHigh = p[predHighKey] as number | null
+        const predLow = p[predLowKey] as number | null
+        const actual = p[actualKey] as number | null
+        const hit = p[hitKey] as boolean | null
         let html = `<div style="font-weight:600;margin-bottom:6px">${p.date}</div>`
         html += `<div>预测趋势: <span style="color:${getTrendColor(p.trend)}">${TREND_LABEL_MAP[p.trend] || p.trend}</span></div>`
         if (predLow != null && predHigh != null) {
@@ -114,9 +118,9 @@ function buildPriceCompareOption(day: 1 | 2) {
           }
         },
         data: preds.map((p, i) => {
-          const predLow = (p as any)[predLowKey]
-          const predHigh = (p as any)[predHighKey]
-          const hit = (p as any)[hitKey]
+          const predLow = p[predLowKey] as number | null
+          const predHigh = p[predHighKey] as number | null
+          const hit = p[hitKey] as boolean | null
           return [i, predLow, predHigh, hit === true ? 1 : hit === false ? 0 : -1]
         }),
         z: 1,
@@ -478,51 +482,51 @@ function exportCSV() {
               <div class="stats-grid">
                 <div class="stat-card">
                   <span class="stat-label">Day1命中率</span>
-                  <span class="stat-value font-mono">{{ store.result.statistics.day1_hit_rate.toFixed(1) }}%</span>
+                  <span class="stat-value font-mono">{{ fmtPct(store.result.statistics.day1_hit_rate) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day2命中率</span>
-                  <span class="stat-value font-mono">{{ store.result.statistics.day2_hit_rate.toFixed(1) }}%</span>
+                  <span class="stat-value font-mono">{{ fmtPct(store.result.statistics.day2_hit_rate) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day1趋势准确率</span>
-                  <span class="stat-value font-mono">{{ store.result.statistics.day1_trend_accuracy.toFixed(1) }}%</span>
+                  <span class="stat-value font-mono">{{ fmtPct(store.result.statistics.day1_trend_accuracy) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day2趋势准确率</span>
-                  <span class="stat-value font-mono">{{ store.result.statistics.day2_trend_accuracy.toFixed(1) }}%</span>
+                  <span class="stat-value font-mono">{{ fmtPct(store.result.statistics.day2_trend_accuracy) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day1方向准确率</span>
-                  <span class="stat-value font-mono" :class="(store.result.statistics.day1_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ (store.result.statistics.day1_direction_accuracy ?? 0).toFixed(1) }}%</span>
+                  <span class="stat-value font-mono" :class="(store.result.statistics.day1_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ fmtPct(store.result.statistics.day1_direction_accuracy) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day2方向准确率</span>
-                  <span class="stat-value font-mono" :class="(store.result.statistics.day2_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ (store.result.statistics.day2_direction_accuracy ?? 0).toFixed(1) }}%</span>
+                  <span class="stat-value font-mono" :class="(store.result.statistics.day2_direction_accuracy ?? 0) >= 50 ? '' : 'loss'">{{ fmtPct(store.result.statistics.day2_direction_accuracy) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day1区间宽度</span>
-                  <span class="stat-value font-mono">{{ (store.result.statistics.day1_mean_width_pct * 100).toFixed(2) }}%</span>
+                  <span class="stat-value font-mono">{{ fmtPct(store.result.statistics.day1_mean_width_pct != null ? store.result.statistics.day1_mean_width_pct * 100 : null, 2) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day2区间宽度</span>
-                  <span class="stat-value font-mono">{{ (store.result.statistics.day2_mean_width_pct * 100).toFixed(2) }}%</span>
+                  <span class="stat-value font-mono">{{ fmtPct(store.result.statistics.day2_mean_width_pct != null ? store.result.statistics.day2_mean_width_pct * 100 : null, 2) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day1中点误差</span>
-                  <span class="stat-value loss font-mono">{{ (store.result.statistics.day1_midpoint_mae_pct * 100).toFixed(2) }}%</span>
+                  <span class="stat-value loss font-mono">{{ fmtPct(store.result.statistics.day1_midpoint_mae_pct != null ? store.result.statistics.day1_midpoint_mae_pct * 100 : null, 2) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day2中点误差</span>
-                  <span class="stat-value loss font-mono">{{ (store.result.statistics.day2_midpoint_mae_pct * 100).toFixed(2) }}%</span>
+                  <span class="stat-value loss font-mono">{{ fmtPct(store.result.statistics.day2_midpoint_mae_pct != null ? store.result.statistics.day2_midpoint_mae_pct * 100 : null, 2) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day1覆盖宽度比</span>
-                  <span class="stat-value font-mono" :class="store.result.statistics.day1_coverage_width_score >= 0 ? '' : 'loss'">{{ (store.result.statistics.day1_coverage_width_score * 100).toFixed(2) }}%</span>
+                  <span class="stat-value font-mono" :class="store.result.statistics.day1_coverage_width_score >= 0 ? '' : 'loss'">{{ fmtPct(store.result.statistics.day1_coverage_width_score != null ? store.result.statistics.day1_coverage_width_score * 100 : null, 2) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">Day2覆盖宽度比</span>
-                  <span class="stat-value font-mono" :class="store.result.statistics.day2_coverage_width_score >= 0 ? '' : 'loss'">{{ (store.result.statistics.day2_coverage_width_score * 100).toFixed(2) }}%</span>
+                  <span class="stat-value font-mono" :class="store.result.statistics.day2_coverage_width_score >= 0 ? '' : 'loss'">{{ fmtPct(store.result.statistics.day2_coverage_width_score != null ? store.result.statistics.day2_coverage_width_score * 100 : null, 2) }}%</span>
                 </div>
               </div>
 
@@ -671,15 +675,15 @@ function exportCSV() {
               <div class="stats-grid">
                 <div class="stat-card">
                   <span class="stat-label">平均命中率</span>
-                  <span class="stat-value font-mono">{{ store.wfResult.overall.avg_hit_rate.toFixed(1) }}%</span>
+                  <span class="stat-value font-mono">{{ fmtPct(store.wfResult.overall.avg_hit_rate) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">平均方向准确率</span>
-                  <span class="stat-value font-mono" :class="store.wfResult.overall.avg_direction_accuracy >= 50 ? '' : 'loss'">{{ store.wfResult.overall.avg_direction_accuracy.toFixed(1) }}%</span>
+                  <span class="stat-value font-mono" :class="store.wfResult.overall.avg_direction_accuracy >= 50 ? '' : 'loss'">{{ fmtPct(store.wfResult.overall.avg_direction_accuracy) }}%</span>
                 </div>
                 <div class="stat-card">
                   <span class="stat-label">平均趋势准确率</span>
-                  <span class="stat-value font-mono" :class="store.wfResult.overall.avg_trend_accuracy >= 50 ? '' : 'loss'">{{ store.wfResult.overall.avg_trend_accuracy.toFixed(1) }}%</span>
+                  <span class="stat-value font-mono" :class="store.wfResult.overall.avg_trend_accuracy >= 50 ? '' : 'loss'">{{ fmtPct(store.wfResult.overall.avg_trend_accuracy) }}%</span>
                 </div>
               </div>
 
@@ -697,22 +701,22 @@ function exportCSV() {
                 <div class="stability-grid">
                   <div class="stability-card">
                     <span class="stability-label">命中率标准差</span>
-                    <span class="stability-value font-mono" :class="store.wfResult.stability.hit_rate_std <= 15 ? '' : 'loss'">{{ store.wfResult.stability.hit_rate_std.toFixed(2) }}%</span>
+                    <span class="stability-value font-mono" :class="store.wfResult.stability.hit_rate_std <= 15 ? '' : 'loss'">{{ fmtPct(store.wfResult.stability.hit_rate_std, 2) }}%</span>
                     <span class="stability-hint">越小越稳定</span>
                   </div>
                   <div class="stability-card">
                     <span class="stability-label">方向准确率标准差</span>
-                    <span class="stability-value font-mono" :class="store.wfResult.stability.direction_accuracy_std <= 15 ? '' : 'loss'">{{ store.wfResult.stability.direction_accuracy_std.toFixed(2) }}%</span>
+                    <span class="stability-value font-mono" :class="store.wfResult.stability.direction_accuracy_std <= 15 ? '' : 'loss'">{{ fmtPct(store.wfResult.stability.direction_accuracy_std, 2) }}%</span>
                     <span class="stability-hint">越小越稳定</span>
                   </div>
                   <div class="stability-card">
                     <span class="stability-label">趋势准确率标准差</span>
-                    <span class="stability-value font-mono" :class="store.wfResult.stability.trend_accuracy_std <= 15 ? '' : 'loss'">{{ store.wfResult.stability.trend_accuracy_std.toFixed(2) }}%</span>
+                    <span class="stability-value font-mono" :class="store.wfResult.stability.trend_accuracy_std <= 15 ? '' : 'loss'">{{ fmtPct(store.wfResult.stability.trend_accuracy_std, 2) }}%</span>
                     <span class="stability-hint">越小越稳定</span>
                   </div>
                   <div class="stability-card">
                     <span class="stability-label">Sharpe比率</span>
-                    <span class="stability-value font-mono" :class="store.wfResult.stability.sharpe_ratio >= 1 ? '' : 'loss'">{{ store.wfResult.stability.sharpe_ratio.toFixed(3) }}</span>
+                    <span class="stability-value font-mono" :class="store.wfResult.stability.sharpe_ratio >= 1 ? '' : 'loss'">{{ fmtPct(store.wfResult.stability.sharpe_ratio, 3) }}</span>
                     <span class="stability-hint">命中率均值/标准差</span>
                   </div>
                 </div>
@@ -741,17 +745,17 @@ function exportCSV() {
                   <el-table-column prop="n_predictions" label="预测数" width="80" />
                   <el-table-column prop="hit_rate" label="命中率" width="90">
                     <template #default="{ row }">
-                      <span class="font-mono" :style="{ color: row.hit_rate >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ row.hit_rate.toFixed(1) }}%</span>
+                      <span class="font-mono" :style="{ color: row.hit_rate >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ fmtPct(row.hit_rate) }}%</span>
                     </template>
                   </el-table-column>
                   <el-table-column prop="direction_accuracy" label="方向准确率" width="100">
                     <template #default="{ row }">
-                      <span class="font-mono" :style="{ color: row.direction_accuracy >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ row.direction_accuracy.toFixed(1) }}%</span>
+                      <span class="font-mono" :style="{ color: row.direction_accuracy >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ fmtPct(row.direction_accuracy) }}%</span>
                     </template>
                   </el-table-column>
                   <el-table-column prop="trend_accuracy" label="趋势准确率" width="100">
                     <template #default="{ row }">
-                      <span class="font-mono" :style="{ color: row.trend_accuracy >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ row.trend_accuracy.toFixed(1) }}%</span>
+                      <span class="font-mono" :style="{ color: row.trend_accuracy >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ fmtPct(row.trend_accuracy) }}%</span>
                     </template>
                   </el-table-column>
                 </el-table>

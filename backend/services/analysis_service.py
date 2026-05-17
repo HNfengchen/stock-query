@@ -1,30 +1,72 @@
 import sys
 import os
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
+import numpy as np
+import pandas as pd
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import yaml
 from scripts.core.data_fetcher import DataFetcher
 from scripts.core.analyzer import StockAnalyzer
 from scripts.technical_indicators import calculate_all_indicators
 from backend.utils import clean_float, to_list, deep_clean_nan, clean_nested
 
-_config_cache = None
+
+class AnalysisLogger:
+    def __init__(self):
+        self.entries = []
+        self.callback = None
+
+    def set_callback(self, callback):
+        self.callback = callback
+
+    def log(self, level: str, message: str):
+        entry = {
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "message": message
+        }
+        self.entries.append(entry)
+        if self.callback:
+            try:
+                self.callback(entry)
+            except Exception:
+                pass
+
+    def info(self, message: str):
+        self.log("INFO", message)
+
+    def warn(self, message: str):
+        self.log("WARN", message)
+
+    def error(self, message: str):
+        self.log("ERROR", message)
+
+    def get_entries(self):
+        return self.entries.copy()
+
+    def clear(self):
+        self.entries = []
+
+
 _fetcher_cache = None
 _analyzer_cache = None
 _result_cache = {}
+_cache_lock = threading.Lock()
 
 
-def load_config():
-    global _config_cache
-    if _config_cache is not None:
-        return _config_cache
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "config.yaml")
-    with open(config_path, "r", encoding="utf-8") as f:
-        _config_cache = yaml.safe_load(f)
-    return _config_cache
+def _validate_stock_code(stock_code: str):
+    if not re.match(r'^\d{6}$', stock_code):
+        raise ValueError(f"无效的股票代码格式: {stock_code}，必须为6位数字")
+
+
+from scripts.core.config_loader import load_config
 
 
 def get_fetcher():
@@ -98,8 +140,10 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
     macd_vals = to_list(macd_series.get("MACD", []))
     dif_vals = to_list(macd_series.get("DIF", []))
     dea_vals = to_list(macd_series.get("DEA", []))
-    rsi6_vals = to_list(rsi_series.get("RSI(6)", {}).get("series", []))
-    rsi12_vals = to_list(rsi_series.get("RSI(12)", {}).get("series", []))
+    rsi6_val = rsi_series.get("RSI(6)", {})
+    rsi6_vals = to_list(rsi6_val.get("series", [])) if isinstance(rsi6_val, dict) else []
+    rsi12_val = rsi_series.get("RSI(12)", {})
+    rsi12_vals = to_list(rsi12_val.get("series", [])) if isinstance(rsi12_val, dict) else []
     k_vals = to_list(kdj_series.get("K", []))
     d_vals = to_list(kdj_series.get("D", []))
     j_vals = to_list(kdj_series.get("J", []))
@@ -136,18 +180,23 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
 def run_analysis(stock_input: str, position_status: str, cost_price: Optional[float] = None, skip_signal_cache: bool = False) -> Dict:
     cache_key = (stock_input, position_status, cost_price)
     now = datetime.now()
-    if cache_key in _result_cache:
-        cached_result, cached_time = _result_cache[cache_key]
-        if (now - cached_time).total_seconds() < 300:
-            if not skip_signal_cache:
-                try:
-                    from backend.services.history_service import update_signal_cache
-                    stock_code = cached_result.get("stock_code", stock_input)
-                    update_signal_cache(stock_code, position_status, cached_result.get("trading_signal", {}), cost_price=cost_price)
-                except Exception as e:
-                    import logging
-                    logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
-            return cached_result
+    with _cache_lock:
+        if cache_key in _result_cache:
+            cached_result, cached_time = _result_cache[cache_key]
+            if (now - cached_time).total_seconds() < 300:
+                if not skip_signal_cache:
+                    try:
+                        from backend.services.history_service import update_signal_cache
+                        stock_code = cached_result.get("stock_code", stock_input)
+                        update_signal_cache(stock_code, position_status, cached_result.get("trading_signal", {}), cost_price=cost_price)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
+                return cached_result
+
+    logger = AnalysisLogger()
+    start_time = time.time()
+    logger.info(f"开始分析: {stock_input}")
 
     fetcher = get_fetcher()
     analyzer = get_analyzer()
@@ -158,6 +207,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     fund_flow = None
     history_df = None
     indicators = None
+    fetch_start = time.time()
 
     try:
         from scripts.database import get_or_fetch_stock_data
@@ -181,11 +231,21 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     if history_df is None:
         history_df = fetcher.fetch_history_data(stock_code, days=120)
 
+    info = info or {}
+    fund_flow = fund_flow or {}
+
+    fetch_elapsed = time.time() - fetch_start
+    if not info or not fund_flow:
+        logger.warn("部分数据获取失败")
+    else:
+        logger.info(f"数据获取完成 (耗时: {fetch_elapsed:.1f}s)")
+
     if history_df is None or history_df.empty:
         raise ValueError(f"无法获取 {stock_code} 的历史数据")
 
     if not indicators:
         indicators = calculate_all_indicators(history_df)
+    logger.info(f"指标计算完成: {len(indicators)}组指标")
 
     analysis = analyzer.generate_recommendation({
         "stock_code": stock_code,
@@ -205,6 +265,26 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     analysis_data = analysis.get("analysis", {})
     validation = analysis.get("validation", {})
     hmm_state = analysis.get("hmm_state")
+
+    stress_test_info = validation.get("stress_test", {})
+    if stress_test_info.get("status") == "computing":
+        logger.info("压力测试异步执行中，主请求立即返回")
+
+    tech_score = analysis_data.get("technical", {}).get("score", 0)
+    fund_score = analysis_data.get("fund_flow", {}).get("score", 0)
+    sentiment_score = analysis_data.get("sentiment", {}).get("score", 0)
+    logger.info(f"技术分析完成: 评分={tech_score:.2f}")
+    logger.info(f"资金流向分析完成: 评分={fund_score:.2f}")
+    logger.info(f"市场情绪分析完成: 评分={sentiment_score:.2f}")
+    logger.info(f"交易信号: {trading_signal.get('signal', 'N/A')}")
+
+    if validation.get("conflicts"):
+        logger.warn("交叉验证发现冲突")
+    else:
+        logger.info("交叉验证完成")
+
+    logger.info("价格预测完成")
+    logger.info("策略生成完成")
 
     action_gate = validation.get("action_gate", "")
     action_gate_text_map = {
@@ -268,8 +348,13 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
         result["hmm_state"] = clean_nested(hmm_state)
 
     result = deep_clean_nan(result)
-    _result_cache[cache_key] = (result, now)
-    _cleanup_cache()
+    total_elapsed = time.time() - start_time
+    logger.info(f"分析完成 (总耗时: {total_elapsed:.1f}s)")
+    result["analysis_log"] = logger.entries
+
+    with _cache_lock:
+        _result_cache[cache_key] = (result, now)
+        _cleanup_cache()
 
     if not skip_signal_cache:
         try:
@@ -289,6 +374,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
 
 
 def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
+    _validate_stock_code(stock_code)
     import logging
     logger = logging.getLogger("stock_query")
 
@@ -313,10 +399,10 @@ def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
     try:
         cur.execute(f"""
             UPDATE stock_{stock_code}
-            SET day1_pred_high = COALESCE(%s, day1_pred_high),
-                day1_pred_low = COALESCE(%s, day1_pred_low),
-                day2_pred_high = COALESCE(%s, day2_pred_high),
-                day2_pred_low = COALESCE(%s, day2_pred_low)
+            SET day1_pred_high = %s,
+                day1_pred_low = %s,
+                day2_pred_high = %s,
+                day2_pred_low = %s
             WHERE trade_date = (SELECT MAX(trade_date) FROM stock_{stock_code})
         """, (day1_high, day1_low, day2_high, day2_low))
         updated = cur.rowcount
@@ -340,7 +426,13 @@ def _clean_indicators(indicators: Dict) -> Dict:
         if isinstance(val, dict):
             cleaned = {}
             for k, v in val.items():
-                if hasattr(v, 'tolist'):
+                if isinstance(v, pd.Series):
+                    cleaned[k] = to_list(v)
+                elif isinstance(v, pd.DataFrame):
+                    cleaned[k] = sanitize_for_json(v.to_dict(orient="list"))
+                elif isinstance(v, np.ndarray):
+                    cleaned[k] = to_list(v)
+                elif hasattr(v, 'tolist'):
                     cleaned[k] = to_list(v)
                 elif hasattr(v, 'item'):
                     try:
@@ -354,39 +446,83 @@ def _clean_indicators(indicators: Dict) -> Dict:
                 else:
                     cleaned[k] = clean_float(v)
             result[key] = cleaned
+        elif isinstance(val, pd.Series):
+            result[key] = to_list(val)
+        elif isinstance(val, pd.DataFrame):
+            result[key] = sanitize_for_json(val.to_dict(orient="list"))
+        elif isinstance(val, np.ndarray):
+            result[key] = to_list(val)
         else:
             result[key] = clean_float(val)
     return result
 
 
-def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_price: float = None, stage_callback=None):
+def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_price: float = None, stage_callback=None, logger=None):
+    if logger is None:
+        logger = AnalysisLogger()
+    start_time = time.time()
+    logger.info(f"开始分析: {stock_code}")
+
     fetcher = get_fetcher()
+    try:
+        resolved_code, resolved_name, market = fetcher.resolve_stock_code(stock_code)
+        stock_code = resolved_code
+        logger.info(f"股票代码解析: {resolved_code} ({resolved_name})")
+    except Exception as e:
+        logger.warn(f"股票代码解析失败，使用原始输入: {e}")
+
     analyzer = get_analyzer()
 
     all_data = {}
 
+    fetch_start = time.time()
     try:
+        from scripts.database import get_or_fetch_stock_data
+        db_data = get_or_fetch_stock_data(stock_code, force_refresh=False)
+        if db_data and db_data.get("history_df") is not None:
+            history_df = db_data["history_df"]
+            all_data = {
+                "stock_code": stock_code,
+                "stock_name": db_data.get("stock_info", {}).get("名称", stock_code),
+                "stock_info": db_data.get("stock_info", {}),
+                "fund_flow": db_data.get("fund_flow", {}),
+                "history_data": history_df,
+            }
+    except Exception:
+        pass
+
+    if not all_data or all_data.get("history_data") is None:
+        fetcher = DataFetcher(load_config())
         all_data = fetcher.fetch_all_data(stock_code)
-        if stage_callback:
-            stage_callback('stage_basic', {
-                'stock_info': all_data.get('stock_info'),
-                'stock_name': all_data.get('stock_name'),
-                'history_data': all_data.get('history_data'),
-                'fund_flow': all_data.get('fund_flow'),
-            })
-    except Exception as e:
-        if stage_callback:
-            stage_callback('stage_basic', {'error': str(e)})
+
+    fetch_elapsed = time.time() - fetch_start
+    logger.info(f"数据获取完成 (耗时: {fetch_elapsed:.1f}s)")
+    if stage_callback:
+        stage_callback('stage_basic', {
+            'stock_info': all_data.get('stock_info'),
+            'stock_name': all_data.get('stock_name'),
+            'fund_flow': all_data.get('fund_flow'),
+        })
 
     indicators = {}
+    technical_analysis = {}
+    fund_flow_analysis = {}
+    sentiment_analysis = {}
+    analysis = {}
+    trading_signal = {}
+    price_prediction = {}
+    validation = {}
+    strategy = {}
+
     try:
         history_df = all_data.get('history_data')
         if history_df is not None and len(history_df) > 0:
             indicators = calculate_all_indicators(history_df)
+        logger.info(f"指标计算完成: {len(indicators)}组指标")
         if stage_callback:
             stage_callback('stage_technical', {
                 'indicators': indicators,
-                'technical_chart_data': build_chart_data(history_df, indicators, 'technical') if indicators else None,
+                'technical_chart_data': build_chart_data(history_df, indicators, all_data.get('fund_flow')) if indicators else None,
             })
     except Exception as e:
         if stage_callback:
@@ -401,9 +537,17 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
             current_price = 0
 
         technical_analysis = analyzer.analyze_technical(indicators, current_price) if indicators else {"score": 0.5}
+        tech_score = technical_analysis.get('score', 0.5) if technical_analysis else 0.5
+        logger.info(f"技术分析完成: 评分={tech_score:.2f}")
+
         fund_flow_analysis = analyzer.analyze_fund_flow(all_data.get('fund_flow', {}), stock_info)
+        fund_score = fund_flow_analysis.get('score', 0.5) if fund_flow_analysis else 0.5
+        logger.info(f"资金流向分析完成: 评分={fund_score:.2f}")
+
         market_data = all_data.get('market_data')
         sentiment_analysis = analyzer.analyze_market_sentiment(all_data, market_data)
+        sentiment_score = sentiment_analysis.get('score', 0.5) if sentiment_analysis else 0.5
+        logger.info(f"市场情绪分析完成: 评分={sentiment_score:.2f}")
 
         analysis = {
             "technical": technical_analysis,
@@ -412,6 +556,7 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
         }
 
         trading_signal = analyzer.generate_trading_signal(analysis, position_type, market_data)
+        logger.info(f"交易信号: {trading_signal.get('signal', 'N/A')}")
 
         resolved_code = all_data.get('stock_code', stock_code)
         price_prediction = analyzer.predict_price_range(all_data, indicators, resolved_code, trading_signal)
@@ -421,6 +566,11 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
             trading_signal, position_type, current_price,
             history_df=all_data.get('history_data'),
         )
+
+        if validation.get("conflicts"):
+            logger.warn("交叉验证发现冲突")
+        else:
+            logger.info("交叉验证完成")
 
         if stage_callback:
             stage_callback('stage_risk', {
@@ -451,6 +601,9 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
                 all_data, indicators, current_price, trading_signal, validation
             )
 
+        logger.info("价格预测完成")
+        logger.info("策略生成完成")
+
         if stage_callback:
             stage_callback('stage_prediction', {
                 'price_prediction': price_prediction,
@@ -461,7 +614,118 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
             stage_callback('stage_prediction', {'error': str(e)})
 
     try:
-        full_result = run_analysis(stock_code, position_type, cost_price)
+        total_elapsed = time.time() - start_time
+        logger.info(f"分析完成 (总耗时: {total_elapsed:.1f}s)")
+
+        stock_info = all_data.get('stock_info', {})
+        current_price = 0
+        try:
+            current_price = float(stock_info.get('最新价', 0)) if stock_info.get('最新价') else 0
+        except (TypeError, ValueError):
+            current_price = 0
+
+        indicators = indicators or {}
+        trading_signal = trading_signal or {}
+        price_prediction = price_prediction or {}
+        validation = validation or {}
+
+        tech_score = technical_analysis.get('score', 0.5) if technical_analysis else 0.5
+        fund_score = fund_flow_analysis.get('score', 0.5) if fund_flow_analysis else 0.5
+        sentiment_score = sentiment_analysis.get('score', 0.5) if sentiment_analysis else 0.5
+
+        action_gate = validation.get('action_gate', '')
+        action_gate_text_map = {
+            "allow_buy": "建议买入",
+            "cautious_buy": "可考虑买入",
+            "avoid_buy": "回避",
+            "watch": "观望",
+            "reduce_position": "减仓",
+            "cautious_hold": "谨慎持有",
+            "hold_position": "持有",
+        }
+        action_gate_text = action_gate_text_map.get(action_gate, trading_signal.get('signal_text', '观望'))
+
+        resolved_code = all_data.get('stock_code', stock_code)
+        resolved_name = all_data.get('stock_name', stock_info.get('名称', stock_code))
+
+        history_df = all_data.get('history_data')
+        charts = build_chart_data(history_df, indicators, all_data.get('fund_flow'))
+
+        hmm_state = None
+        if hasattr(analyzer, '_hmm_detector') and analyzer._hmm_detector is not None and analyzer._hmm_detector.is_ready():
+            if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+                try:
+                    import numpy as np
+                    closes = history_df["收盘"].values.astype(np.float64)
+                    returns = np.diff(closes) / closes[:-1]
+                    vols = np.zeros_like(returns)
+                    window = 20
+                    for i_hmm in range(len(returns)):
+                        start = max(0, i_hmm - window + 1)
+                        vols[i_hmm] = np.std(returns[start:i_hmm + 1]) if i_hmm > 0 else 0.0
+                    volumes = history_df["成交量"].values.astype(np.float64) if "成交量" in history_df.columns else np.ones(len(closes))
+                    volume_changes = np.diff(volumes) / (volumes[:-1] + 1e-10)
+                    hmm_result = analyzer._hmm_detector.predict(returns, vols, volume_changes)
+                    hmm_state = {
+                        "current_state": hmm_result.get("current_state", "未知"),
+                        "state_probabilities": hmm_result.get("state_probabilities", {}),
+                        "transition_matrix": hmm_result.get("transition_matrix"),
+                    }
+                except Exception:
+                    pass
+
+        full_result = {
+            "stock_code": resolved_code,
+            "stock_name": resolved_name or stock_info.get('名称', stock_code),
+            "analysis": {
+                "technical_score": clean_float(tech_score),
+                "fund_flow_score": clean_float(fund_score),
+                "sentiment_score": clean_float(sentiment_score),
+                "overall_score": clean_float(trading_signal.get('score', 0)),
+                "recommendation": action_gate_text,
+                "details": clean_nested(analysis),
+            },
+            "trading_signal": {
+                "score": clean_float(trading_signal.get('score', 0)),
+                "signal": trading_signal.get('signal', 'hold'),
+                "signal_text": action_gate_text,
+                "action_gate": action_gate,
+                "reason": trading_signal.get('reason', ''),
+            },
+            "price_prediction": {
+                "current": clean_float(price_prediction.get('current')),
+                "support": clean_float(price_prediction.get('support')),
+                "resistance": clean_float(price_prediction.get('resistance')),
+                "validation_confidence": clean_float(price_prediction.get('validation_confidence')),
+                "validation_note": price_prediction.get('validation_note', ''),
+                "hybrid_alpha": clean_float(price_prediction.get('hybrid_alpha')),
+                "ml_prediction": price_prediction.get('ml_prediction'),
+                "day1": {
+                    "target_low": clean_float(price_prediction.get('day1', {}).get('target_low')),
+                    "target_high": clean_float(price_prediction.get('day1', {}).get('target_high')),
+                    "trend": price_prediction.get('day1', {}).get('trend', 'neutral'),
+                    "signal": price_prediction.get('day1', {}).get('signal', ''),
+                },
+                "day2": {
+                    "target_low": clean_float(price_prediction.get('day2', {}).get('target_low')),
+                    "target_high": clean_float(price_prediction.get('day2', {}).get('target_high')),
+                    "trend": price_prediction.get('day2', {}).get('trend', 'neutral'),
+                    "signal": price_prediction.get('day2', {}).get('signal', ''),
+                },
+            },
+            "indicators": _clean_indicators(indicators),
+            "position_strategy": clean_nested(strategy),
+            "validation": clean_nested(validation),
+            "stock_info": {k: clean_float(v) for k, v in stock_info.items()},
+            "charts": charts,
+            "analysis_log": logger.entries,
+        }
+
+        if hmm_state:
+            full_result["hmm_state"] = clean_nested(hmm_state)
+
+        full_result = deep_clean_nan(full_result)
+
         if stage_callback:
             stage_callback('stage_complete', full_result)
         return full_result

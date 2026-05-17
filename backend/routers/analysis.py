@@ -7,7 +7,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-from backend.services.analysis_service import run_analysis, run_analysis_staged
+from backend.services.analysis_service import run_analysis, run_analysis_staged, AnalysisLogger
 from backend.utils import sanitize_for_json
 
 router = APIRouter()
@@ -41,7 +41,7 @@ async def analyze(req: AnalysisRequest):
 
 @router.post("/analysis/batch")
 async def batch_analyze(req: BatchAnalysisRequest):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _run_single(stock_req):
         try:
@@ -80,7 +80,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
 
     async def run_single(i: int, stock_req: AnalysisRequest):
         nonlocal completed_count
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             await progress_queue.put({
                 "type": "analyzing",
@@ -198,22 +198,31 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
 
     async def event_generator():
         stage_queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        analysis_logger = AnalysisLogger()
+
+        def log_callback(entry):
+            asyncio.run_coroutine_threadsafe(
+                stage_queue.put({"stage": "log", "data": entry}),
+                loop,
+            )
+
+        analysis_logger.set_callback(log_callback)
 
         def stage_callback(stage: str, data):
             asyncio.run_coroutine_threadsafe(
                 stage_queue.put({"stage": stage, "data": data}),
-                asyncio.get_event_loop(),
+                loop,
             )
-
-        loop = asyncio.get_event_loop()
 
         def _run_staged():
             try:
-                run_analysis_staged(stock_input, position_status, cost_price, stage_callback=stage_callback)
+                run_analysis_staged(stock_input, position_status, cost_price, stage_callback=stage_callback, logger=analysis_logger)
             except Exception as e:
                 asyncio.run_coroutine_threadsafe(
                     stage_queue.put({"stage": "error", "data": {"error": str(e)}}),
-                    asyncio.get_event_loop(),
+                    loop,
                 )
 
         task = loop.run_in_executor(_executor, _run_staged)
@@ -227,6 +236,30 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
 
                     if stage == "stage_complete":
                         yield {"event": "stage_complete", "data": json.dumps(sanitize_for_json(data), ensure_ascii=False)}
+
+                        from backend.services.analysis_service import get_analyzer
+                        analyzer = get_analyzer()
+                        pending = getattr(analyzer, '_pending_stress_test', None)
+                        if pending:
+                            analyzer._pending_stress_test = None
+
+                            def _run_stress_test(p=pending):
+                                try:
+                                    from scripts.core.stress_test import MonteCarloStressTest
+                                    n_sim = analyzer._stress_test_config.get("n_simulations", 200)
+                                    mc = MonteCarloStressTest(n_simulations=n_sim, config=analyzer._stress_test_config)
+                                    return mc.run(p["analyzer"], p["history_df"], p["indicators"])
+                                except Exception as e:
+                                    logger.warning(f"异步压力测试执行失败: {e}")
+                                    return None
+
+                            stress_task = loop.run_in_executor(_executor, _run_stress_test)
+                            try:
+                                stress_result = await asyncio.wait_for(stress_task, timeout=120)
+                                if stress_result:
+                                    yield {"event": "stress_test_result", "data": json.dumps(sanitize_for_json(stress_result), ensure_ascii=False)}
+                            except asyncio.TimeoutError:
+                                logger.warning("异步压力测试超时")
                         break
                     elif stage == "error":
                         yield {"event": "error", "data": json.dumps(sanitize_for_json(data), ensure_ascii=False)}

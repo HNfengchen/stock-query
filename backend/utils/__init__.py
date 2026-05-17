@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import pandas as pd
 
 
 def clean_float(v):
@@ -16,6 +17,10 @@ def clean_float(v):
         return round(f, 6)
     if isinstance(v, (np.bool_,)):
         return bool(v)
+    if isinstance(v, pd.Series):
+        return to_list(v)
+    if isinstance(v, pd.DataFrame):
+        return sanitize_for_json(v.to_dict(orient="list"))
     if hasattr(v, 'item'):
         try:
             f = float(v.item())
@@ -45,6 +50,12 @@ def sanitize_for_json(obj):
         return {k: sanitize_for_json(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [sanitize_for_json(v) for v in obj]
+    if isinstance(obj, pd.Series):
+        return sanitize_for_json(obj.tolist())
+    if isinstance(obj, pd.DataFrame):
+        return sanitize_for_json(obj.to_dict(orient="list"))
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
     if isinstance(obj, float):
         if math.isnan(obj) or math.isinf(obj):
             return None
@@ -58,6 +69,8 @@ def sanitize_for_json(obj):
         if math.isnan(f) or math.isinf(f):
             return None
         return f
+    if isinstance(obj, np.ndarray):
+        return sanitize_for_json(obj.tolist())
     return obj
 
 
@@ -66,7 +79,11 @@ def deep_clean_nan(obj):
         return {k: deep_clean_nan(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [deep_clean_nan(v) for v in obj]
-    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+    if isinstance(obj, pd.Series):
+        return deep_clean_nan(obj.tolist())
+    if isinstance(obj, pd.DataFrame):
+        return deep_clean_nan(obj.to_dict(orient="list"))
+    if isinstance(obj, (float, np.floating)) and (math.isnan(obj) or math.isinf(obj)):
         return None
     return obj
 
@@ -76,4 +93,8 @@ def clean_nested(obj):
         return {k: clean_nested(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [clean_nested(v) for v in obj]
+    if isinstance(obj, pd.Series):
+        return to_list(obj)
+    if isinstance(obj, pd.DataFrame):
+        return sanitize_for_json(obj.to_dict(orient="list"))
     return clean_float(obj)

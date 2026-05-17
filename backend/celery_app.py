@@ -9,14 +9,8 @@ celery_enabled = False
 
 def _load_celery_config():
     try:
-        import yaml
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "config",
-            "config.yaml",
-        )
-        with open(config_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
+        from scripts.core.config_loader import load_config
+        cfg = load_config()
         return cfg.get("celery", {})
     except Exception:
         return {}
@@ -69,9 +63,6 @@ def init_celery():
     )
 
     celery_app.autodiscover_tasks(["backend"])
-
-    from backend.tasks import register_tasks
-    register_tasks(celery_app)
 
     celery_enabled = True
     logger.info(f"Celery 已初始化: broker={broker_url}, concurrency={worker_concurrency}")

@@ -4,6 +4,8 @@
 """
 
 import time
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Optional
 import pandas as pd
 
@@ -74,7 +76,7 @@ class DataFetcher:
 
     def __init__(self, config: dict):
         self.config = config
-        self.max_retries = config.get("data_fetcher", {}).get("max_retries", 3)
+        self.max_retries = config.get("data_fetcher", {}).get("max_retries", 2)
         self.retry_delay = config.get("data_fetcher", {}).get("retry_delay", 1)
         self.timeout = config.get("data_fetcher", {}).get("request_timeout", 30)
 
@@ -89,17 +91,27 @@ class DataFetcher:
                 print(f"xtquant 初始化失败: {e}")
 
     def _retry_wrapper(self, func, *args, **kwargs):
-        """带重试的函数包装器"""
+        """带重试和超时的函数包装器"""
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                return func(*args, **kwargs)
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(func, *args, **kwargs)
+                    return future.result(timeout=self.timeout)
+            except concurrent.futures.TimeoutError:
+                last_error = TimeoutError(f"Function {func.__name__} timed out after {self.timeout}s")
             except Exception as e:
                 last_error = e
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay)
-                continue
+            if attempt < self.max_retries - 1:
+                time.sleep(self.retry_delay)
         raise NetworkError(f"重试{self.max_retries}次后仍失败：{last_error}")
+
+    def _safe_fetch(self, func, *args, **kwargs):
+        """安全执行函数，捕获异常返回None"""
+        try:
+            return func(*args, **kwargs)
+        except Exception:
+            return None
 
     def resolve_stock_code(self, user_input: str) -> tuple:
         """
@@ -330,21 +342,40 @@ class DataFetcher:
                 info = db_result.get("stock_info", {})
                 fund_flow = db_result.get("fund_flow", {})
             else:
-                fetcher_logger.info(f"[DataFetcher] 从API获取最新数据...")
-                info = self.fetch_stock_info(stock_code)
-                fetcher_logger.debug(
-                    f"[DataFetcher] 股票基本信息获取完成: {info.get('名称')}, 最新价: {info.get('最新价')}"
-                )
-                fund_flow = self.fetch_fund_flow(stock_code)
-                history_df = self.fetch_history_data(stock_code, 120)
-                fetcher_logger.debug(
-                    f"[DataFetcher] 历史数据获取完成: {len(history_df) if history_df is not None else 0} 条"
-                )
+                info = None
         else:
             fetcher_logger.warning(f"[DataFetcher] 数据库不可用，从API获取数据...")
-            info = self.fetch_stock_info(stock_code)
-            fund_flow = self.fetch_fund_flow(stock_code)
-            history_df = self.fetch_history_data(stock_code, 60)
+            info = None
+
+        if info is None:
+            fetcher_logger.info(f"[DataFetcher] 从API并发获取最新数据...")
+            result = {}
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = {
+                    executor.submit(self._safe_fetch, self.fetch_stock_info, stock_code): 'stock_info',
+                    executor.submit(self._safe_fetch, self.fetch_fund_flow, stock_code): 'fund_flow',
+                    executor.submit(self._safe_fetch, self.fetch_history_data, stock_code, 60): 'history_data',
+                }
+                for future in as_completed(futures, timeout=20):
+                    key = futures[future]
+                    try:
+                        result[key] = future.result(timeout=15)
+                    except Exception:
+                        result[key] = None
+
+            info = result.get('stock_info')
+            fund_flow = result.get('fund_flow')
+            history_df = result.get('history_data')
+
+            fetcher_logger.debug(
+                f"[DataFetcher] 股票基本信息获取完成: {info.get('名称') if info else None}, 最新价: {info.get('最新价') if info else None}"
+            )
+            fetcher_logger.debug(
+                f"[DataFetcher] 历史数据获取完成: {len(history_df) if history_df is not None else 0} 条"
+            )
+
+        info = info or {}
+        fund_flow = fund_flow or {}
 
         fetcher_logger.info(f"[DataFetcher] 获取分钟级数据...")
         minute_data = self.fetch_minute_data(stock_code)

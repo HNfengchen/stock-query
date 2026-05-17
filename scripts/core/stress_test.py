@@ -7,10 +7,37 @@ stress_logger = get_logger("StressTest")
 
 
 class MonteCarloStressTest:
-    def __init__(self, n_simulations: int = 1000, config: dict = None):
+    def __init__(self, n_simulations: int = 200, config: dict = None):
         self.n_simulations = n_simulations
         self.config = config or {}
         self.noise_scale = self.config.get("noise_scale", 0.5)
+
+    @staticmethod
+    def _calculate_core_indicators_only(df: pd.DataFrame) -> dict:
+        from scripts.technical_indicators import calculate_macd, calculate_rsi, calculate_kdj
+
+        if "收盘" in df.columns:
+            close = df["收盘"]
+        elif "close" in df.columns:
+            close = df["close"]
+        else:
+            return {"MACD": {}, "RSI": {}, "KDJ": {}}
+
+        macd = calculate_macd(close)
+        rsi = calculate_rsi(close)
+
+        if "最高" in df.columns and "最低" in df.columns:
+            high = df["最高"]
+            low = df["最低"]
+        elif "high" in df.columns and "low" in df.columns:
+            high = df["high"]
+            low = df["low"]
+        else:
+            kdj = {}
+            return {"MACD": macd, "RSI": rsi, "KDJ": kdj}
+
+        kdj = calculate_kdj(high, low, close)
+        return {"MACD": macd, "RSI": rsi, "KDJ": kdj}
 
     def run(self, analyzer, history_df: pd.DataFrame, indicators: dict) -> dict:
         if history_df is None or history_df.empty or "收盘" not in history_df.columns:
@@ -41,8 +68,7 @@ class MonteCarloStressTest:
             perturbed_df["收盘"] = perturbed_prices
 
             try:
-                from scripts.technical_indicators import calculate_all_indicators
-                perturbed_indicators = calculate_all_indicators(perturbed_df)
+                perturbed_indicators = self._calculate_core_indicators_only(perturbed_df)
             except Exception as e:
                 stress_logger.debug(f"扰动指标计算失败: {e}")
                 continue
@@ -79,6 +105,7 @@ class MonteCarloStressTest:
         is_robust = signal_flip_rate < 0.3
 
         result = {
+            "status": "completed",
             "signal_flip_rate": round(signal_flip_rate, 4),
             "is_robust": is_robust,
             "risk_metrics": {
@@ -124,19 +151,10 @@ class MonteCarloStressTest:
     def _signal_flipped(self, original: str, new: str) -> bool:
         buy_signals = {"strong_buy", "buy"}
         sell_signals = {"sell", "watch"}
-        hold_signals = {"hold"}
 
         if original in buy_signals and new in sell_signals:
             return True
         if original in sell_signals and new in buy_signals:
-            return True
-        if original in buy_signals and new in hold_signals:
-            return True
-        if original in sell_signals and new in hold_signals:
-            return True
-        if original in hold_signals and new in buy_signals:
-            return True
-        if original in hold_signals and new in sell_signals:
             return True
         return False
 
@@ -195,6 +213,7 @@ class MonteCarloStressTest:
 
     def _empty_result(self) -> dict:
         return {
+            "status": "completed",
             "signal_flip_rate": 0.0,
             "is_robust": True,
             "risk_metrics": {

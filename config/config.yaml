@@ -1,8 +1,17 @@
+# 数据库配置
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: postgres
+  database: stock_data
+  pool_size: 5
+
 # 数据获取配置
 data_fetcher:
-  max_retries: 3
+  max_retries: 2
   retry_delay: 1
-  request_timeout: 30
+  request_timeout: 15
 
 # xtquant 配置
 xtquant:
@@ -76,7 +85,7 @@ output:
 
 # 特征正交化配置
 feature_engineering:
-  enabled: false
+  enabled: true
   variance_threshold: 0.95
   correlation_threshold: 0.7
   method: "pca"
@@ -105,14 +114,14 @@ dynamic_weights:
 
 # HMM市场状态识别配置
 hmm:
-  enabled: false
+  enabled: true
   n_components: 4
   model_path: "models/hmm_regime.pkl"
   training_index: "000300"
 
 # LightGBM混合预测模型配置
 ml_model:
-  enabled: false
+  enabled: true
   model_dir: "models/"
   alpha: 0.5
   hyperparams:
@@ -124,8 +133,8 @@ ml_model:
 
 # 蒙特卡洛压力测试配置
 stress_test:
-  enabled: false
-  n_simulations: 1000
+  enabled: true
+  n_simulations: 200
   noise_scale: 0.5
 
 # 数据预处理配置

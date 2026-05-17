@@ -1,12 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { AnalysisResult, WatchlistItem, AnalysisRequest, MarketStatus, RiskAssessment, PredictionResult } from '@/types'
-import { analyzeStock, batchAnalyze, batchQuickAnalyzeStream, analyzeStockStream } from '@/api/analysis'
-import type { StageCallbacks } from '@/api/analysis'
+import type { AnalysisResult, WatchlistItem, AnalysisRequest, MarketStatus, RiskAssessment, PredictionResult, LogEntry } from '@/types'
+import { analyzeStock, batchAnalyze, batchQuickAnalyzeStream } from '@/api/analysis'
 import { getWatchlist, addToWatchlist, removeFromWatchlist, updateWatchlist } from '@/api/history'
 
 export const useStockStore = defineStore('stock', () => {
   const currentResult = ref<AnalysisResult | null>(null)
+  const analysisLogs = ref<LogEntry[]>([])
   const watchlist = ref<WatchlistItem[]>([])
   const loading = ref(false)
   const batchProgress = ref({ current: 0, total: 0, currentStock: '', status: '' as 'analyzing' | 'completed' | 'error' | '' })
@@ -18,6 +18,7 @@ export const useStockStore = defineStore('stock', () => {
 
   const streamStage = ref<string>('')
   const streamStageData = ref<Record<string, any>>({})
+  const cockpitMode = ref(false)
 
   const hasResult = computed(() => currentResult.value !== null)
 
@@ -25,7 +26,7 @@ export const useStockStore = defineStore('stock', () => {
     const r = currentResult.value
     if (!r) return { indexChange: null, sentiment: '未知', volatilityState: '未知', riskLevel: '未知', hmmState: null }
 
-    const indexChange = Number(r.stock_info?.['涨跌幅']) || null
+    const indexChange = (() => { const v = Number(r.stock_info?.['涨跌幅']); return isNaN(v) ? null : v })()
     const sentimentScore = r.analysis?.sentiment_score ?? 0.5
     let sentiment = '中性'
     if (sentimentScore >= 0.65) sentiment = '乐观'
@@ -70,7 +71,7 @@ export const useStockStore = defineStore('stock', () => {
     if (kurtosisSignal === '厚尾') tailRiskWarning = '尾部风险显著，极端波动概率增大'
     else if (kurtosisSignal === '轻尾') tailRiskWarning = '尾部风险较低'
 
-    return { var95, var99, cvar95, cvar99, stressTest: null, tailRiskWarning }
+    return { var95, var99, cvar95, cvar99, stressTest: r.validation?.stress_test || null, tailRiskWarning }
   })
 
   const predictionResult = computed<PredictionResult>(() => {
@@ -127,11 +128,188 @@ export const useStockStore = defineStore('stock', () => {
   async function runAnalysis(data: AnalysisRequest) {
     loading.value = true
     try {
-      const result = await analyzeStock(data)
-      currentResult.value = result
-      return result
-    } finally {
+      await new Promise<void>((resolve, reject) => {
+        const controller = new AbortController()
+        streamAbortController = controller
+        streamStage.value = 'stage_basic'
+        streamStageData.value = {}
+
+        const params = new URLSearchParams({
+          stock_input: data.stock_input,
+          position_status: data.position_status,
+        })
+        if (data.cost_price != null) {
+          params.set('cost_price', String(data.cost_price))
+        }
+
+        let timeoutId: ReturnType<typeof setTimeout>
+        const resetTimeout = () => {
+          clearTimeout(timeoutId)
+          timeoutId = setTimeout(() => {
+            controller.abort()
+            reject(new Error('流式分析超时，正在尝试普通接口...'))
+          }, 120000)
+        }
+        resetTimeout()
+
+        let sseFailed = false
+
+        fetch(`/api/analysis/stream?${params.toString()}`, { signal: controller.signal })
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`)
+            }
+            const reader = response.body?.getReader()
+            if (!reader) {
+              throw new Error('No response body')
+            }
+            const decoder = new TextDecoder()
+            let buffer = ''
+            let currentEvent = ''
+
+            const processChunk = (): Promise<void> => {
+              return reader.read().then(({ done, value }) => {
+                if (done) {
+                  clearTimeout(timeoutId)
+                  loading.value = false
+                  streamAbortController = null
+                  resolve()
+                  return
+                }
+                buffer += decoder.decode(value, { stream: true })
+                const lines = buffer.split('\n')
+                buffer = lines.pop() || ''
+
+                let hasActivity = false
+                for (const line of lines) {
+                  if (line.startsWith('event: ')) {
+                    currentEvent = line.slice(7).trim()
+                    hasActivity = true
+                  } else if (line.startsWith('data: ')) {
+                    const dataStr = line.slice(6)
+                    hasActivity = true
+                    try {
+                      const eventData = JSON.parse(dataStr)
+                      if (currentEvent === 'stage_basic') {
+                        streamStage.value = 'stage_basic'
+                        streamStageData.value = { ...streamStageData.value, basic: eventData }
+                        if (currentResult.value) {
+                          if (eventData.stock_info) currentResult.value.stock_info = eventData.stock_info
+                        } else if (eventData.stock_info) {
+                          currentResult.value = {
+                            stock_code: '', stock_name: '', analysis: { technical_score: 0, fund_flow_score: 0, sentiment_score: 0, overall_score: 0, recommendation: '', details: {} },
+                            trading_signal: { score: 0, signal: '', signal_text: '' },
+                            price_prediction: { current: null, support: null, resistance: null, day1: { target_low: null, target_high: null, trend: 'neutral', signal: '' }, day2: { target_low: null, target_high: null, trend: 'neutral', signal: '' } },
+                            indicators: {}, position_strategy: {}, stock_info: eventData.stock_info,
+                            charts: { kline: { dates: [], opens: [], closes: [], highs: [], lows: [], volumes: [], ma5: [], ma10: [], ma20: [], ma60: [], boll_upper: [], boll_middle: [], boll_lower: [] }, technical: { dates: [], macd: [], dif: [], dea: [], rsi6: [], rsi12: [], k: [], d: [], j: [] }, fund_flow: { dates: [], main_flow: [], main_flow_ratio: [], small_flow: [], change_pct: [] } },
+                          }
+                        }
+                      } else if (currentEvent === 'stage_technical') {
+                        streamStage.value = 'stage_technical'
+                        streamStageData.value = { ...streamStageData.value, technical: eventData }
+                        if (currentResult.value) {
+                          if (eventData.indicators) currentResult.value.indicators = eventData.indicators
+                          if (eventData.technical_chart_data) {
+                            currentResult.value.charts = { ...currentResult.value.charts, ...eventData.technical_chart_data }
+                          }
+                        }
+                      } else if (currentEvent === 'stage_risk') {
+                        streamStage.value = 'stage_risk'
+                        streamStageData.value = { ...streamStageData.value, risk: eventData }
+                        if (currentResult.value) {
+                          if (eventData.signal) currentResult.value.trading_signal = eventData.signal
+                          if (eventData.validation) {
+                            if (currentResult.value.validation) {
+                              currentResult.value.validation = { ...currentResult.value.validation, ...eventData.validation }
+                            } else {
+                              currentResult.value.validation = eventData.validation
+                            }
+                          }
+                          if (eventData.tech_score != null || eventData.fund_score != null || eventData.sentiment_score != null) {
+                            currentResult.value.analysis = {
+                              ...currentResult.value.analysis,
+                              technical_score: eventData.tech_score ?? currentResult.value.analysis.technical_score,
+                              fund_flow_score: eventData.fund_score ?? currentResult.value.analysis.fund_flow_score,
+                              sentiment_score: eventData.sentiment_score ?? currentResult.value.analysis.sentiment_score,
+                            }
+                          }
+                        }
+                      } else if (currentEvent === 'stage_prediction') {
+                        streamStage.value = 'stage_prediction'
+                        streamStageData.value = { ...streamStageData.value, prediction: eventData }
+                        if (currentResult.value) {
+                          if (eventData.price_prediction) currentResult.value.price_prediction = eventData.price_prediction
+                          if (eventData.position_strategy) currentResult.value.position_strategy = eventData.position_strategy
+                        }
+                      } else if (currentEvent === 'stage_complete') {
+                        currentResult.value = eventData
+                        streamStage.value = 'stage_complete'
+                        clearTimeout(timeoutId)
+                        loading.value = false
+                        streamAbortController = null
+                        resolve()
+                        return
+                      } else if (currentEvent === 'log') {
+                        addLog(eventData)
+                      } else if (currentEvent === 'stress_test_result') {
+                        if (currentResult.value?.validation) {
+                          currentResult.value.validation.stress_test = eventData
+                        }
+                      } else if (currentEvent === 'error') {
+                        clearTimeout(timeoutId)
+                        loading.value = false
+                        streamAbortController = null
+                        reject(new Error(eventData.error || '分析失败'))
+                      } else if (currentEvent === 'heartbeat') {
+                        // ignore
+                      }
+                    } catch {
+                      // ignore parse errors
+                    }
+                    currentEvent = ''
+                  }
+                }
+                if (hasActivity) {
+                  resetTimeout()
+                }
+                return processChunk()
+              }).catch((e: any) => {
+                clearTimeout(timeoutId)
+                loading.value = false
+                streamAbortController = null
+                if (e.name === 'AbortError') {
+                  resolve()
+                } else {
+                  reject(e)
+                }
+              })
+            }
+
+            return processChunk()
+          })
+          .catch(async (e: any) => {
+            clearTimeout(timeoutId)
+            if (sseFailed) return
+            sseFailed = true
+            streamStage.value = ''
+            loading.value = true
+            try {
+              const result = await analyzeStock(data)
+              currentResult.value = result
+              streamStage.value = 'stage_complete'
+              resolve()
+            } catch (fallbackErr) {
+              reject(fallbackErr)
+            } finally {
+              loading.value = false
+              streamAbortController = null
+            }
+          })
+      })
+    } catch (e) {
       loading.value = false
+      streamAbortController = null
+      throw e
     }
   }
 
@@ -220,53 +398,6 @@ export const useStockStore = defineStore('stock', () => {
     }
   }
 
-  function runAnalysisStream(data: AnalysisRequest, callbacks: StageCallbacks = {}) {
-    loading.value = true
-    streamStage.value = 'stage_basic'
-    streamStageData.value = {}
-
-    streamAbortController = analyzeStockStream(
-      data.stock_input,
-      data.position_status,
-      data.cost_price,
-      {
-        onBasic: (d) => {
-          streamStage.value = 'stage_basic'
-          streamStageData.value = { ...streamStageData.value, basic: d }
-          callbacks.onBasic?.(d)
-        },
-        onTechnical: (d) => {
-          streamStage.value = 'stage_technical'
-          streamStageData.value = { ...streamStageData.value, technical: d }
-          callbacks.onTechnical?.(d)
-        },
-        onRisk: (d) => {
-          streamStage.value = 'stage_risk'
-          streamStageData.value = { ...streamStageData.value, risk: d }
-          callbacks.onRisk?.(d)
-        },
-        onPrediction: (d) => {
-          streamStage.value = 'stage_prediction'
-          streamStageData.value = { ...streamStageData.value, prediction: d }
-          callbacks.onPrediction?.(d)
-        },
-        onComplete: (result) => {
-          currentResult.value = result
-          streamStage.value = 'stage_complete'
-          loading.value = false
-          streamAbortController = null
-          callbacks.onComplete?.(result)
-        },
-        onError: (error) => {
-          streamStage.value = ''
-          loading.value = false
-          streamAbortController = null
-          callbacks.onError?.(error)
-        },
-      },
-    )
-  }
-
   function cancelStreamAnalysis() {
     if (streamAbortController) {
       streamAbortController.abort()
@@ -302,12 +433,21 @@ export const useStockStore = defineStore('stock', () => {
     return item
   }
 
+  function addLog(entry: LogEntry) {
+    analysisLogs.value.push(entry)
+  }
+
+  function clearLogs() {
+    analysisLogs.value = []
+  }
+
   function clearResult() {
     currentResult.value = null
   }
 
   return {
     currentResult,
+    analysisLogs,
     watchlist,
     loading,
     batchProgress,
@@ -315,6 +455,7 @@ export const useStockStore = defineStore('stock', () => {
     batchErrorStocks,
     streamStage,
     streamStageData,
+    cockpitMode,
     hasResult,
     marketStatus,
     riskAssessment,
@@ -323,12 +464,13 @@ export const useStockStore = defineStore('stock', () => {
     runBatchAnalysis,
     runBatchQuickAnalysis,
     cancelBatchAnalysis,
-    runAnalysisStream,
     cancelStreamAnalysis,
     loadWatchlist,
     addStock,
     removeStock,
     updateStock,
     clearResult,
+    addLog,
+    clearLogs,
   }
 })

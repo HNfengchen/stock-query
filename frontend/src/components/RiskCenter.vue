@@ -70,18 +70,18 @@ const tailRiskType = computed(() => {
         <div class="risk-item">
           <span class="risk-key">信号翻转率</span>
           <span class="risk-val font-mono">
-            {{ risk.stressTest.signalFlipRate != null ? (risk.stressTest.signalFlipRate * 100).toFixed(1) + '%' : '-' }}
+            {{ risk.stressTest.signal_flip_rate != null ? (risk.stressTest.signal_flip_rate * 100).toFixed(1) + '%' : '-' }}
           </span>
         </div>
         <div class="risk-item">
           <span class="risk-key">稳健性</span>
           <el-tag
-            v-if="risk.stressTest.isRobust != null"
-            :type="risk.stressTest.isRobust ? 'success' : 'danger'"
+            v-if="risk.stressTest.is_robust != null"
+            :type="risk.stressTest.is_robust ? 'success' : 'danger'"
             size="small"
             effect="dark"
           >
-            {{ risk.stressTest.isRobust ? '稳健' : '脆弱' }}
+            {{ risk.stressTest.is_robust ? '稳健' : '脆弱' }}
           </el-tag>
           <span v-else class="risk-val">-</span>
         </div>

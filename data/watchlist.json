@@ -6,8 +6,8 @@
     "cost_price": 11.3,
     "added_at": "2026-05-07T01:20:19.183550",
     "cached_signal": "持有",
-    "cached_signal_score": 0.573,
-    "cached_signal_time": "2026-05-17T00:11:29.266604"
+    "cached_signal_score": 0.64,
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "601515",
@@ -18,7 +18,7 @@
     "updated_at": "2026-05-11T23:13:43.521551",
     "cached_signal": "观望",
     "cached_signal_score": 0.397,
-    "cached_signal_time": "2026-05-17T00:10:49.903079"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "601388",
@@ -28,7 +28,7 @@
     "added_at": "2026-05-07T02:41:19.746858",
     "cached_signal": "观望",
     "cached_signal_score": 0.397,
-    "cached_signal_time": "2026-05-17T00:11:25.296225"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "002108",
@@ -38,7 +38,7 @@
     "added_at": "2026-05-07T02:41:50.489477",
     "cached_signal": "观望",
     "cached_signal_score": 0.328,
-    "cached_signal_time": "2026-05-17T00:10:51.336276"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "600152",
@@ -48,7 +48,7 @@
     "added_at": "2026-05-07T02:42:26.893189",
     "cached_signal": "观望",
     "cached_signal_score": 0.656,
-    "cached_signal_time": "2026-05-17T00:10:39.491403"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "601016",
@@ -58,7 +58,7 @@
     "added_at": "2026-05-07T02:42:55.882032",
     "cached_signal": "可考虑买入",
     "cached_signal_score": 0.56,
-    "cached_signal_time": "2026-05-17T00:10:52.742940"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "000630",
@@ -68,7 +68,7 @@
     "added_at": "2026-05-07T23:18:47.337445",
     "cached_signal": "观望",
     "cached_signal_score": 0.421,
-    "cached_signal_time": "2026-05-17T00:10:56.036881"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "000981",
@@ -78,7 +78,7 @@
     "added_at": "2026-05-12T21:00:34.127491",
     "cached_signal": "观望",
     "cached_signal_score": 0.485,
-    "cached_signal_time": "2026-05-17T00:10:39.491403"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "002340",
@@ -88,7 +88,7 @@
     "added_at": "2026-05-14T02:02:49.347595",
     "cached_signal": "观望",
     "cached_signal_score": 0.33,
-    "cached_signal_time": "2026-05-17T00:10:39.491403"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "601898",
@@ -98,7 +98,7 @@
     "added_at": "2026-05-14T02:04:06.968450",
     "cached_signal": "观望",
     "cached_signal_score": 0.557,
-    "cached_signal_time": "2026-05-17T00:10:39.491403"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   },
   {
     "stock_code": "603993",
@@ -108,6 +108,6 @@
     "added_at": "2026-05-14T03:16:24.939383",
     "cached_signal": "观望",
     "cached_signal_score": 0.391,
-    "cached_signal_time": "2026-05-17T00:10:39.491403"
+    "cached_signal_time": "2026-05-18T00:38:02.906350"
   }
 ]

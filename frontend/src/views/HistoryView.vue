@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, onUnmounted } from 'vue'
 import { useStockStore } from '@/stores/stockStore'
 import { useRouter } from 'vue-router'
-import type { AnalysisRequest } from '@/types'
+import type { AnalysisRequest, WatchlistItem } from '@/types'
 import { DataAnalysis } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
@@ -11,7 +11,7 @@ const router = useRouter()
 
 const dialogVisible = ref(false)
 const editDialogVisible = ref(false)
-const editingStock = ref<any>(null)
+const editingStock = ref<WatchlistItem | null>(null)
 const batchStartTime = ref<number | null>(null)
 const tickCounter = ref(0)
 let tickTimer: ReturnType<typeof setInterval> | null = null
@@ -33,7 +33,7 @@ onUnmounted(() => { stopTick() })
 const newStock = ref<AnalysisRequest>({
   stock_input: '',
   position_status: '未持有',
-  cost_price: null,
+  cost_price: undefined,
 })
 
 const isBatchAnalyzing = computed(() => store.loading && store.batchProgress.status === 'analyzing')
@@ -67,7 +67,7 @@ onMounted(() => {
 })
 
 function openAddDialog() {
-  newStock.value = { stock_input: '', position_status: '未持有', cost_price: null }
+  newStock.value = { stock_input: '', position_status: '未持有', cost_price: undefined }
   dialogVisible.value = true
 }
 
@@ -81,14 +81,14 @@ async function confirmAdd() {
   }
 }
 
-function analyzeStock(item: any) {
+function analyzeStock(item: WatchlistItem) {
   const query: Record<string, string> = { code: item.stock_code }
   if (item.position_status) query.position = item.position_status
   if (item.cost_price) query.cost = String(item.cost_price)
   router.push({ path: '/', query })
 }
 
-function openEdit(item: any) {
+function openEdit(item: WatchlistItem) {
   editingStock.value = { ...item }
   editDialogVisible.value = true
 }

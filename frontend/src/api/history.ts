@@ -3,7 +3,7 @@ import type { WatchlistItem, StockInput } from '@/types'
 
 const api = axios.create({
   baseURL: '',
-  timeout: 30000,
+  timeout: 60000,
 })
 
 export async function getWatchlist(): Promise<WatchlistItem[]> {

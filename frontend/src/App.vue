@@ -3,16 +3,18 @@ import { RouterView } from 'vue-router'
 import NavHeader from './components/NavHeader.vue'
 import SideWatchlist from './components/SideWatchlist.vue'
 import { ref } from 'vue'
+import { useStockStore } from './stores/stockStore'
 
 const sidebarCollapsed = ref(false)
+const stockStore = useStockStore()
 </script>
 
 <template>
   <div class="app-container">
     <NavHeader />
     <div class="main-layout">
-      <SideWatchlist v-model:collapsed="sidebarCollapsed" />
-      <main class="content-area" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+      <SideWatchlist v-if="!stockStore.cockpitMode" v-model:collapsed="sidebarCollapsed" />
+      <main class="content-area" :class="{ 'sidebar-collapsed': sidebarCollapsed && !stockStore.cockpitMode, 'cockpit-mode': stockStore.cockpitMode }">
         <RouterView />
       </main>
     </div>
@@ -56,6 +58,10 @@ body {
 
 .content-area.sidebar-collapsed {
   margin-left: 56px;
+}
+
+.content-area.cockpit-mode {
+  margin-left: 0;
 }
 
 @media (max-width: 768px) {

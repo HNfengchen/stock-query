@@ -27,6 +27,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Celery 初始化失败: {e}，使用同步模式")
     yield
+    try:
+        from backend.routers.analysis import _executor
+        _executor.shutdown(wait=True)
+        logger.info("ThreadPoolExecutor 已关闭")
+    except Exception as e:
+        logger.warning(f"ThreadPoolExecutor 关闭失败: {e}")
 
 
 app = FastAPI(title="Stock Query API", lifespan=lifespan)

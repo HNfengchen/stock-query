@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useStockStore } from '@/stores/stockStore'
@@ -12,6 +12,7 @@ import MarketStatusPanel from '@/components/MarketStatusPanel.vue'
 import RiskCenter from '@/components/RiskCenter.vue'
 import PredictionCenter from '@/components/PredictionCenter.vue'
 import ValidationPanel from '@/components/ValidationPanel.vue'
+import AnalysisLogPanel from '@/components/AnalysisLogPanel.vue'
 import type { AnalysisRequest } from '@/types'
 import { fmtNum, fmtMarketCap, fmtVolume } from '@/utils/format'
 
@@ -21,11 +22,23 @@ const store = useStockStore()
 const form = ref<AnalysisRequest>({
   stock_input: '',
   position_status: '未持有',
-  cost_price: null,
+  cost_price: undefined,
 })
 
 const leftCollapsed = ref(false)
 const rightCollapsed = ref(false)
+const logPanelRef = ref<InstanceType<typeof AnalysisLogPanel> | null>(null)
+
+onMounted(() => { store.cockpitMode = true })
+onUnmounted(() => { store.cockpitMode = false })
+
+watch(() => store.loading, (val) => {
+  if (val) {
+    nextTick(() => {
+      logPanelRef.value?.expand()
+    })
+  }
+})
 
 let lastAnalyzedCode = ''
 let lastAnalyzedPosition = ''
@@ -44,19 +57,25 @@ watch(
     lastAnalyzedCost = sCost
     form.value.stock_input = sCode
     form.value.position_status = (sPosition || '未持有') as '已持有' | '未持有'
-    form.value.cost_price = sCost ? parseFloat(sCost) : null
+    form.value.cost_price = sCost ? parseFloat(sCost) : undefined
     doAnalyze()
   },
   { immediate: true },
 )
 
 async function doAnalyze() {
-  if (!form.value.stock_input.trim()) return
+  const stockInput = form.value.stock_input.trim()
+  if (!stockInput) {
+    ElMessage.warning('请输入股票代码或名称')
+    return
+  }
+  store.clearLogs()
   try {
     await store.runAnalysis(form.value)
     await store.loadWatchlist()
-  } catch (e) {
-    console.error(e)
+  } catch (e: any) {
+    console.error('分析失败:', e)
+    ElMessage.error(e?.message || '分析失败，请稍后重试')
   }
 }
 
@@ -111,16 +130,19 @@ const emptyFundFlow = {
   <div class="analysis-view">
     <StockInput v-model="form" :loading="store.loading" @analyze="handleAnalyze" />
 
-    <div v-if="store.loading" class="loading-state">
-      <div class="loading-spinner">
-        <div class="spinner-ring" />
-        <div class="spinner-ring" />
-        <div class="spinner-ring" />
+    <div v-if="store.loading || store.analysisLogs.length > 0" class="log-section">
+      <div v-if="store.loading" class="loading-indicator">
+        <div class="loading-spinner">
+          <div class="spinner-ring" />
+          <div class="spinner-ring" />
+          <div class="spinner-ring" />
+        </div>
+        <span class="loading-text">正在分析中...</span>
       </div>
-      <span class="loading-text">正在分析中...</span>
+      <AnalysisLogPanel ref="logPanelRef" :logs="store.analysisLogs" />
     </div>
 
-    <div v-else-if="store.hasResult && store.currentResult" class="result-container">
+    <div v-if="store.hasResult && store.currentResult" class="result-container">
       <div class="stock-header">
         <div class="header-top">
           <div class="stock-info">
@@ -128,7 +150,7 @@ const emptyFundFlow = {
               <span class="stock-name">{{ store.currentResult.stock_name }}</span>
               <span class="stock-code">{{ store.currentResult.stock_code }}</span>
             </div>
-            <div v-if="store.currentResult.price_prediction?.current" class="stock-price-row">
+            <div v-if="store.currentResult.price_prediction?.current != null" class="stock-price-row">
               <span class="current-price font-mono">
                 {{ store.currentResult.price_prediction.current.toFixed(2) }}
               </span>
@@ -266,7 +288,7 @@ const emptyFundFlow = {
       </div>
     </div>
 
-    <div v-else class="empty-state">
+    <div v-if="!store.loading && store.analysisLogs.length === 0 && !store.hasResult" class="empty-state">
       <div class="empty-icon">
         <el-icon><TrendCharts /></el-icon>
       </div>
@@ -282,13 +304,19 @@ const emptyFundFlow = {
   margin: 0 auto;
 }
 
-.loading-state {
+.log-section {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  padding: 16px 20px;
+  gap: 12px;
+}
+
+.loading-indicator {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 100px 20px;
-  gap: 20px;
+  gap: 12px;
+  padding: 8px 0;
 }
 
 .loading-spinner {
@@ -496,6 +524,7 @@ const emptyFundFlow = {
   display: flex;
   align-items: flex-start;
   transition: width 0.3s ease;
+  overflow: hidden;
 }
 
 .cockpit-left.collapsed {
@@ -510,6 +539,7 @@ const emptyFundFlow = {
   display: flex;
   align-items: flex-start;
   transition: width 0.3s ease;
+  overflow: hidden;
 }
 
 .cockpit-right.collapsed {

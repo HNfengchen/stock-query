@@ -472,4 +472,11 @@ def hybrid_predict(
         if key in rule_prediction:
             result[key] = rule_prediction[key]
 
+    hybrid_trend = result.get("trend")
+    if hybrid_trend:
+        if "day1" in result and isinstance(result["day1"], dict):
+            result["day1"]["trend"] = hybrid_trend
+        if "day2" in result and isinstance(result["day2"], dict):
+            result["day2"]["trend"] = hybrid_trend
+
     return result

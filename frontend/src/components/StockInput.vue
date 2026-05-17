@@ -50,7 +50,8 @@ function onAnalyze() {
       <div v-if="local.position_status === '已持有'" class="input-group input-cost">
         <label>成本价</label>
         <el-input-number
-          v-model="local.cost_price"
+          :model-value="local.cost_price"
+          @update:model-value="(v: number | undefined) => local.cost_price = v"
           :precision="2"
           :step="0.1"
           :min="0"

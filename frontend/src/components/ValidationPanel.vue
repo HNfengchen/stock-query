@@ -63,12 +63,12 @@ const confidenceDesc = computed(() => {
 const stressTest = computed(() => props.validation.stress_test)
 
 const flipRatePct = computed(() => {
-  if (!stressTest.value) return 0
+  if (!stressTest.value || stressTest.value.signal_flip_rate == null) return null
   return Math.round(stressTest.value.signal_flip_rate * 100)
 })
 
 const flipRateColor = computed(() => {
-  if (!stressTest.value) return 'var(--text-muted)'
+  if (!stressTest.value || stressTest.value.signal_flip_rate == null) return 'var(--text-muted)'
   const rate = stressTest.value.signal_flip_rate
   if (rate < 0.15) return 'var(--color-up)'
   if (rate < 0.30) return 'var(--color-warn)'
@@ -76,7 +76,7 @@ const flipRateColor = computed(() => {
 })
 
 const flipRateType = computed(() => {
-  if (!stressTest.value) return 'info'
+  if (!stressTest.value || stressTest.value.signal_flip_rate == null) return 'info'
   const rate = stressTest.value.signal_flip_rate
   if (rate < 0.15) return 'success'
   if (rate < 0.30) return 'warning'
@@ -87,7 +87,7 @@ function hasItems(list: string[] | undefined | null): boolean {
   return Array.isArray(list) && list.length > 0
 }
 
-function formatMetric(value: number | undefined, fallback: string = 'N/A'): string {
+function formatMetric(value: number | null | undefined, fallback: string = 'N/A'): string {
   if (value === undefined || value === null || !isFinite(value)) return fallback
   return value.toFixed(2)
 }
@@ -174,7 +174,7 @@ function formatMetric(value: number | undefined, fallback: string = 'N/A'): stri
           <div class="stress-item">
             <span class="stress-item-label">信号翻转率</span>
             <el-tag :type="flipRateType" effect="dark" size="small">
-              {{ flipRatePct }}%
+              {{ flipRatePct != null ? flipRatePct + '%' : '-' }}
             </el-tag>
           </div>
           <div class="stress-item">
@@ -192,10 +192,10 @@ function formatMetric(value: number | undefined, fallback: string = 'N/A'): stri
             <span class="stress-metric-val">{{ stressTest.simulation_count }}</span>
           </div>
         </div>
-        <div class="stress-metrics">
+        <div v-if="stressTest.risk_metrics" class="stress-metrics">
           <div class="stress-metric">
             <span class="stress-metric-label">最大回撤</span>
-            <span class="stress-metric-val">{{ formatMetric(stressTest.risk_metrics.max_drawdown * 100) }}%</span>
+            <span class="stress-metric-val">{{ stressTest.risk_metrics.max_drawdown != null ? formatMetric(stressTest.risk_metrics.max_drawdown * 100) + '%' : '-' }}</span>
           </div>
           <div class="stress-metric">
             <span class="stress-metric-label">Sharpe</span>

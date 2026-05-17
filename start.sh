@@ -7,6 +7,25 @@ LOG_DIR="$PROJECT_DIR/logs"
 
 mkdir -p "$PID_DIR" "$LOG_DIR"
 
+free_port() {
+    local port=$1
+    local pid=$(ss -tlnp 2>/dev/null | grep ":${port} " | grep -oP 'pid=\K[0-9]+' | head -1)
+    if [ -n "$pid" ]; then
+        echo "[端口] $port 被进程 $pid 占用，正在终止..."
+        kill "$pid" 2>/dev/null || true
+        sleep 2
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+            sleep 1
+        fi
+        if ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+            fuser -k "${port}/tcp" 2>/dev/null || true
+            sleep 1
+        fi
+        echo "[端口] $port 已释放"
+    fi
+}
+
 check_backend() {
     if [ -f "$PID_DIR/backend.pid" ]; then
         pid=$(cat "$PID_DIR/backend.pid")
@@ -34,6 +53,7 @@ start_backend() {
     fi
 
     echo "[后端] 正在启动..."
+    free_port "$BACKEND_PORT"
     cd "$PROJECT_DIR"
 
     nohup python -m uvicorn backend.app:app \
@@ -63,15 +83,15 @@ start_frontend() {
     fi
 
     echo "[前端] 正在启动..."
+    free_port "$FRONTEND_PORT"
     cd "$PROJECT_DIR/frontend"
 
-    if [ ! -d "dist" ]; then
-        echo "[前端] 构建前端..."
-        if [ ! -d "node_modules" ]; then
-            npm install --production=false > "$LOG_DIR/npm_install.log" 2>&1
-        fi
-        npm run build > "$LOG_DIR/frontend_build.log" 2>&1
+    echo "[前端] 构建前端..."
+    if [ ! -d "node_modules" ]; then
+        npm install --production=false > "$LOG_DIR/npm_install.log" 2>&1
     fi
+    rm -rf dist
+    npm run build > "$LOG_DIR/frontend_build.log" 2>&1
 
     export BACKEND_URL="http://127.0.0.1:$BACKEND_PORT"
     export FRONTEND_PORT="$FRONTEND_PORT"
