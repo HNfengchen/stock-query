@@ -5,6 +5,7 @@
 import sys
 import os
 import argparse
+import logging
 import yaml
 from datetime import datetime
 
@@ -14,16 +15,28 @@ from scripts.core.data_fetcher import DataFetcher, InvalidStockCodeError
 from scripts.core.analyzer import StockAnalyzer
 from scripts.core.report_generator import ReportGenerator
 
+_cli_logger = logging.getLogger("stock_query")
+
 
 def load_config(config_path: str = None) -> dict:
-    """加载配置文件"""
     if config_path is None:
         config_path = os.path.join(
             os.path.dirname(__file__), "..", "config", "config.yaml"
         )
 
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+
+    db_password = os.environ.get("DB_PASSWORD")
+    if db_password:
+        if "database" not in config:
+            config["database"] = {}
+        config["database"]["password"] = db_password
+    else:
+        if config.get("database", {}).get("password"):
+            _cli_logger.warning("数据库密码使用配置文件默认值，建议设置 DB_PASSWORD 环境变量")
+
+    return config
 
 
 def main():
@@ -94,14 +107,18 @@ def main():
 
     try:
         fetcher = DataFetcher(config)
+        print("  [1/3] 数据获取中...", flush=True)
         data = fetcher.fetch_all_data(args.stock)
+        print("  [1/3] 数据获取完成", flush=True)
 
         print(f"股票：{data['stock_name']} ({data['stock_code']})")
 
         analyzer = StockAnalyzer(config)
+        print("  [2/3] 分析计算中...", flush=True)
         analysis = analyzer.generate_recommendation(
             data, position_status=position_status, cost_price=cost_price
         )
+        print("  [2/3] 分析计算完成", flush=True)
 
         signal = analysis["trading_signal"]
         print(f"交易信号：{signal['signal_text']} (评分：{signal['score']})")
@@ -109,6 +126,7 @@ def main():
         if args.backtest:
             try:
                 from backend.services.backtest_service import run_prediction_validation
+                print("  [回测] 预测验证中...", flush=True)
                 bt_result = run_prediction_validation(data.get("stock_code", ""))
                 stats = bt_result.get("statistics", {})
                 print(f"\n=== 预测验证结果 ===")
@@ -121,7 +139,9 @@ def main():
                 print(f"预测验证失败: {e}")
 
         generator = ReportGenerator(config)
+        print("  [3/3] 报告生成中...", flush=True)
         html = generator.generate_html_report(data, analysis, position_status=position_status)
+        print("  [3/3] 报告生成完成", flush=True)
 
         stock_code = data["stock_code"]
         output_path = generator.save_report(html, stock_code, output_dir)

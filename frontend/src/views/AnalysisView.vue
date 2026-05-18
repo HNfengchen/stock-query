@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useStockStore } from '@/stores/stockStore'
+import { useAsyncState } from '@/composables/useAsyncState'
 import StockInput from '@/components/StockInput.vue'
 import KlineChart from '@/components/KlineChart.vue'
 import TechnicalChart from '@/components/TechnicalChart.vue'
@@ -13,11 +14,12 @@ import RiskCenter from '@/components/RiskCenter.vue'
 import PredictionCenter from '@/components/PredictionCenter.vue'
 import ValidationPanel from '@/components/ValidationPanel.vue'
 import AnalysisLogPanel from '@/components/AnalysisLogPanel.vue'
-import type { AnalysisRequest } from '@/types'
+import type { AnalysisRequest, AnalysisResult, StockInfo } from '@/types'
 import { fmtNum, fmtMarketCap, fmtVolume } from '@/utils/format'
 
 const route = useRoute()
 const store = useStockStore()
+const analysisState = useAsyncState<AnalysisResult>()
 
 const form = ref<AnalysisRequest>({
   stock_input: '',
@@ -28,9 +30,6 @@ const form = ref<AnalysisRequest>({
 const leftCollapsed = ref(false)
 const rightCollapsed = ref(false)
 const logPanelRef = ref<InstanceType<typeof AnalysisLogPanel> | null>(null)
-
-onMounted(() => { store.cockpitMode = true })
-onUnmounted(() => { store.cockpitMode = false })
 
 watch(() => store.loading, (val) => {
   if (val) {
@@ -70,12 +69,18 @@ async function doAnalyze() {
     return
   }
   store.clearLogs()
+  analysisState.toLoading()
   try {
     await store.runAnalysis(form.value)
+    if (store.currentResult) {
+      analysisState.toSuccess(store.currentResult)
+    }
     await store.loadWatchlist()
   } catch (e: any) {
     console.error('分析失败:', e)
-    ElMessage.error(e?.message || '分析失败，请稍后重试')
+    const message = e?.message || '分析失败，请稍后重试'
+    analysisState.toError(message)
+    ElMessage.error(message)
   }
 }
 
@@ -84,6 +89,11 @@ function handleAnalyze() {
   lastAnalyzedPosition = form.value.position_status
   lastAnalyzedCost = String(form.value.cost_price ?? '')
   doAnalyze()
+}
+
+function handleCancel() {
+  store.cancelAnalysis()
+  analysisState.reset()
 }
 
 async function addToWatchlist() {
@@ -100,7 +110,7 @@ async function addToWatchlist() {
   }
 }
 
-const si = computed(() => store.currentResult?.stock_info || {} as Record<string, any>)
+const si = computed<StockInfo>(() => store.currentResult?.stock_info ?? {})
 
 const changePct = computed(() => {
   const v = Number(si.value['涨跌幅'])
@@ -124,25 +134,52 @@ const emptyTechnical = {
 const emptyFundFlow = {
   dates: [], main_flow: [], main_flow_ratio: [], small_flow: [], change_pct: [],
 }
+
+function stageLabel(stage: string): string {
+  const map: Record<string, string> = {
+    stage_basic: '基础数据',
+    stage_technical: '技术指标',
+    stage_risk: '风险评估',
+    stage_prediction: '预测分析',
+    stage_complete: '完成',
+  }
+  return map[stage] || stage
+}
 </script>
 
 <template>
   <div class="analysis-view">
-    <StockInput v-model="form" :loading="store.loading" @analyze="handleAnalyze" />
+    <StockInput v-model="form" :loading="analysisState.isLoading.value" @analyze="handleAnalyze" @cancel="handleCancel" />
 
-    <div v-if="store.loading || store.analysisLogs.length > 0" class="log-section">
-      <div v-if="store.loading" class="loading-indicator">
+    <div v-if="analysisState.isLoading.value" class="log-section">
+      <div class="loading-indicator">
         <div class="loading-spinner">
           <div class="spinner-ring" />
           <div class="spinner-ring" />
           <div class="spinner-ring" />
         </div>
         <span class="loading-text">正在分析中...</span>
+        <span v-if="store.streamStage" class="loading-stage">{{ stageLabel(store.streamStage) }}</span>
       </div>
       <AnalysisLogPanel ref="logPanelRef" :logs="store.analysisLogs" />
     </div>
 
-    <div v-if="store.hasResult && store.currentResult" class="result-container">
+    <div v-else-if="analysisState.isError.value" class="error-section">
+      <div class="error-card">
+        <el-icon class="error-icon"><WarningFilled /></el-icon>
+        <div class="error-content">
+          <h3>分析失败</h3>
+          <p>{{ analysisState.error.value }}</p>
+        </div>
+        <el-button type="primary" size="small" @click="handleAnalyze">
+          <el-icon><RefreshRight /></el-icon>
+          <span>重试</span>
+        </el-button>
+      </div>
+      <AnalysisLogPanel v-if="store.analysisLogs.length > 0" ref="logPanelRef" :logs="store.analysisLogs" />
+    </div>
+
+    <div v-if="analysisState.isSuccess.value && store.currentResult" class="result-container">
       <div class="stock-header">
         <div class="header-top">
           <div class="stock-info">
@@ -288,7 +325,7 @@ const emptyFundFlow = {
       </div>
     </div>
 
-    <div v-if="!store.loading && store.analysisLogs.length === 0 && !store.hasResult" class="empty-state">
+    <div v-if="analysisState.isIdle.value" class="empty-state">
       <div class="empty-icon">
         <el-icon><TrendCharts /></el-icon>
       </div>
@@ -328,7 +365,7 @@ const emptyFundFlow = {
 .spinner-ring {
   position: absolute;
   border: 2px solid transparent;
-  border-top-color: var(--color-up);
+  border-top-color: var(--color-up, #26a69a);
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -340,14 +377,14 @@ const emptyFundFlow = {
 
 .spinner-ring:nth-child(2) {
   inset: 6px;
-  border-top-color: var(--color-accent);
+  border-top-color: var(--color-accent, #42a5f5);
   animation-duration: 0.9s;
   animation-direction: reverse;
 }
 
 .spinner-ring:nth-child(3) {
   inset: 12px;
-  border-top-color: var(--color-warn);
+  border-top-color: var(--color-warn, #ffa726);
   animation-duration: 0.6s;
 }
 
@@ -356,8 +393,57 @@ const emptyFundFlow = {
 }
 
 .loading-text {
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-size: 14px;
+}
+
+.loading-stage {
+  font-size: 12px;
+  color: var(--color-up, #26a69a);
+  padding: 2px 10px;
+  background: rgba(0, 212, 170, 0.08);
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.error-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.error-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 24px;
+  background: rgba(255, 71, 87, 0.06);
+  border: 1px solid rgba(255, 71, 87, 0.15);
+  border-radius: var(--radius-md, 10px);
+}
+
+.error-icon {
+  font-size: 32px;
+  color: var(--color-down, #ef5350);
+  flex-shrink: 0;
+}
+
+.error-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.error-content h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-down, #ef5350);
+  margin-bottom: 4px;
+}
+
+.error-content p {
+  font-size: 13px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .result-container {
@@ -375,9 +461,9 @@ const emptyFundFlow = {
   gap: 16px;
   margin-bottom: 20px;
   padding: 16px 20px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
 }
 
 .header-top {
@@ -401,12 +487,12 @@ const emptyFundFlow = {
 .stock-name {
   font-size: 20px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
 }
 
 .stock-code {
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-family: 'SF Mono', 'JetBrains Mono', monospace;
 }
 
@@ -419,13 +505,13 @@ const emptyFundFlow = {
 .current-price {
   font-size: 28px;
   font-weight: 700;
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
   letter-spacing: -0.03em;
 }
 
 .price-unit {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
 }
 
@@ -436,15 +522,15 @@ const emptyFundFlow = {
 }
 
 .price-change.up {
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .price-change.down {
-  color: var(--color-down);
+  color: var(--color-down, #ef5350);
 }
 
 .add-btn {
-  color: var(--color-up) !important;
+  color: var(--color-up, #26a69a) !important;
   font-weight: 500;
 }
 
@@ -457,7 +543,7 @@ const emptyFundFlow = {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
   gap: 0;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   padding-top: 12px;
 }
 
@@ -476,7 +562,7 @@ const emptyFundFlow = {
 
 .metric-label {
   font-size: 10px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
   letter-spacing: 0.02em;
   white-space: nowrap;
@@ -485,28 +571,28 @@ const emptyFundFlow = {
 .metric-value {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
   letter-spacing: -0.01em;
 }
 
 .metric-value.up {
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .metric-value.down {
-  color: var(--color-down);
+  color: var(--color-down, #ef5350);
 }
 
 .metric-value.industry {
   font-size: 12px;
-  color: var(--color-accent);
+  color: var(--color-accent, #42a5f5);
   font-family: inherit;
 }
 
 .metric-divider {
   grid-column: 1 / -1;
   height: 1px;
-  background: var(--border-subtle);
+  background: var(--border-subtle, rgba(255, 255, 255, 0.05));
   margin: 4px 0;
 }
 
@@ -552,20 +638,20 @@ const emptyFundFlow = {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-sm, 6px);
   cursor: pointer;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-size: 12px;
   flex-shrink: 0;
-  transition: var(--transition-fast);
+  transition: var(--transition-fast, 0.15s ease);
   z-index: 1;
 }
 
 .sidebar-toggle:hover {
-  border-color: var(--border-active);
-  color: var(--text-primary);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
 }
 
 .sidebar-toggle .el-icon.flipped {
@@ -612,15 +698,15 @@ const emptyFundFlow = {
 }
 
 .chart-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 16px;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .chart-card:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .chart-main {
@@ -633,13 +719,13 @@ const emptyFundFlow = {
   justify-content: space-between;
   margin-bottom: 12px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .chart-title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   letter-spacing: 0.03em;
 }
 
@@ -653,15 +739,15 @@ const emptyFundFlow = {
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .legend-item.up .legend-dot {
-  background: var(--color-up);
+  background: var(--color-up, #26a69a);
 }
 
 .legend-item.down .legend-dot {
-  background: var(--color-down);
+  background: var(--color-down, #ef5350);
 }
 
 .legend-dot {
@@ -676,7 +762,7 @@ const emptyFundFlow = {
   align-items: center;
   justify-content: center;
   padding: 120px 20px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   text-align: center;
 }
 
@@ -688,7 +774,7 @@ const emptyFundFlow = {
 
 .empty-state h3 {
   font-size: 18px;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   margin-bottom: 8px;
   font-weight: 600;
 }

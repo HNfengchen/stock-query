@@ -321,15 +321,15 @@ watch(() => props.data, (val) => {
 }
 
 .chart-cell {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 8px;
-  transition: var(--transition-fast);
+  transition: var(--transition-fast, 0.15s ease);
 }
 
 .chart-cell:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .chart {

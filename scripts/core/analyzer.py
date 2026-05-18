@@ -56,6 +56,7 @@ class StockAnalyzer:
 
         hmm_config = config.get("hmm", {})
         self._hmm_detector = None
+        self._regime_detector = None
         if hmm_config.get("enabled", False):
             self._hmm_detector = HMMRegimeDetector(
                 n_components=hmm_config.get("n_components", 4),
@@ -66,6 +67,9 @@ class StockAnalyzer:
                 self._hmm_detector.load(model_path)
             if self._hmm_detector.is_ready():
                 self._dynamic_weight_manager.set_hmm_detector(self._hmm_detector)
+            else:
+                from scripts.core.regime_detector import RegimeDetector
+                self._regime_detector = RegimeDetector(config=hmm_config)
 
         self._stress_test_config = config.get("stress_test", {})
         self._pending_stress_test = None
@@ -1624,6 +1628,40 @@ class StockAnalyzer:
                     }
                 except Exception as e:
                     analyzer_logger.warning(f"HMM状态预测失败: {e}")
+        elif self._regime_detector is not None:
+            history_df = all_data.get("history_data")
+            if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+                try:
+                    latest_close = float(history_df["收盘"].iloc[-1])
+                    prev_close = float(history_df["收盘"].iloc[-2]) if len(history_df) > 1 else latest_close
+                    change_pct = (latest_close - prev_close) / prev_close * 100 if prev_close != 0 else 0
+                    vol_col = "成交量" if "成交量" in history_df.columns else None
+                    volume_ratio = 1.0
+                    if vol_col and len(history_df) > 1:
+                        latest_vol = float(history_df[vol_col].iloc[-1])
+                        prev_vol = float(history_df[vol_col].iloc[-2])
+                        volume_ratio = latest_vol / prev_vol if prev_vol != 0 else 1.0
+                    boll = indicators.get("BOLL", {})
+                    bandwidth = boll.get("latest", {}).get("bandwidth") if isinstance(boll.get("latest"), dict) else None
+                    volatility_signal = "正常"
+                    if bandwidth is not None:
+                        if bandwidth < 10:
+                            volatility_signal = "低波动"
+                        elif bandwidth > 25:
+                            volatility_signal = "高波动"
+                    market_data = {
+                        "volatility_signal": volatility_signal,
+                        "volume_ratio": volume_ratio,
+                        "market_change_pct": change_pct,
+                    }
+                    regime = self._regime_detector.detect_regime(market_data)
+                    result["hmm_state"] = {
+                        "current_state": regime,
+                        "state_probabilities": {},
+                        "transition_matrix": None,
+                    }
+                except Exception as e:
+                    analyzer_logger.warning(f"规则市场状态检测失败: {e}")
 
         return result
 

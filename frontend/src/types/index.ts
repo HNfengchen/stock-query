@@ -152,6 +152,74 @@ export interface FundFlowData {
   change_pct: number[]
 }
 
+export interface IndicatorLatest {
+  DIF?: number
+  DEA?: number
+  bandwidth?: number
+  K?: number
+  D?: number
+  J?: number
+  [key: string]: unknown
+}
+
+export interface IndicatorEntry {
+  signal?: string
+  latest?: IndicatorLatest
+  [key: string]: unknown
+}
+
+export interface RSIEntry {
+  signal?: string
+  latest?: number
+  [key: string]: unknown
+}
+
+export interface DistributionWindow {
+  var_95?: { latest?: number | null; signal?: string }
+  var_99?: { latest?: number | null; signal?: string }
+  cvar_95?: { latest?: number | null }
+  cvar_99?: { latest?: number | null }
+  kurtosis?: { latest?: number | null; signal?: string }
+  [key: string]: unknown
+}
+
+export interface DistributionIndicators {
+  W20?: DistributionWindow
+  W60?: DistributionWindow
+  [key: string]: unknown
+}
+
+export interface Indicators {
+  MACD?: IndicatorEntry
+  RSI?: Record<string, RSIEntry>
+  KDJ?: IndicatorEntry
+  BOLL?: { latest?: { bandwidth: number; [key: string]: unknown }; signal?: string; [key: string]: unknown }
+  Distribution?: DistributionIndicators
+  [key: string]: unknown
+}
+
+export interface StockInfo {
+  '涨跌幅'?: number | string
+  '涨跌额'?: number | string
+  '今开'?: number | string
+  '昨收'?: number | string
+  '最高'?: number | string
+  '最低'?: number | string
+  '振幅'?: number | string
+  '换手率'?: number | string
+  '成交额'?: number | string
+  '市盈率-动态'?: number | string
+  '市净率'?: number | string
+  '总市值'?: number | string
+  '流通市值'?: number | string
+  '所属行业'?: string
+  [key: string]: unknown
+}
+
+export interface AnalysisDetails {
+  [key: string]: unknown
+}
+
 export interface AnalysisResult {
   stock_code: string
   stock_name: string
@@ -161,14 +229,14 @@ export interface AnalysisResult {
     sentiment_score: number
     overall_score: number
     recommendation: string
-    details: Record<string, any>
+    details: AnalysisDetails
   }
   trading_signal: TradingSignal
   price_prediction: PricePrediction
   validation?: AnalysisValidation
-  indicators: Record<string, any>
-  position_strategy: PositionStrategyHeld | PositionStrategyNotHeld | Record<string, any>
-  stock_info: Record<string, any>
+  indicators: Indicators
+  position_strategy: PositionStrategyHeld | PositionStrategyNotHeld
+  stock_info: StockInfo
   charts: {
     kline: KlineData
     technical: TechnicalChartData
@@ -318,7 +386,6 @@ export interface RiskAssessment {
   var99: number | null
   cvar95: number | null
   cvar99: number | null
-  stressTest: StressTestResult | null
   tailRiskWarning: string | null
 }
 
@@ -338,4 +405,6 @@ export interface PredictionResult {
   mlPrediction: MlPrediction | null
   alpha: number | null
   confidence: number | null
+  day1Trend: string | null
+  day2Trend: string | null
 }

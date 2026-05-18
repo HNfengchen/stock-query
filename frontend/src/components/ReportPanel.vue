@@ -1,16 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { AnalysisResult } from '@/types'
-import ValidationPanel from '@/components/ValidationPanel.vue'
+import type { AnalysisResult, PositionStrategyHeld, PositionStrategyNotHeld } from '@/types'
 import { getTrendTagType, getTrendClass, fmtNum } from '@/utils/format'
 
 const props = defineProps<{ result: AnalysisResult }>()
 
 const signalColor = computed(() => {
   const signal = props.result.trading_signal?.signal || ''
-  if (signal.includes('buy')) return 'var(--color-up)'
-  if (signal.includes('sell')) return 'var(--color-down)'
-  return 'var(--color-warn)'
+  if (signal.includes('buy')) return 'var(--color-up, #26a69a)'
+  if (signal.includes('sell')) return 'var(--color-down, #ef5350)'
+  return 'var(--color-warn, #ffa726)'
 })
 
 const signalBgClass = computed(() => {
@@ -56,12 +55,16 @@ const trendType = computed(() => {
   return 'warning'
 })
 
-const ps = computed<Record<string, any>>(() => props.result.position_strategy || ({} as any))
+const ps = computed<PositionStrategyHeld | PositionStrategyNotHeld>(() => props.result.position_strategy ?? ({} as PositionStrategyNotHeld))
 
-const isHeld = computed(() => ps.value.avg_cost != null)
+const isHeld = computed(() => 'avg_cost' in ps.value && ps.value.avg_cost != null)
+
+const heldPs = computed<PositionStrategyHeld>(() => isHeld.value ? ps.value as PositionStrategyHeld : ({} as PositionStrategyHeld))
+
+const notHeldPs = computed<PositionStrategyNotHeld>(() => !isHeld.value ? ps.value as PositionStrategyNotHeld : ({} as PositionStrategyNotHeld))
 
 const profitBelowCost = computed(() => {
-  return isHeld.value && ps.value.stop_profit_price != null && ps.value.avg_cost != null && ps.value.stop_profit_price < ps.value.avg_cost
+  return isHeld.value && heldPs.value.stop_profit_price != null && heldPs.value.avg_cost != null && heldPs.value.stop_profit_price < heldPs.value.avg_cost
 })
 
 const indicatorsExpanded = ref(false)
@@ -113,15 +116,15 @@ const indicatorsExpanded = ref(false)
         <div class="strat-grid">
           <div class="strat-item">
             <span class="strat-label">成本</span>
-            <span class="strat-val font-mono">{{ fmtNum(ps.avg_cost) }}</span>
+            <span class="strat-val font-mono">{{ fmtNum(heldPs.avg_cost) }}</span>
           </div>
           <div class="strat-item">
             <span class="strat-label">盈亏</span>
             <span
               class="strat-val font-mono"
-              :class="(ps.price_change_pct || 0) >= 0 ? 'profit' : 'loss'"
+              :class="(heldPs.price_change_pct || 0) >= 0 ? 'profit' : 'loss'"
             >
-              {{ fmtNum(ps.price_change_pct) }}%
+              {{ fmtNum(heldPs.price_change_pct) }}%
             </span>
           </div>
           <div class="strat-item">
@@ -130,21 +133,21 @@ const indicatorsExpanded = ref(false)
               class="strat-val font-mono"
               :class="profitBelowCost ? 'warn' : 'profit'"
             >
-              {{ fmtNum(ps.stop_profit_price) }}
+              {{ fmtNum(heldPs.stop_profit_price) }}
             </span>
           </div>
           <div class="strat-item">
             <span class="strat-label">止损</span>
-            <span class="strat-val loss font-mono">{{ fmtNum(ps.stop_loss_price) }}</span>
+            <span class="strat-val loss font-mono">{{ fmtNum(heldPs.stop_loss_price) }}</span>
           </div>
         </div>
         <div class="strat-action">
           <el-tag
-            :type="ps.position_adjust?.includes('减仓') ? 'danger' : ps.position_adjust?.includes('加仓') || ps.position_adjust?.includes('补仓') ? 'success' : 'warning'"
+            :type="heldPs.position_adjust?.includes('减仓') ? 'danger' : heldPs.position_adjust?.includes('加仓') || heldPs.position_adjust?.includes('补仓') ? 'success' : 'warning'"
             effect="dark"
             size="small"
           >
-            {{ ps.position_adjust }}
+            {{ heldPs.position_adjust }}
           </el-tag>
         </div>
       </template>
@@ -153,36 +156,34 @@ const indicatorsExpanded = ref(false)
           <div class="strat-item">
             <span class="strat-label">时机</span>
             <el-tag
-              :type="ps.buy_timing?.includes('不建议') ? 'danger' : ps.buy_timing?.includes('建议') || ps.buy_timing?.includes('可考虑') ? 'success' : 'warning'"
+              :type="notHeldPs.buy_timing?.includes('不建议') ? 'danger' : notHeldPs.buy_timing?.includes('建议') || notHeldPs.buy_timing?.includes('可考虑') ? 'success' : 'warning'"
               effect="dark"
               size="small"
             >
-              {{ ps.buy_timing }}
+              {{ notHeldPs.buy_timing }}
             </el-tag>
           </div>
           <div class="strat-item">
             <span class="strat-label">仓位</span>
-            <span class="strat-val font-mono">{{ ps.position_size_pct }}%</span>
+            <span class="strat-val font-mono">{{ notHeldPs.position_size_pct }}%</span>
           </div>
           <div class="strat-item">
             <span class="strat-label">止损</span>
-            <span class="strat-val loss font-mono">{{ fmtNum(ps.stop_loss_price) }}</span>
+            <span class="strat-val loss font-mono">{{ fmtNum(notHeldPs.stop_loss_price) }}</span>
           </div>
           <div class="strat-item">
             <span class="strat-label">风险</span>
             <el-tag
-              :type="ps.risk_level?.includes('低') ? 'success' : ps.risk_level?.includes('高') ? 'danger' : 'warning'"
+              :type="notHeldPs.risk_level?.includes('低') ? 'success' : notHeldPs.risk_level?.includes('高') ? 'danger' : 'warning'"
               effect="dark"
               size="small"
             >
-              {{ ps.risk_level }}
+              {{ notHeldPs.risk_level }}
             </el-tag>
           </div>
         </div>
       </template>
     </div>
-
-    <ValidationPanel v-if="result.validation" :validation="result.validation" />
 
     <div class="indicators-section">
       <div class="indicators-toggle" @click="indicatorsExpanded = !indicatorsExpanded">
@@ -259,27 +260,27 @@ const indicatorsExpanded = ref(false)
   align-items: center;
   justify-content: space-between;
   padding: 20px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  border-left: 3px solid var(--color-up);
-  transition: var(--transition-base);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
+  border-left: 3px solid var(--color-up, #26a69a);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .signal-hero:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .signal-hero.signal-bull {
-  border-left-color: var(--color-up);
+  border-left-color: var(--color-up, #26a69a);
 }
 
 .signal-hero.signal-bear {
-  border-left-color: var(--color-down);
+  border-left-color: var(--color-down, #ef5350);
 }
 
 .signal-hero.signal-neutral {
-  border-left-color: var(--color-warn);
+  border-left-color: var(--color-warn, #ffa726);
 }
 
 .signal-hero-left {
@@ -290,7 +291,7 @@ const indicatorsExpanded = ref(false)
 
 .signal-label {
   font-size: 10px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -304,12 +305,12 @@ const indicatorsExpanded = ref(false)
 
 .signal-score {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .score-val {
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
 }
 
 .decision-badges {
@@ -317,9 +318,9 @@ const indicatorsExpanded = ref(false)
   gap: 16px;
   flex-wrap: wrap;
   padding: 12px 16px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
 }
 
 .badge-item {
@@ -330,31 +331,31 @@ const indicatorsExpanded = ref(false)
 
 .badge-label {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
 }
 
 .badge-val {
   font-size: 13px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
 }
 
 .strategy-section {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 16px;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .strategy-section:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .section-label {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -376,7 +377,7 @@ const indicatorsExpanded = ref(false)
 
 .strat-label {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   width: 36px;
   flex-shrink: 0;
   font-weight: 500;
@@ -385,29 +386,29 @@ const indicatorsExpanded = ref(false)
 .strat-val {
   font-size: 14px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
 }
 
-.strat-val.profit { color: var(--color-up); }
-.strat-val.loss { color: var(--color-down); }
-.strat-val.warn { color: var(--color-warn); }
+.strat-val.profit { color: var(--color-up, #26a69a); }
+.strat-val.loss { color: var(--color-down, #ef5350); }
+.strat-val.warn { color: var(--color-warn, #ffa726); }
 
 .strat-action {
   text-align: center;
   padding-top: 8px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .indicators-section {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   overflow: hidden;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .indicators-section:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .indicators-toggle {
@@ -421,7 +422,7 @@ const indicatorsExpanded = ref(false)
 
 .indicators-toggle .el-icon {
   transition: transform 0.2s ease;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-size: 12px;
 }
 
@@ -444,20 +445,20 @@ const indicatorsExpanded = ref(false)
   align-items: center;
   gap: 10px;
   padding: 10px 16px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  transition: var(--transition-fast);
+  background: var(--bg-secondary, #1a1a1a);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
+  border-radius: var(--radius-sm, 6px);
+  transition: var(--transition-fast, 0.15s ease);
 }
 
 .ind-chip:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .ind-name {
   font-size: 12px;
   font-weight: 700;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   letter-spacing: 0.03em;
 }
 
@@ -468,13 +469,13 @@ const indicatorsExpanded = ref(false)
   border-radius: 4px;
 }
 
-.ind-signal.bull { background: var(--color-up-dim); color: var(--color-up); }
-.ind-signal.bear { background: var(--color-down-dim); color: var(--color-down); }
-.ind-signal.neutral { background: rgba(245, 158, 11, 0.15); color: var(--color-warn); }
+.ind-signal.bull { background: var(--color-up-dim, rgba(38, 166, 154, 0.15)); color: var(--color-up, #26a69a); }
+.ind-signal.bear { background: var(--color-down-dim, rgba(239, 83, 80, 0.15)); color: var(--color-down, #ef5350); }
+.ind-signal.neutral { background: rgba(245, 158, 11, 0.15); color: var(--color-warn, #ffa726); }
 
 .ind-detail {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 @media (max-width: 768px) {

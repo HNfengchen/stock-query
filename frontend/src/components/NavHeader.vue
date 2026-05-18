@@ -61,7 +61,7 @@ function navigate(path: string) {
 .nav-header {
   height: 56px;
   background: rgba(10, 14, 26, 0.85);
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   display: flex;
   align-items: center;
   padding: 0 24px;
@@ -93,7 +93,7 @@ function navigate(path: string) {
 .logo-main {
   font-size: 16px;
   font-weight: 700;
-  background: linear-gradient(135deg, var(--color-up) 0%, var(--color-accent) 100%);
+  background: linear-gradient(135deg, var(--color-up, #26a69a) 0%, var(--color-accent, #42a5f5) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -102,7 +102,7 @@ function navigate(path: string) {
 
 .logo-sub {
   font-size: 10px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
   letter-spacing: 0.08em;
 }
@@ -119,21 +119,21 @@ function navigate(path: string) {
   align-items: center;
   gap: 8px;
   padding: 8px 18px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm, 6px);
   cursor: pointer;
-  transition: var(--transition-base);
-  color: var(--text-muted);
+  transition: var(--transition-base, 0.25s ease);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-size: 13px;
   font-weight: 500;
 }
 
 .nav-item:hover {
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   background: rgba(255, 255, 255, 0.03);
 }
 
 .nav-item.active {
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
   background: rgba(0, 212, 170, 0.06);
 }
 
@@ -153,7 +153,7 @@ function navigate(path: string) {
   transform: translateX(-50%);
   width: 20px;
   height: 2px;
-  background: linear-gradient(90deg, var(--color-up), var(--color-accent));
+  background: linear-gradient(90deg, var(--color-up, #26a69a), var(--color-accent, #42a5f5));
   border-radius: 1px;
   box-shadow: 0 0 8px rgba(0, 212, 170, 0.4);
 }
@@ -177,7 +177,7 @@ function navigate(path: string) {
 .status-dot {
   width: 6px;
   height: 6px;
-  background: var(--color-up);
+  background: var(--color-up, #26a69a);
   border-radius: 50%;
   box-shadow: 0 0 6px rgba(0, 212, 170, 0.5);
   animation: pulse 2s ease-in-out infinite;
@@ -190,7 +190,7 @@ function navigate(path: string) {
 
 .status-text {
   font-size: 11px;
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
   font-weight: 600;
 }
 

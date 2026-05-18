@@ -154,6 +154,7 @@ data_validation:
   price_diff_threshold: 0.01
   volume_diff_threshold: 0.20
   circuit_breaker_timeout: 300
+  health_check_interval: 60
   enabled: true
 
 # 波动率配置

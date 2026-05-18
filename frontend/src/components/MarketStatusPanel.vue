@@ -107,26 +107,26 @@ const hmmLabel = computed(() => {
 
 <style scoped>
 .market-status-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 16px;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .market-status-panel:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .panel-title {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin-bottom: 16px;
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .status-list {
@@ -144,7 +144,7 @@ const hmmLabel = computed(() => {
 
 .status-label {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
   white-space: nowrap;
 }

@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
 
+from backend.exceptions import InvalidStockCodeError, DataInsufficientError, StockQueryException
 from backend.services.history_service import (
     load_watchlist,
     add_to_watchlist,
@@ -37,9 +38,10 @@ async def create_watchlist_item(req: WatchlistRequest):
         item = add_to_watchlist(stock_code, stock_name, req.position_status, req.cost_price)
         return item
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        msg = str(e)
+        if "无效的股票代码" in msg:
+            raise InvalidStockCodeError(msg)
+        raise StockQueryException(msg)
 
 
 @router.put("/watchlist/{stock_code}")
@@ -48,7 +50,7 @@ async def update_watchlist_item(stock_code: str, req: WatchlistUpdateRequest):
         item = update_watchlist(stock_code, req.position_status, req.cost_price)
         return item
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise DataInsufficientError(str(e))
 
 
 @router.delete("/watchlist/{stock_code}")

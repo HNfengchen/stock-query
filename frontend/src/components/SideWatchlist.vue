@@ -125,8 +125,8 @@ async function removeStock(stockCode: string, event: Event) {
 <style scoped>
 .sidebar {
   width: 260px;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-secondary, #1a1a1a);
+  border-right: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   position: fixed;
   left: 0;
   top: 56px;
@@ -148,7 +148,7 @@ async function removeStock(stockCode: string, event: Event) {
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   flex-shrink: 0;
 }
 
@@ -158,26 +158,26 @@ async function removeStock(stockCode: string, event: Event) {
   gap: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
 }
 
 .header-icon {
   font-size: 16px;
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .collapse-btn {
   font-size: 14px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   cursor: pointer;
-  transition: var(--transition-fast);
+  transition: var(--transition-fast, 0.15s ease);
   padding: 4px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm, 6px);
 }
 
 .collapse-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  background: var(--bg-hover, #262626);
 }
 
 .watchlist-content {
@@ -191,16 +191,16 @@ async function removeStock(stockCode: string, event: Event) {
   align-items: center;
   justify-content: space-between;
   padding: 12px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm, 6px);
   cursor: pointer;
-  transition: var(--transition-fast);
+  transition: var(--transition-fast, 0.15s ease);
   border: 1px solid transparent;
   margin-bottom: 4px;
 }
 
 .watchlist-item:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-default);
+  background: var(--bg-hover, #262626);
+  border-color: var(--border-default, rgba(255, 255, 255, 0.08));
 }
 
 .watchlist-item:hover .item-actions {
@@ -222,7 +222,7 @@ async function removeStock(stockCode: string, event: Event) {
 .stock-code {
   font-size: 14px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
   font-family: 'SF Mono', 'JetBrains Mono', monospace;
   letter-spacing: -0.02em;
 }
@@ -241,7 +241,7 @@ async function removeStock(stockCode: string, event: Event) {
 
 .stock-name {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -249,7 +249,7 @@ async function removeStock(stockCode: string, event: Event) {
 
 .cost-price {
   font-size: 11px;
-  color: var(--color-warn);
+  color: var(--color-warn, #ffa726);
   font-family: 'SF Mono', 'JetBrains Mono', monospace;
   flex-shrink: 0;
 }
@@ -258,7 +258,7 @@ async function removeStock(stockCode: string, event: Event) {
   display: flex;
   gap: 2px;
   opacity: 0;
-  transition: var(--transition-fast);
+  transition: var(--transition-fast, 0.15s ease);
 }
 
 .action-btn {
@@ -268,7 +268,7 @@ async function removeStock(stockCode: string, event: Event) {
 }
 
 .action-btn.analyze {
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .action-btn.analyze:hover {
@@ -277,11 +277,11 @@ async function removeStock(stockCode: string, event: Event) {
 }
 
 .action-btn.delete {
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .action-btn.delete:hover {
-  color: var(--color-down);
+  color: var(--color-down, #ef5350);
   background: rgba(255, 71, 87, 0.1);
 }
 
@@ -291,7 +291,7 @@ async function removeStock(stockCode: string, event: Event) {
   align-items: center;
   justify-content: center;
   padding: 40px 20px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   gap: 8px;
 }
 
@@ -318,22 +318,22 @@ async function removeStock(stockCode: string, event: Event) {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm, 6px);
   cursor: pointer;
-  transition: var(--transition-fast);
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
+  transition: var(--transition-fast, 0.15s ease);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .collapsed-item:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-active);
+  background: var(--bg-hover, #262626);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .collapsed-code {
   font-size: 10px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   font-family: 'SF Mono', 'JetBrains Mono', monospace;
 }
 

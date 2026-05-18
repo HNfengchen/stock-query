@@ -42,14 +42,14 @@ export function changeToTrendValue(change: number): number {
   return 0
 }
 
-export function fmtNum(val: any, decimals: number = 2): string {
+export function fmtNum(val: unknown, decimals: number = 2): string {
   if (val === null || val === undefined || val === 'N/A') return '-'
   const n = Number(val)
   if (isNaN(n)) return '-'
   return n.toFixed(decimals)
 }
 
-export function fmtMarketCap(val: any): string {
+export function fmtMarketCap(val: unknown): string {
   if (val === null || val === undefined || val === 'N/A') return '-'
   const n = Number(val)
   if (isNaN(n)) return '-'
@@ -59,7 +59,7 @@ export function fmtMarketCap(val: any): string {
   return n.toFixed(2)
 }
 
-export function fmtVolume(val: any): string {
+export function fmtVolume(val: unknown): string {
   if (val === null || val === undefined || val === 'N/A') return '-'
   const n = Number(val)
   if (isNaN(n)) return '-'

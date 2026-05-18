@@ -23,10 +23,10 @@ const confidencePct = computed(() => {
 })
 const confidenceColor = computed(() => {
   const v = confidencePct.value
-  if (v === null) return 'var(--text-muted)'
-  if (v >= 70) return 'var(--color-up)'
-  if (v >= 45) return 'var(--color-warn)'
-  return 'var(--color-down)'
+  if (v === null) return 'var(--text-muted, rgba(255, 255, 255, 0.38))'
+  if (v >= 70) return 'var(--color-up, #26a69a)'
+  if (v >= 45) return 'var(--color-warn, #ffa726)'
+  return 'var(--color-down, #ef5350)'
 })
 const mlDirection = computed(() => {
   const d = props.prediction.mlPrediction?.direction
@@ -42,6 +42,13 @@ const mlDirectionType = computed(() => {
   if (d < 0.4) return 'danger'
   return 'warning'
 })
+const trendMap: Record<string, { label: string; type: string }> = {
+  up: { label: '看涨', type: 'success' },
+  down: { label: '看跌', type: 'danger' },
+  flat: { label: '震荡', type: 'warning' },
+  strong_up: { label: '强势看涨', type: 'success' },
+  strong_down: { label: '强势看跌', type: 'danger' },
+}
 </script>
 
 <template>
@@ -56,12 +63,18 @@ const mlDirectionType = computed(() => {
           <span class="day-range font-mono">
             {{ fmtNum(prediction.hybridPrediction.day1Low) }} ~ {{ fmtNum(prediction.hybridPrediction.day1High) }}
           </span>
+          <el-tag v-if="prediction.day1Trend && trendMap[prediction.day1Trend]" :type="trendMap[prediction.day1Trend]!.type" size="small" effect="dark">
+            {{ trendMap[prediction.day1Trend]!.label }}
+          </el-tag>
         </div>
         <div class="pred-day">
           <span class="day-label">Day2</span>
           <span class="day-range font-mono">
             {{ fmtNum(prediction.hybridPrediction.day2Low) }} ~ {{ fmtNum(prediction.hybridPrediction.day2High) }}
           </span>
+          <el-tag v-if="prediction.day2Trend && trendMap[prediction.day2Trend]" :type="trendMap[prediction.day2Trend]!.type" size="small" effect="dark">
+            {{ trendMap[prediction.day2Trend]!.label }}
+          </el-tag>
         </div>
       </div>
     </div>
@@ -108,12 +121,13 @@ const mlDirectionType = computed(() => {
           :show-text="false"
         />
         <span class="confidence-val font-mono" :style="{ color: confidenceColor }">
-          {{ confidencePct !== null ? confidencePct + '%' : '-' }}
+          {{ confidencePct !== null ? confidencePct + '%' : '需更多数据' }}
         </span>
       </div>
       <div v-if="prediction.alpha != null" class="alpha-row">
         <span class="alpha-label">hybrid_alpha</span>
         <span class="alpha-val font-mono">{{ prediction.alpha.toFixed(2) }}</span>
+        <el-tag v-if="prediction.alpha >= 1.0" type="info" size="small" effect="plain" class="alpha-tag">纯规则预测</el-tag>
       </div>
     </div>
   </div>
@@ -121,26 +135,26 @@ const mlDirectionType = computed(() => {
 
 <style scoped>
 .prediction-center {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 16px;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .prediction-center:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .panel-title {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin-bottom: 16px;
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .pred-section {
@@ -153,7 +167,7 @@ const mlDirectionType = computed(() => {
 
 .section-label {
   font-size: 10px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 600;
   letter-spacing: 0.05em;
   margin-bottom: 8px;
@@ -171,22 +185,22 @@ const mlDirectionType = computed(() => {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  background: var(--bg-secondary);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary, #1a1a1a);
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .day-label {
   font-size: 11px;
   font-weight: 700;
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
   width: 36px;
   letter-spacing: 0.05em;
 }
 
 .day-range {
   font-size: 13px;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
   font-weight: 600;
 }
 
@@ -205,22 +219,22 @@ const mlDirectionType = computed(() => {
 
 .compare-key {
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   font-weight: 500;
 }
 
 .compare-val {
   font-size: 12px;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
   font-weight: 600;
 }
 
 .compare-val.up {
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .compare-val.down {
-  color: var(--color-down);
+  color: var(--color-down, #ef5350);
 }
 
 .confidence-row {
@@ -249,13 +263,17 @@ const mlDirectionType = computed(() => {
 
 .alpha-label {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
 }
 
 .alpha-val {
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   font-weight: 600;
+}
+
+.alpha-tag {
+  margin-left: 8px;
 }
 </style>

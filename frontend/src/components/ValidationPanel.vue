@@ -1,34 +1,54 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { Component } from 'vue'
 import type { AnalysisValidation, StressTestResult } from '@/types'
+import {
+  TrendCharts,
+  Bottom,
+  Sort,
+  Lock,
+  Warning,
+  CircleClose,
+  CircleCheck,
+  CloseBold,
+  View,
+  ArrowDown,
+  VideoPause,
+  QuestionFilled,
+  Opportunity,
+  CaretBottom,
+  Lightning,
+  DataLine,
+  Coin,
+} from '@element-plus/icons-vue'
 
 const props = defineProps<{ validation: AnalysisValidation }>()
 
-const consensusMap: Record<string, { label: string; type: string; icon: string; desc: string }> = {
-  bullish: { label: '看多', type: 'success', icon: '📈', desc: '多数指标看涨，方向一致' },
-  bearish: { label: '看空', type: 'danger', icon: '📉', desc: '多数指标看跌，方向一致' },
-  mixed: { label: '分歧', type: 'warning', icon: '↔️', desc: '多空指标分歧较大，方向不明' },
+const consensusMap: Record<string, { label: string; type: string; icon: Component; desc: string }> = {
+  bullish: { label: '看多', type: 'success', icon: TrendCharts, desc: '多数指标看涨，方向一致' },
+  bearish: { label: '看空', type: 'danger', icon: Bottom, desc: '多数指标看跌，方向一致' },
+  mixed: { label: '分歧', type: 'warning', icon: Sort, desc: '多空指标分歧较大，方向不明' },
 }
 
-const riskMap: Record<string, { label: string; type: string; icon: string; desc: string }> = {
-  low: { label: '低风险', type: 'success', icon: '🛡️', desc: '指标一致性好，信号可靠' },
-  medium: { label: '中风险', type: 'warning', icon: '⚠️', desc: '存在部分分歧，需谨慎' },
-  high: { label: '高风险', type: 'danger', icon: '🔴', desc: '指标冲突明显，信号不确定' },
+const riskMap: Record<string, { label: string; type: string; icon: Component; desc: string }> = {
+  low: { label: '低风险', type: 'success', icon: Lock, desc: '指标一致性好，信号可靠' },
+  medium: { label: '中风险', type: 'warning', icon: Warning, desc: '存在部分分歧，需谨慎' },
+  high: { label: '高风险', type: 'danger', icon: CircleClose, desc: '指标冲突明显，信号不确定' },
 }
 
-const gateMap: Record<string, { label: string; type: string; icon: string; desc: string }> = {
-  allow_buy: { label: '允许买入', type: 'success', icon: '✅', desc: '看多共识+高置信度，可考虑建仓' },
-  cautious_buy: { label: '谨慎买入', type: 'warning', icon: '⚠️', desc: '看多但置信度不足，轻仓试探' },
-  avoid_buy: { label: '不建议买入', type: 'danger', icon: '🚫', desc: '看空共识明显，不宜介入' },
-  watch: { label: '观望', type: 'info', icon: '👀', desc: '信号不明确，继续等待' },
-  reduce_position: { label: '建议减仓', type: 'danger', icon: '⬇️', desc: '看空共识+高风险，建议降低仓位' },
-  cautious_hold: { label: '谨慎持有', type: 'warning', icon: '⚠️', desc: '偏空但风险可控，密切关注' },
-  hold_position: { label: '继续持有', type: 'success', icon: '⏸️', desc: '未达减仓条件，维持当前仓位' },
+const gateMap: Record<string, { label: string; type: string; icon: Component; desc: string }> = {
+  allow_buy: { label: '允许买入', type: 'success', icon: CircleCheck, desc: '看多共识+高置信度，可考虑建仓' },
+  cautious_buy: { label: '谨慎买入', type: 'warning', icon: Warning, desc: '看多但置信度不足，轻仓试探' },
+  avoid_buy: { label: '不建议买入', type: 'danger', icon: CloseBold, desc: '看空共识明显，不宜介入' },
+  watch: { label: '观望', type: 'info', icon: View, desc: '信号不明确，继续等待' },
+  reduce_position: { label: '建议减仓', type: 'danger', icon: ArrowDown, desc: '看空共识+高风险，建议降低仓位' },
+  cautious_hold: { label: '谨慎持有', type: 'warning', icon: Warning, desc: '偏空但风险可控，密切关注' },
+  hold_position: { label: '继续持有', type: 'success', icon: VideoPause, desc: '未达减仓条件，维持当前仓位' },
 }
 
-const consensusInfo = computed(() => consensusMap[props.validation.direction_consensus] || { label: props.validation.direction_consensus, type: 'info', icon: '❓', desc: '' })
-const riskInfo = computed(() => riskMap[props.validation.risk_level] || { label: props.validation.risk_level, type: 'info', icon: '❓', desc: '' })
-const gateInfo = computed(() => gateMap[props.validation.action_gate] || { label: props.validation.action_gate, type: 'info', icon: '❓', desc: '' })
+const consensusInfo = computed(() => consensusMap[props.validation.direction_consensus] || { label: props.validation.direction_consensus, type: 'info', icon: QuestionFilled, desc: '' })
+const riskInfo = computed(() => riskMap[props.validation.risk_level] || { label: props.validation.risk_level, type: 'info', icon: QuestionFilled, desc: '' })
+const gateInfo = computed(() => gateMap[props.validation.action_gate] || { label: props.validation.action_gate, type: 'info', icon: QuestionFilled, desc: '' })
 
 const confidencePct = computed(() => Math.round((props.validation.confidence || 0) * 100))
 
@@ -46,9 +66,9 @@ const bearPct = computed(() => {
 
 const confidenceColor = computed(() => {
   const v = confidencePct.value
-  if (v >= 70) return 'var(--color-up)'
-  if (v >= 45) return 'var(--color-warn)'
-  return 'var(--color-down)'
+  if (v >= 70) return 'var(--color-up, #26a69a)'
+  if (v >= 45) return 'var(--color-warn, #ffa726)'
+  return 'var(--color-down, #ef5350)'
 })
 
 const confidenceDesc = computed(() => {
@@ -68,11 +88,11 @@ const flipRatePct = computed(() => {
 })
 
 const flipRateColor = computed(() => {
-  if (!stressTest.value || stressTest.value.signal_flip_rate == null) return 'var(--text-muted)'
+  if (!stressTest.value || stressTest.value.signal_flip_rate == null) return 'var(--text-muted, rgba(255, 255, 255, 0.38))'
   const rate = stressTest.value.signal_flip_rate
-  if (rate < 0.15) return 'var(--color-up)'
-  if (rate < 0.30) return 'var(--color-warn)'
-  return 'var(--color-down)'
+  if (rate < 0.15) return 'var(--color-up, #26a69a)'
+  if (rate < 0.30) return 'var(--color-warn, #ffa726)'
+  return 'var(--color-down, #ef5350)'
 })
 
 const flipRateType = computed(() => {
@@ -101,7 +121,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
       <div class="v-chip">
         <span class="v-chip-label">方向共识</span>
         <el-tag :type="consensusInfo.type" effect="dark" size="small">
-          {{ consensusInfo.icon }} {{ consensusInfo.label }}
+          <el-icon><component :is="consensusInfo.icon" /></el-icon> {{ consensusInfo.label }}
         </el-tag>
         <span class="v-chip-desc">{{ consensusInfo.desc }}</span>
       </div>
@@ -124,21 +144,21 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
       <div class="v-chip">
         <span class="v-chip-label">风险等级</span>
         <el-tag :type="riskInfo.type" effect="dark" size="small">
-          {{ riskInfo.icon }} {{ riskInfo.label }}
+          <el-icon><component :is="riskInfo.icon" /></el-icon> {{ riskInfo.label }}
         </el-tag>
         <span class="v-chip-desc">{{ riskInfo.desc }}</span>
       </div>
       <div class="v-chip">
         <span class="v-chip-label">操作建议</span>
         <el-tag :type="gateInfo.type" effect="dark" size="small">
-          {{ gateInfo.icon }} {{ gateInfo.label }}
+          <el-icon><component :is="gateInfo.icon" /></el-icon> {{ gateInfo.label }}
         </el-tag>
         <span class="v-chip-desc">{{ gateInfo.desc }}</span>
       </div>
     </div>
 
     <div v-if="validation.missing_dimensions && validation.missing_dimensions.length" class="v-missing">
-      <span class="missing-label">⚠️ 数据缺失</span>
+      <span class="missing-label"><el-icon><Warning /></el-icon> 数据缺失</span>
       <div class="missing-list">
         <el-tag
           v-for="d in validation.missing_dimensions"
@@ -153,7 +173,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
     </div>
 
     <div v-if="validation.signal_persistence && Object.keys(validation.signal_persistence).length" class="v-persistence">
-      <span class="persistence-label">📊 信号持续性</span>
+      <span class="persistence-label"><el-icon><DataLine /></el-icon> 信号持续性</span>
       <div class="persistence-list">
         <el-tag
           v-for="(info, key) in validation.signal_persistence"
@@ -168,7 +188,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
     </div>
 
     <div v-if="stressTest" class="v-stress-test">
-      <span class="stress-label">🎲 蒙特卡洛压力测试</span>
+      <span class="stress-label"><el-icon><Coin /></el-icon> 蒙特卡洛压力测试</span>
       <div class="stress-content">
         <div class="stress-row">
           <div class="stress-item">
@@ -180,7 +200,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
           <div class="stress-item">
             <span class="stress-item-label">鲁棒性</span>
             <el-tag :type="stressTest.is_robust ? 'success' : 'danger'" effect="dark" size="small">
-              {{ stressTest.is_robust ? '✅ 鲁棒' : '⚠️ 不鲁棒' }}
+              <el-icon><CircleCheck v-if="stressTest.is_robust" /><Warning v-else /></el-icon> {{ stressTest.is_robust ? '鲁棒' : '不鲁棒' }}
             </el-tag>
           </div>
           <div class="stress-item">
@@ -226,7 +246,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 
     <div v-if="hasItems(validation.supporting_factors) || hasItems(validation.opposing_factors) || hasItems(validation.conflicts)" class="v-factors">
       <div v-if="hasItems(validation.supporting_factors)" class="v-factor-group">
-        <span class="factor-label support-label">👍 利好</span>
+        <span class="factor-label support-label"><el-icon><Opportunity /></el-icon> 利好</span>
         <div class="factor-list">
           <el-tag
             v-for="f in validation.supporting_factors"
@@ -240,7 +260,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
         </div>
       </div>
       <div v-if="hasItems(validation.opposing_factors)" class="v-factor-group">
-        <span class="factor-label oppose-label">👎 利空</span>
+        <span class="factor-label oppose-label"><el-icon><CaretBottom /></el-icon> 利空</span>
         <div class="factor-list">
           <el-tag
             v-for="f in validation.opposing_factors"
@@ -254,7 +274,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
         </div>
       </div>
       <div v-if="hasItems(validation.conflicts)" class="v-factor-group">
-        <span class="factor-label conflict-label">⚡ 冲突</span>
+        <span class="factor-label conflict-label"><el-icon><Lightning /></el-icon> 冲突</span>
         <div class="factor-list">
           <el-tag
             v-for="f in validation.conflicts"
@@ -277,20 +297,20 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 
 <style scoped>
 .validation-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 20px;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .validation-panel:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .card-label {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -311,7 +331,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 
 .v-chip-label {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
   white-space: nowrap;
 }
@@ -338,7 +358,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 .conf-text {
   font-size: 13px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
   font-family: 'SF Mono', 'JetBrains Mono', monospace;
 }
 
@@ -353,7 +373,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
   gap: 10px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .v-missing {
@@ -366,7 +386,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 .missing-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--color-warn);
+  color: var(--color-warn, #ffa726);
   white-space: nowrap;
   padding-top: 3px;
   min-width: 72px;
@@ -388,7 +408,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 .persistence-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   white-space: nowrap;
   padding-top: 3px;
   min-width: 72px;
@@ -407,14 +427,14 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
   margin-top: 12px;
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   border-radius: var(--radius-sm, 6px);
 }
 
 .stress-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   white-space: nowrap;
   padding-top: 3px;
   min-width: 120px;
@@ -441,7 +461,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 
 .stress-item-label {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   white-space: nowrap;
 }
 
@@ -466,7 +486,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 .stress-metric-val {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
   font-family: 'SF Mono', 'JetBrains Mono', monospace;
 }
 
@@ -478,7 +498,7 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
   display: flex;
   height: 6px;
   border-radius: 3px;
-  background: var(--border-subtle);
+  background: var(--border-subtle, rgba(255, 255, 255, 0.05));
   overflow: hidden;
 }
 
@@ -488,12 +508,12 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 }
 
 .weight-bar-fill.bull {
-  background: var(--color-up);
+  background: var(--color-up, #26a69a);
   border-radius: 3px 0 0 3px;
 }
 
 .weight-bar-fill.bear {
-  background: var(--color-down);
+  background: var(--color-down, #ef5350);
   border-radius: 0 3px 3px 0;
 }
 
@@ -505,11 +525,11 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 }
 
 .weight-bull {
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .weight-bear {
-  color: var(--color-down);
+  color: var(--color-down, #ef5350);
 }
 
 .v-factor-group {
@@ -526,9 +546,9 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
   min-width: 52px;
 }
 
-.support-label { color: var(--color-up); }
-.oppose-label { color: var(--color-down); }
-.conflict-label { color: var(--color-warn); }
+.support-label { color: var(--color-up, #26a69a); }
+.oppose-label { color: var(--color-down, #ef5350); }
+.conflict-label { color: var(--color-warn, #ffa726); }
 
 .factor-list {
   display: flex;
@@ -539,9 +559,9 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 .v-note {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   line-height: 1.5;
 }
 

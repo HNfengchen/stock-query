@@ -61,6 +61,10 @@ def _load_db_config():
     except Exception:
         pass
 
+    db_password = os.environ.get("DB_PASSWORD")
+    if db_password:
+        DB_CONFIG["password"] = db_password
+
 _load_db_config()
 
 

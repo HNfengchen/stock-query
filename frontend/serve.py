@@ -55,7 +55,9 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length) if content_length > 0 else None
 
-            if is_sse:
+            if 'batch-quick' in self.path:
+                backend_timeout = 600
+            elif is_sse:
                 backend_timeout = 120
             elif '/backtest' in self.path:
                 backend_timeout = 300

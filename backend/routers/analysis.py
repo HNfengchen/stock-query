@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
 from typing import List, Optional
 import traceback
 import asyncio
@@ -7,6 +7,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
+from backend.exceptions import InvalidStockCodeError, DataInsufficientError, AnalysisFailedError, StockQueryException
 from backend.services.analysis_service import run_analysis, run_analysis_staged, AnalysisLogger
 from backend.utils import sanitize_for_json
 
@@ -26,7 +27,7 @@ class AnalysisRequest(BaseModel):
 
 
 class BatchAnalysisRequest(BaseModel):
-    stocks: List[AnalysisRequest]
+    stocks: List[AnalysisRequest] = Field(..., max_length=50)
 
 
 @router.post("/analysis")
@@ -34,9 +35,16 @@ async def analyze(req: AnalysisRequest):
     try:
         result = run_analysis(req.stock_input, req.position_status, req.cost_price)
         return sanitize_for_json(result)
+    except ValueError as e:
+        msg = str(e)
+        if "无效的股票代码" in msg:
+            raise InvalidStockCodeError(msg)
+        if "无法获取" in msg or "数据不足" in msg:
+            raise DataInsufficientError(msg)
+        raise StockQueryException(msg)
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise AnalysisFailedError(str(e))
 
 
 @router.post("/analysis/batch")
@@ -69,7 +77,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
     from sse_starlette.sse import EventSourceResponse
 
     if not req.stocks:
-        raise HTTPException(status_code=400, detail="股票列表不能为空")
+        raise StockQueryException("股票列表不能为空")
 
     total = len(req.stocks)
     progress_queue: asyncio.Queue = asyncio.Queue()

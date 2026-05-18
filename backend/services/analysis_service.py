@@ -673,6 +673,39 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
                     }
                 except Exception:
                     pass
+        elif hasattr(analyzer, '_regime_detector') and analyzer._regime_detector is not None:
+            if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+                try:
+                    latest_close = float(history_df["收盘"].iloc[-1])
+                    prev_close = float(history_df["收盘"].iloc[-2]) if len(history_df) > 1 else latest_close
+                    change_pct = (latest_close - prev_close) / prev_close * 100 if prev_close != 0 else 0
+                    vol_col = "成交量" if "成交量" in history_df.columns else None
+                    volume_ratio = 1.0
+                    if vol_col and len(history_df) > 1:
+                        latest_vol = float(history_df[vol_col].iloc[-1])
+                        prev_vol = float(history_df[vol_col].iloc[-2])
+                        volume_ratio = latest_vol / prev_vol if prev_vol != 0 else 1.0
+                    boll = indicators.get("BOLL", {})
+                    bandwidth = boll.get("latest", {}).get("bandwidth") if isinstance(boll.get("latest"), dict) else None
+                    volatility_signal = "正常"
+                    if bandwidth is not None:
+                        if bandwidth < 10:
+                            volatility_signal = "低波动"
+                        elif bandwidth > 25:
+                            volatility_signal = "高波动"
+                    market_data = {
+                        "volatility_signal": volatility_signal,
+                        "volume_ratio": volume_ratio,
+                        "market_change_pct": change_pct,
+                    }
+                    regime = analyzer._regime_detector.detect_regime(market_data)
+                    hmm_state = {
+                        "current_state": regime,
+                        "state_probabilities": {},
+                        "transition_matrix": None,
+                    }
+                except Exception:
+                    pass
 
         full_result = {
             "stock_code": resolved_code,

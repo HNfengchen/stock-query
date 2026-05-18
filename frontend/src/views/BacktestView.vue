@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useBacktestStore } from '@/stores/backtestStore'
+import { useAsyncState } from '@/composables/useAsyncState'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -12,6 +13,8 @@ import { TREND_LABEL_MAP, getTrendColor, getTrendTagType, getTrendClass } from '
 use([CanvasRenderer, LineChart, BarChart, CustomChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, TitleComponent])
 
 const store = useBacktestStore()
+const backtestState = useAsyncState()
+const wfState = useAsyncState()
 
 const stockCode = ref('')
 const currentPage = ref(1)
@@ -63,13 +66,13 @@ function buildPriceCompareOption(day: 1 | 2) {
           html += `<div>当日收盘: <span class="font-mono">${p.current_price.toFixed(2)}</span></div>`
         }
         if (actual != null) {
-          html += `<div>Day${day}实际: <span style="color:var(--color-accent);font-weight:600">${actual.toFixed(2)}</span></div>`
+          html += `<div>Day${day}实际: <span style="color:var(--color-accent, #42a5f5);font-weight:600">${actual.toFixed(2)}</span></div>`
           if (p.current_price != null) {
             const chg = ((actual - p.current_price) / p.current_price * 100).toFixed(2)
-            html += `<div>涨跌幅: <span style="color:${parseFloat(chg) >= 0 ? 'var(--color-up)' : 'var(--color-down)'}">${chg}%</span></div>`
+            html += `<div>涨跌幅: <span style="color:${parseFloat(chg) >= 0 ? 'var(--color-up, #26a69a)' : 'var(--color-down, #ef5350)'}">${chg}%</span></div>`
           }
           if (hit != null) {
-            html += `<div>命中: <span style="color:${hit ? 'var(--color-up)' : 'var(--color-down)'}">${hit ? '是' : '否'}</span></div>`
+            html += `<div>命中: <span style="color:${hit ? 'var(--color-up, #26a69a)' : 'var(--color-down, #ef5350)'}">${hit ? '是' : '否'}</span></div>`
           }
         }
         return html
@@ -77,7 +80,7 @@ function buildPriceCompareOption(day: 1 | 2) {
     },
     legend: {
       data: [`Day${day}预测区间`, `Day${day}实际价格`],
-      textStyle: { color: 'var(--text-muted)', fontSize: 11 },
+      textStyle: { color: 'var(--text-muted, rgba(255, 255, 255, 0.38))', fontSize: 11 },
       top: 4,
     },
     grid: { left: 56, right: 16, top: 40, bottom: 56 },
@@ -112,7 +115,7 @@ function buildPriceCompareOption(day: 1 | 2) {
             shape: { x: x - width / 2, y: yHigh, width, height: yLow - yHigh },
             style: {
               fill: hit === 1 ? 'rgba(0, 212, 170, 0.2)' : hit === 0 ? 'rgba(255, 71, 87, 0.2)' : 'rgba(100, 116, 139, 0.15)',
-              stroke: hit === 1 ? 'var(--color-up)' : hit === 0 ? 'var(--color-down)' : 'var(--text-disabled)',
+              stroke: hit === 1 ? 'var(--color-up, #26a69a)' : hit === 0 ? 'var(--color-down, #ef5350)' : 'var(--text-disabled, rgba(255, 255, 255, 0.22))',
               lineWidth: 1,
             },
           }
@@ -130,10 +133,10 @@ function buildPriceCompareOption(day: 1 | 2) {
         type: 'line',
         data: actualPrices,
         smooth: true,
-        lineStyle: { color: 'var(--color-accent)', width: 2 },
+        lineStyle: { color: 'var(--color-accent, #42a5f5)', width: 2 },
         symbol: 'circle',
         symbolSize: 5,
-        itemStyle: { color: 'var(--color-accent)', borderWidth: 0 },
+        itemStyle: { color: 'var(--color-accent, #42a5f5)', borderWidth: 0 },
         z: 2,
       },
     ],
@@ -168,7 +171,7 @@ const trendAccuracyOption = computed(() => {
     backgroundColor: 'transparent',
     title: {
       text: `趋势准确率  Day1: ${day1Pct}%  Day2: ${day2Pct}%`,
-      textStyle: { color: 'var(--text-primary)', fontSize: 13, fontWeight: 600 },
+      textStyle: { color: 'var(--text-primary, rgba(255, 255, 255, 0.92))', fontSize: 13, fontWeight: 600 },
       left: 8,
       top: 4,
     },
@@ -185,17 +188,17 @@ const trendAccuracyOption = computed(() => {
         let html = `<div style="font-weight:600;margin-bottom:4px">${p.date}</div>`
         html += `<div>预测: <span style="color:${getTrendColor(p.trend)}">${TREND_LABEL_MAP[p.trend] || p.trend}</span></div>`
         if (p.day1_trend_correct != null) {
-          html += `<div>Day1趋势: <span style="color:${p.day1_trend_correct ? 'var(--color-up)' : 'var(--color-down)'}">${p.day1_trend_correct ? '正确' : '错误'}</span></div>`
+          html += `<div>Day1趋势: <span style="color:${p.day1_trend_correct ? 'var(--color-up, #26a69a)' : 'var(--color-down, #ef5350)'}">${p.day1_trend_correct ? '正确' : '错误'}</span></div>`
         }
         if (p.day2_trend_correct != null) {
-          html += `<div>Day2趋势: <span style="color:${p.day2_trend_correct ? 'var(--color-up)' : 'var(--color-down)'}">${p.day2_trend_correct ? '正确' : '错误'}</span></div>`
+          html += `<div>Day2趋势: <span style="color:${p.day2_trend_correct ? 'var(--color-up, #26a69a)' : 'var(--color-down, #ef5350)'}">${p.day2_trend_correct ? '正确' : '错误'}</span></div>`
         }
         return html
       },
     },
     legend: {
       data: ['Day1趋势', 'Day2趋势'],
-      textStyle: { color: 'var(--text-muted)', fontSize: 11 },
+      textStyle: { color: 'var(--text-muted, rgba(255, 255, 255, 0.38))', fontSize: 11 },
       top: 4,
       right: 8,
     },
@@ -229,7 +232,7 @@ const trendAccuracyOption = computed(() => {
         data: day1MatchData.map((v, i) => ({
           value: isNaN(v) ? null : v,
           itemStyle: {
-            color: v === 1 ? 'var(--color-up)' : v === 0 ? 'var(--color-down)' : 'var(--text-disabled)',
+            color: v === 1 ? 'var(--color-up, #26a69a)' : v === 0 ? 'var(--color-down, #ef5350)' : 'var(--text-disabled, rgba(255, 255, 255, 0.22))',
             opacity: 0.7,
           },
         })),
@@ -242,7 +245,7 @@ const trendAccuracyOption = computed(() => {
         data: day2MatchData.map((v, i) => ({
           value: isNaN(v) ? null : v,
           itemStyle: {
-            color: v === 1 ? 'rgba(0, 212, 170, 0.5)' : v === 0 ? 'rgba(255, 71, 87, 0.5)' : 'var(--text-disabled)',
+            color: v === 1 ? 'rgba(0, 212, 170, 0.5)' : v === 0 ? 'rgba(255, 71, 87, 0.5)' : 'var(--text-disabled, rgba(255, 255, 255, 0.22))',
             opacity: 0.7,
           },
         })),
@@ -281,7 +284,7 @@ const wfAccuracyOption = computed(() => {
     },
     legend: {
       data: ['命中率', '方向准确率', '趋势准确率'],
-      textStyle: { color: 'var(--text-muted)', fontSize: 11 },
+      textStyle: { color: 'var(--text-muted, rgba(255, 255, 255, 0.38))', fontSize: 11 },
       top: 4,
     },
     grid: { left: 48, right: 16, top: 40, bottom: 40 },
@@ -305,20 +308,20 @@ const wfAccuracyOption = computed(() => {
         type: 'line',
         data: windows.map(w => w.hit_rate),
         smooth: true,
-        lineStyle: { color: 'var(--color-up)', width: 2 },
+        lineStyle: { color: 'var(--color-up, #26a69a)', width: 2 },
         symbol: 'circle',
         symbolSize: 6,
-        itemStyle: { color: 'var(--color-up)', borderWidth: 0 },
+        itemStyle: { color: 'var(--color-up, #26a69a)', borderWidth: 0 },
       },
       {
         name: '方向准确率',
         type: 'line',
         data: windows.map(w => w.direction_accuracy),
         smooth: true,
-        lineStyle: { color: 'var(--color-accent)', width: 2 },
+        lineStyle: { color: 'var(--color-accent, #42a5f5)', width: 2 },
         symbol: 'diamond',
         symbolSize: 6,
-        itemStyle: { color: 'var(--color-accent)', borderWidth: 0 },
+        itemStyle: { color: 'var(--color-accent, #42a5f5)', borderWidth: 0 },
       },
       {
         name: '趋势准确率',
@@ -337,10 +340,14 @@ const wfAccuracyOption = computed(() => {
 async function runValidation() {
   if (!stockCode.value.trim()) return
   const data: BacktestRequest = { stock_code: stockCode.value.trim() }
+  backtestState.toLoading()
   try {
     await store.executeBacktest(data)
-  } catch (e) {
-    console.error(e)
+    if (store.result) {
+      backtestState.toSuccess(null)
+    }
+  } catch (e: any) {
+    backtestState.toError(e.response?.data?.detail || e.message || '预测验证执行失败')
   }
 }
 
@@ -352,10 +359,14 @@ async function runWalkForward() {
     test_window: wfTestWindow.value,
     step: wfStep.value,
   }
+  wfState.toLoading()
   try {
     await store.executeWalkForward(data)
-  } catch (e) {
-    console.error(e)
+    if (store.wfResult) {
+      wfState.toSuccess(null)
+    }
+  } catch (e: any) {
+    wfState.toError(e.response?.data?.detail || e.message || 'Walk-Forward验证执行失败')
   }
 }
 
@@ -407,11 +418,11 @@ function exportCSV() {
           </el-form>
         </div>
 
-        <el-button v-if="activeTab === 'backtest'" type="primary" class="run-btn" :loading="store.loading" @click="runValidation">
+        <el-button v-if="activeTab === 'backtest'" type="primary" class="run-btn" :loading="backtestState.isLoading.value" @click="runValidation">
           <el-icon><VideoPlay /></el-icon>
           <span>开始验证</span>
         </el-button>
-        <el-button v-else type="primary" class="run-btn" :loading="store.wfLoading" @click="runWalkForward">
+        <el-button v-else type="primary" class="run-btn" :loading="wfState.isLoading.value" @click="runWalkForward">
           <el-icon><VideoPlay /></el-icon>
           <span>Walk-Forward验证</span>
         </el-button>
@@ -473,12 +484,25 @@ function exportCSV() {
       <div class="result-panel">
         <el-tabs v-model="activeTab" class="backtest-tabs">
           <el-tab-pane label="预测验证" name="backtest">
-            <div v-if="store.error" class="error-message">
-              <el-icon><Warning /></el-icon>
-              <span>{{ store.error }}</span>
+            <div v-if="backtestState.isLoading.value" class="loading-state">
+              <div class="loading-spinner-wrap">
+                <el-icon class="loading-spin"><Loading /></el-icon>
+              </div>
+              <h3>正在执行预测验证...</h3>
+              <p>分析历史预测区间与实际价格的匹配度</p>
             </div>
 
-            <div v-else-if="store.result" class="result-content">
+            <div v-else-if="backtestState.isError.value" class="error-state">
+              <el-icon class="error-icon"><WarningFilled /></el-icon>
+              <h3>验证执行失败</h3>
+              <p>{{ backtestState.error.value }}</p>
+              <el-button type="primary" size="small" @click="runValidation">
+                <el-icon><RefreshRight /></el-icon>
+                <span>重试</span>
+              </el-button>
+            </div>
+
+            <div v-else-if="backtestState.isSuccess.value && store.result" class="result-content">
               <div class="stats-grid">
                 <div class="stat-card">
                   <span class="stat-label">Day1命中率</span>
@@ -666,12 +690,25 @@ function exportCSV() {
           </el-tab-pane>
 
           <el-tab-pane label="Walk-Forward" name="walkforward">
-            <div v-if="store.wfError" class="error-message">
-              <el-icon><Warning /></el-icon>
-              <span>{{ store.wfError }}</span>
+            <div v-if="wfState.isLoading.value" class="loading-state">
+              <div class="loading-spinner-wrap">
+                <el-icon class="loading-spin"><Loading /></el-icon>
+              </div>
+              <h3>正在执行 Walk-Forward 验证...</h3>
+              <p>通过滚动窗口验证预测模型的稳定性</p>
             </div>
 
-            <div v-else-if="store.wfResult" class="result-content">
+            <div v-else-if="wfState.isError.value" class="error-state">
+              <el-icon class="error-icon"><WarningFilled /></el-icon>
+              <h3>Walk-Forward 验证失败</h3>
+              <p>{{ wfState.error.value }}</p>
+              <el-button type="primary" size="small" @click="runWalkForward">
+                <el-icon><RefreshRight /></el-icon>
+                <span>重试</span>
+              </el-button>
+            </div>
+
+            <div v-else-if="wfState.isSuccess.value && store.wfResult" class="result-content">
               <div class="stats-grid">
                 <div class="stat-card">
                   <span class="stat-label">平均命中率</span>
@@ -745,17 +782,17 @@ function exportCSV() {
                   <el-table-column prop="n_predictions" label="预测数" width="80" />
                   <el-table-column prop="hit_rate" label="命中率" width="90">
                     <template #default="{ row }">
-                      <span class="font-mono" :style="{ color: row.hit_rate >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ fmtPct(row.hit_rate) }}%</span>
+                      <span class="font-mono" :style="{ color: row.hit_rate >= 50 ? 'var(--color-up, #26a69a)' : 'var(--color-down, #ef5350)' }">{{ fmtPct(row.hit_rate) }}%</span>
                     </template>
                   </el-table-column>
                   <el-table-column prop="direction_accuracy" label="方向准确率" width="100">
                     <template #default="{ row }">
-                      <span class="font-mono" :style="{ color: row.direction_accuracy >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ fmtPct(row.direction_accuracy) }}%</span>
+                      <span class="font-mono" :style="{ color: row.direction_accuracy >= 50 ? 'var(--color-up, #26a69a)' : 'var(--color-down, #ef5350)' }">{{ fmtPct(row.direction_accuracy) }}%</span>
                     </template>
                   </el-table-column>
                   <el-table-column prop="trend_accuracy" label="趋势准确率" width="100">
                     <template #default="{ row }">
-                      <span class="font-mono" :style="{ color: row.trend_accuracy >= 50 ? 'var(--color-up)' : 'var(--color-down)' }">{{ fmtPct(row.trend_accuracy) }}%</span>
+                      <span class="font-mono" :style="{ color: row.trend_accuracy >= 50 ? 'var(--color-up, #26a69a)' : 'var(--color-down, #ef5350)' }">{{ fmtPct(row.trend_accuracy) }}%</span>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -786,7 +823,7 @@ function exportCSV() {
   justify-content: space-between;
   margin-bottom: 24px;
   padding-bottom: 16px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .header-title {
@@ -795,12 +832,12 @@ function exportCSV() {
   gap: 10px;
   font-size: 18px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
 }
 
 .header-title .el-icon {
   font-size: 22px;
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .backtest-layout {
@@ -810,9 +847,9 @@ function exportCSV() {
 }
 
 .config-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 20px;
   height: fit-content;
 }
@@ -823,7 +860,7 @@ function exportCSV() {
 
 .run-btn {
   width: 100%;
-  background: linear-gradient(135deg, var(--color-up) 0%, var(--color-accent) 100%) !important;
+  background: linear-gradient(135deg, var(--color-up, #26a69a) 0%, var(--color-accent, #42a5f5) 100%) !important;
   border: none !important;
   font-weight: 600;
   height: 44px;
@@ -831,7 +868,7 @@ function exportCSV() {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .run-btn:hover {
@@ -843,7 +880,7 @@ function exportCSV() {
 .wf-params {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -856,7 +893,7 @@ function exportCSV() {
 .info-section {
   margin-top: 20px;
   padding-top: 16px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -870,34 +907,35 @@ function exportCSV() {
 
 .info-label {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .info-value {
   font-size: 13px;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
   font-weight: 500;
 }
 
 .result-panel {
   min-height: 600px;
+  overflow-x: hidden;
 }
 
 .backtest-tabs :deep(.el-tabs__nav-wrap::after) {
-  background-color: var(--border-subtle);
+  background-color: var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .backtest-tabs :deep(.el-tabs__item) {
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
 }
 
 .backtest-tabs :deep(.el-tabs__item.is-active) {
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .backtest-tabs :deep(.el-tabs__active-bar) {
-  background-color: var(--color-up);
+  background-color: var(--color-up, #26a69a);
 }
 
 .error-message {
@@ -905,66 +943,130 @@ function exportCSV() {
   align-items: center;
   gap: 12px;
   padding: 20px;
-  background: var(--color-down-dim);
+  background: var(--color-down-dim, rgba(239, 83, 80, 0.15));
   border: 1px solid rgba(255, 71, 87, 0.2);
-  border-radius: var(--radius-md);
-  color: var(--color-down);
+  border-radius: var(--radius-md, 10px);
+  color: var(--color-down, #ef5350);
+}
+
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 120px 20px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
+  text-align: center;
+}
+
+.loading-spinner-wrap {
+  margin-bottom: 20px;
+}
+
+.loading-spin {
+  font-size: 40px;
+  color: var(--color-up, #26a69a);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-state h3 {
+  font-size: 18px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.loading-state p {
+  font-size: 13px;
+}
+
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  text-align: center;
+  gap: 12px;
+}
+
+.error-state .error-icon {
+  font-size: 48px;
+  color: var(--color-down, #ef5350);
+}
+
+.error-state h3 {
+  font-size: 18px;
+  color: var(--color-down, #ef5350);
+  font-weight: 600;
+}
+
+.error-state p {
+  font-size: 13px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
+  max-width: 400px;
 }
 
 .result-content {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-x: auto;
 }
 
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 12px;
+  overflow-x: auto;
 }
 
 .stat-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  transition: var(--transition-fast);
+  transition: var(--transition-fast, 0.15s ease);
 }
 
 .stat-card:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .stat-label {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
 }
 
 .stat-value {
   font-size: 18px;
   font-weight: 700;
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
   letter-spacing: -0.02em;
 }
 
 .stat-value.loss {
-  color: var(--color-down);
+  color: var(--color-down, #ef5350);
 }
 
 .chart-block {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 16px;
-  transition: var(--transition-fast);
+  transition: var(--transition-fast, 0.15s ease);
 }
 
 .chart-block:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .chart-header {
@@ -973,35 +1075,47 @@ function exportCSV() {
   align-items: center;
   margin-bottom: 12px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .chart-title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   padding-left: 10px;
-  border-left: 3px solid var(--color-up);
+  border-left: 3px solid var(--color-up, #26a69a);
   letter-spacing: 0.02em;
 }
 
 .export-btn {
-  color: var(--text-muted) !important;
+  color: var(--text-muted, rgba(255, 255, 255, 0.38)) !important;
   font-size: 12px;
 }
 
 .export-btn:hover {
-  color: var(--color-up) !important;
+  color: var(--color-up, #26a69a) !important;
   background: rgba(0, 212, 170, 0.08) !important;
 }
 
 .chart {
   width: 100%;
   height: 280px;
+  max-height: 45vh;
 }
 
 .chart-lg {
   height: 360px;
+  max-height: 55vh;
+}
+
+@media (max-height: 900px) {
+  .chart { height: 220px; max-height: 35vh; }
+  .chart-lg { height: 280px; max-height: 45vh; }
+}
+
+@media (max-height: 700px) {
+  .chart { height: 180px; max-height: 30vh; }
+  .chart-lg { height: 220px; max-height: 38vh; }
 }
 
 .stability-grid {
@@ -1018,35 +1132,36 @@ function exportCSV() {
   padding: 12px;
   background: rgba(0, 212, 170, 0.04);
   border: 1px solid rgba(0, 212, 170, 0.1);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-md, 10px);
 }
 
 .stability-label {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
 }
 
 .stability-value {
   font-size: 20px;
   font-weight: 700;
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .stability-value.loss {
-  color: var(--color-down);
+  color: var(--color-down, #ef5350);
 }
 
 .stability-hint {
   font-size: 10px;
-  color: var(--text-disabled);
+  color: var(--text-disabled, rgba(255, 255, 255, 0.22));
 }
 
 .predictions-table {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 16px;
+  overflow-x: auto;
 }
 
 .pagination-wrapper {
@@ -1061,7 +1176,7 @@ function exportCSV() {
   align-items: center;
   justify-content: center;
   padding: 120px 20px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   text-align: center;
 }
 
@@ -1073,7 +1188,7 @@ function exportCSV() {
 
 .empty-state h3 {
   font-size: 18px;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   margin-bottom: 8px;
   font-weight: 600;
 }
@@ -1091,6 +1206,9 @@ function exportCSV() {
 @media (max-width: 768px) {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+  .predictions-table :deep(.el-table) {
+    font-size: 11px;
   }
 }
 </style>

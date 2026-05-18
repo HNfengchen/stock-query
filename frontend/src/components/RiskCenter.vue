@@ -64,30 +64,6 @@ const tailRiskType = computed(() => {
       </div>
     </div>
 
-    <div v-if="risk.stressTest" class="risk-section">
-      <div class="section-label">蒙特卡洛压力测试</div>
-      <div class="risk-grid">
-        <div class="risk-item">
-          <span class="risk-key">信号翻转率</span>
-          <span class="risk-val font-mono">
-            {{ risk.stressTest.signal_flip_rate != null ? (risk.stressTest.signal_flip_rate * 100).toFixed(1) + '%' : '-' }}
-          </span>
-        </div>
-        <div class="risk-item">
-          <span class="risk-key">稳健性</span>
-          <el-tag
-            v-if="risk.stressTest.is_robust != null"
-            :type="risk.stressTest.is_robust ? 'success' : 'danger'"
-            size="small"
-            effect="dark"
-          >
-            {{ risk.stressTest.is_robust ? '稳健' : '脆弱' }}
-          </el-tag>
-          <span v-else class="risk-val">-</span>
-        </div>
-      </div>
-    </div>
-
     <div v-if="risk.tailRiskWarning" class="risk-section">
       <div class="section-label">尾部风险</div>
       <el-tag :type="tailRiskType" size="small" effect="dark">
@@ -99,26 +75,26 @@ const tailRiskType = computed(() => {
 
 <style scoped>
 .risk-center {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 16px;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .risk-center:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .panel-title {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin-bottom: 16px;
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .risk-section {
@@ -131,7 +107,7 @@ const tailRiskType = computed(() => {
 
 .section-label {
   font-size: 10px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 600;
   letter-spacing: 0.05em;
   margin-bottom: 8px;
@@ -153,13 +129,14 @@ const tailRiskType = computed(() => {
 
 .risk-key {
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   font-weight: 500;
 }
 
 .risk-val {
   font-size: 12px;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
   font-weight: 600;
 }
+
 </style>

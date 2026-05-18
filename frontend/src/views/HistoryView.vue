@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
 import { useStockStore } from '@/stores/stockStore'
+import { useAsyncState } from '@/composables/useAsyncState'
 import { useRouter } from 'vue-router'
 import type { AnalysisRequest, WatchlistItem } from '@/types'
 import { DataAnalysis } from '@element-plus/icons-vue'
@@ -8,13 +9,16 @@ import { ElMessage } from 'element-plus'
 
 const store = useStockStore()
 const router = useRouter()
+const batchState = useAsyncState()
 
 const dialogVisible = ref(false)
 const editDialogVisible = ref(false)
 const editingStock = ref<WatchlistItem | null>(null)
 const batchStartTime = ref<number | null>(null)
 const tickCounter = ref(0)
+const batchDebouncePending = ref(false)
 let tickTimer: ReturnType<typeof setInterval> | null = null
+let batchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 function startTick() {
   stopTick()
@@ -107,33 +111,49 @@ function getSignalClass(signal: string): string {
 }
 
 async function batchQuickAnalyze() {
-  if (store.watchlist.length === 0) return
-  const stocks: AnalysisRequest[] = store.watchlist.map(item => ({
-    stock_input: item.stock_code,
-    position_status: item.position_status,
-    cost_price: item.cost_price ?? undefined,
-  }))
-  batchStartTime.value = Date.now()
-  startTick()
-  try {
-    await store.runBatchQuickAnalysis(stocks)
-    if (store.batchError) {
-      ElMessage.warning(store.batchError)
-    } else if (store.batchProgress.status === 'completed') {
-      ElMessage.success(`分析完成: ${store.batchProgress.total}只股票`)
+  if (store.watchlist.length === 0 || batchDebouncePending.value || batchState.isLoading.value) return
+  batchDebouncePending.value = true
+  batchDebounceTimer = setTimeout(async () => {
+    batchDebouncePending.value = false
+    batchDebounceTimer = null
+    const stocks: AnalysisRequest[] = store.watchlist.map(item => ({
+      stock_input: item.stock_code,
+      position_status: item.position_status,
+      cost_price: item.cost_price ?? undefined,
+    }))
+    batchStartTime.value = Date.now()
+    startTick()
+    batchState.toLoading()
+    try {
+      await store.runBatchQuickAnalysis(stocks)
+      if (store.batchError) {
+        batchState.toError(store.batchError)
+        ElMessage.warning(store.batchError)
+      } else if (store.batchProgress.status === 'completed') {
+        batchState.toSuccess(null)
+        ElMessage.success(`分析完成: ${store.batchProgress.total}只股票`)
+      }
+    } catch (e: any) {
+      const message = e.message || '分析失败'
+      batchState.toError(message)
+      ElMessage.error(message)
+    } finally {
+      batchStartTime.value = null
+      stopTick()
     }
-  } catch (e: any) {
-    ElMessage.error(e.message || '分析失败')
-  } finally {
-    batchStartTime.value = null
-    stopTick()
-  }
+  }, 300)
 }
 
 function cancelBatch() {
+  if (batchDebounceTimer) {
+    clearTimeout(batchDebounceTimer)
+    batchDebounceTimer = null
+    batchDebouncePending.value = false
+  }
   store.cancelBatchAnalysis()
   batchStartTime.value = null
   stopTick()
+  batchState.reset()
   ElMessage.info('已取消分析')
 }
 
@@ -168,10 +188,10 @@ async function removeStock(stockCode: string) {
       </div>
       <div class="header-actions">
         <el-button
-          v-if="!isBatchAnalyzing"
+          v-if="!batchState.isLoading.value"
           type="success"
           size="small"
-          :disabled="store.watchlist.length === 0"
+          :disabled="store.watchlist.length === 0 || batchDebouncePending"
           @click="batchQuickAnalyze"
         >
           <el-icon><DataAnalysis /></el-icon>
@@ -193,7 +213,7 @@ async function removeStock(stockCode: string) {
       </div>
     </div>
 
-    <div v-if="isBatchAnalyzing" class="batch-progress">
+    <div v-if="batchState.isLoading.value" class="batch-progress">
       <div class="progress-header">
         <span class="progress-title">批量分析中</span>
         <span class="progress-stats font-mono">
@@ -226,9 +246,22 @@ async function removeStock(stockCode: string) {
       </div>
     </div>
 
-    <div v-if="store.batchError && !isBatchAnalyzing" class="batch-error-banner">
+    <div v-if="batchState.isError.value" class="batch-error-banner">
       <el-icon><WarningFilled /></el-icon>
-      <span>{{ store.batchError }}</span>
+      <span>{{ batchState.error.value }}</span>
+      <el-button type="danger" size="small" text @click="batchQuickAnalyze">
+        <el-icon><RefreshRight /></el-icon>
+        <span>重试</span>
+      </el-button>
+    </div>
+
+    <div v-if="batchState.isSuccess.value" class="batch-success-banner">
+      <el-icon><CircleCheckFilled /></el-icon>
+      <span>批量分析完成，共 {{ store.batchProgress.total }} 只股票</span>
+      <el-button size="small" text @click="batchState.reset()">
+        <el-icon><Close /></el-icon>
+        <span>关闭</span>
+      </el-button>
     </div>
 
     <div class="stock-grid">
@@ -350,7 +383,7 @@ async function removeStock(stockCode: string) {
   justify-content: space-between;
   margin-bottom: 24px;
   padding-bottom: 16px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .header-title {
@@ -359,16 +392,16 @@ async function removeStock(stockCode: string) {
   gap: 10px;
   font-size: 18px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
 }
 
 .header-title .el-icon {
   font-size: 22px;
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .add-btn {
-  background: linear-gradient(135deg, var(--color-up) 0%, #00897b 100%) !important;
+  background: linear-gradient(135deg, var(--color-up, #26a69a) 0%, #00897b 100%) !important;
   border: none !important;
   font-weight: 600;
 }
@@ -381,9 +414,9 @@ async function removeStock(stockCode: string) {
 .batch-progress {
   margin: 12px 0;
   padding: 16px 20px;
-  background: var(--surface-2);
+  background: var(--surface-2, #1a1a1a);
   border: 1px solid rgba(0, 212, 170, 0.15);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-md, 10px);
 }
 
 .progress-header {
@@ -396,12 +429,12 @@ async function removeStock(stockCode: string) {
 .progress-title {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
 }
 
 .progress-stats {
   font-size: 13px;
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
   font-weight: 600;
 }
 
@@ -416,20 +449,20 @@ async function removeStock(stockCode: string) {
   align-items: center;
   margin-top: 8px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .progress-current {
-  color: var(--text-secondary);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
   font-weight: 500;
 }
 
 .progress-time {
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .progress-eta {
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
   opacity: 0.8;
 }
 
@@ -437,9 +470,9 @@ async function removeStock(stockCode: string) {
   margin-top: 8px;
   padding: 8px 12px;
   background: rgba(255, 71, 87, 0.08);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm, 6px);
   font-size: 11px;
-  color: var(--color-down);
+  color: var(--color-down, #ef5350);
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -471,8 +504,22 @@ async function removeStock(stockCode: string) {
   font-weight: 500;
 }
 
+.batch-success-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px 16px;
+  background: rgba(0, 212, 170, 0.06);
+  border: 1px solid rgba(0, 212, 170, 0.15);
+  border-radius: var(--radius-md);
+  color: var(--color-up);
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .signal-time {
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-size: 11px;
   margin-left: 4px;
 }
@@ -484,12 +531,12 @@ async function removeStock(stockCode: string) {
 }
 
 .stock-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 20px;
   cursor: pointer;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
   position: relative;
   overflow: hidden;
 }
@@ -501,15 +548,15 @@ async function removeStock(stockCode: string) {
   left: 0;
   right: 0;
   height: 2px;
-  background: linear-gradient(90deg, var(--color-up), var(--color-accent));
+  background: linear-gradient(90deg, var(--color-up, #26a69a), var(--color-accent, #42a5f5));
   opacity: 0;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .stock-card:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
   transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.5));
 }
 
 .stock-card:hover::before {
@@ -532,13 +579,13 @@ async function removeStock(stockCode: string) {
 .stock-code {
   font-size: 16px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
   letter-spacing: -0.02em;
 }
 
 .stock-name {
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .status-tag {
@@ -553,8 +600,8 @@ async function removeStock(stockCode: string) {
   gap: 8px;
   margin-bottom: 12px;
   padding: 8px 12px;
-  background: var(--bg-secondary);
-  border-radius: var(--radius-sm);
+  background: var(--bg-secondary, #1a1a1a);
+  border-radius: var(--radius-sm, 6px);
 }
 
 .card-signal {
@@ -574,17 +621,17 @@ async function removeStock(stockCode: string) {
 
 .signal-badge.signal-bull {
   background: rgba(38, 166, 154, 0.15);
-  color: var(--color-up);
+  color: var(--color-up, #26a69a);
 }
 
 .signal-badge.signal-bear {
   background: rgba(239, 83, 80, 0.15);
-  color: var(--color-down);
+  color: var(--color-down, #ef5350);
 }
 
 .signal-badge.signal-neutral {
   background: rgba(255, 167, 38, 0.15);
-  color: var(--color-warn);
+  color: var(--color-warn, #ffa726);
 }
 
 .signal-badge.signal-info {
@@ -594,25 +641,25 @@ async function removeStock(stockCode: string) {
 
 .signal-score {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .cost-label {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .cost-value {
   font-size: 14px;
   font-weight: 700;
-  color: var(--color-warn);
+  color: var(--color-warn, #ffa726);
 }
 
 .card-actions {
   display: flex;
   gap: 4px;
   opacity: 0;
-  transition: var(--transition-fast);
+  transition: var(--transition-fast, 0.15s ease);
 }
 
 .stock-card:hover .card-actions {
@@ -626,20 +673,20 @@ async function removeStock(stockCode: string) {
 }
 
 .action-btn.edit {
-  color: var(--text-secondary) !important;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60)) !important;
 }
 
 .action-btn.edit:hover {
-  color: var(--text-primary) !important;
-  background: var(--bg-hover) !important;
+  color: var(--text-primary, rgba(255, 255, 255, 0.92)) !important;
+  background: var(--bg-hover, #262626) !important;
 }
 
 .action-btn.delete {
-  color: var(--text-muted) !important;
+  color: var(--text-muted, rgba(255, 255, 255, 0.38)) !important;
 }
 
 .action-btn.delete:hover {
-  color: var(--color-down) !important;
+  color: var(--color-down, #ef5350) !important;
   background: rgba(255, 71, 87, 0.1) !important;
 }
 
@@ -650,7 +697,7 @@ async function removeStock(stockCode: string) {
   justify-content: center;
   padding: 100px 20px;
   gap: 16px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .empty-icon {

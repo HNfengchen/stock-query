@@ -1,20 +1,19 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+import { RouterView, useRoute } from 'vue-router'
 import NavHeader from './components/NavHeader.vue'
 import SideWatchlist from './components/SideWatchlist.vue'
 import { ref } from 'vue'
-import { useStockStore } from './stores/stockStore'
 
 const sidebarCollapsed = ref(false)
-const stockStore = useStockStore()
+const route = useRoute()
 </script>
 
 <template>
   <div class="app-container">
     <NavHeader />
     <div class="main-layout">
-      <SideWatchlist v-if="!stockStore.cockpitMode" v-model:collapsed="sidebarCollapsed" />
-      <main class="content-area" :class="{ 'sidebar-collapsed': sidebarCollapsed && !stockStore.cockpitMode, 'cockpit-mode': stockStore.cockpitMode }">
+      <SideWatchlist v-if="!route.meta.hideSidebar" v-model:collapsed="sidebarCollapsed" />
+      <main class="content-area" :class="{ 'sidebar-collapsed': sidebarCollapsed && !route.meta.hideSidebar, 'cockpit-mode': route.meta.hideSidebar }">
         <RouterView />
       </main>
     </div>

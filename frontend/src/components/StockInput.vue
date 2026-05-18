@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import type { AnalysisRequest } from '@/types'
 
 const props = defineProps<{
@@ -10,6 +10,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:modelValue', v: AnalysisRequest): void
   (e: 'analyze'): void
+  (e: 'cancel'): void
 }>()
 
 const local = computed({
@@ -17,8 +18,26 @@ const local = computed({
   set: (val: AnalysisRequest) => emit('update:modelValue', val),
 })
 
+const debouncePending = ref(false)
+let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
 function onAnalyze() {
-  emit('analyze')
+  if (debouncePending.value || props.loading) return
+  debouncePending.value = true
+  debounceTimer = setTimeout(() => {
+    debouncePending.value = false
+    debounceTimer = null
+    emit('analyze')
+  }, 300)
+}
+
+function onCancel() {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
+  debouncePending.value = false
+  emit('cancel')
 }
 </script>
 
@@ -63,13 +82,24 @@ function onAnalyze() {
       <div class="input-group btn-group">
         <label>&nbsp;</label>
         <el-button
+          v-if="loading"
+          type="danger"
+          size="large"
+          class="cancel-btn"
+          @click="onCancel"
+        >
+          <el-icon><Close /></el-icon>
+          <span>取消分析</span>
+        </el-button>
+        <el-button
+          v-else
           type="primary"
           size="large"
-          :loading="loading"
+          :disabled="debouncePending"
           class="analyze-btn"
           @click="onAnalyze"
         >
-          <el-icon v-if="!loading"><TrendCharts /></el-icon>
+          <el-icon><TrendCharts /></el-icon>
           <span>开始分析</span>
         </el-button>
       </div>
@@ -79,16 +109,16 @@ function onAnalyze() {
 
 <style scoped>
 .stock-input-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
   padding: 20px 24px;
   margin-bottom: 20px;
-  transition: var(--transition-base);
+  transition: var(--transition-base, 0.25s ease);
 }
 
 .stock-input-panel:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-active, rgba(38, 166, 154, 0.4));
 }
 
 .input-row {
@@ -106,7 +136,7 @@ function onAnalyze() {
 
 .input-group label {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
   font-weight: 500;
   letter-spacing: 0.02em;
   white-space: nowrap;
@@ -146,44 +176,63 @@ function onAnalyze() {
   transform: translateY(-1px);
 }
 
+.cancel-btn {
+  background: linear-gradient(135deg, #ef5350 0%, #c62828 100%) !important;
+  border: none !important;
+  font-weight: 600;
+  font-size: 14px;
+  padding: 0 28px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: var(--transition-base);
+}
+
+.cancel-btn:hover {
+  background: linear-gradient(135deg, #f44336 0%, #d32f2f 100%) !important;
+  box-shadow: 0 4px 16px rgba(255, 71, 87, 0.3) !important;
+  transform: translateY(-1px);
+}
+
 .dark-input :deep(.el-input__wrapper) {
-  background: var(--bg-secondary) !important;
-  box-shadow: inset 0 0 0 1px var(--border-default) !important;
-  border-radius: var(--radius-sm) !important;
+  background: var(--bg-secondary, #1a1a1a) !important;
+  box-shadow: inset 0 0 0 1px var(--border-default, rgba(255, 255, 255, 0.08)) !important;
+  border-radius: var(--radius-sm, 6px) !important;
   padding: 0 12px;
 }
 
 .dark-input :deep(.el-input__wrapper.is-focus) {
-  box-shadow: inset 0 0 0 1px var(--border-active) !important;
+  box-shadow: inset 0 0 0 1px var(--border-active, rgba(38, 166, 154, 0.4)) !important;
 }
 
 .dark-input :deep(.el-input__inner) {
-  color: var(--text-primary) !important;
+  color: var(--text-primary, rgba(255, 255, 255, 0.92)) !important;
   font-size: 14px;
 }
 
 .dark-input :deep(.el-input__prefix) {
-  color: var(--text-muted);
+  color: var(--text-muted, rgba(255, 255, 255, 0.38));
 }
 
 .dark-select :deep(.el-input__wrapper) {
-  background: var(--bg-secondary) !important;
-  box-shadow: inset 0 0 0 1px var(--border-default) !important;
-  border-radius: var(--radius-sm) !important;
+  background: var(--bg-secondary, #1a1a1a) !important;
+  box-shadow: inset 0 0 0 1px var(--border-default, rgba(255, 255, 255, 0.08)) !important;
+  border-radius: var(--radius-sm, 6px) !important;
 }
 
 .dark-select :deep(.el-input__inner) {
-  color: var(--text-primary) !important;
+  color: var(--text-primary, rgba(255, 255, 255, 0.92)) !important;
 }
 
 .dark-input-number :deep(.el-input__wrapper) {
-  background: var(--bg-secondary) !important;
-  box-shadow: inset 0 0 0 1px var(--border-default) !important;
-  border-radius: var(--radius-sm) !important;
+  background: var(--bg-secondary, #1a1a1a) !important;
+  box-shadow: inset 0 0 0 1px var(--border-default, rgba(255, 255, 255, 0.08)) !important;
+  border-radius: var(--radius-sm, 6px) !important;
 }
 
 .dark-input-number :deep(.el-input__inner) {
-  color: var(--text-primary) !important;
+  color: var(--text-primary, rgba(255, 255, 255, 0.92)) !important;
   text-align: left;
   padding-left: 12px;
 }

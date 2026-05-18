@@ -1,13 +1,14 @@
 import axios from 'axios'
 import type { AnalysisRequest, AnalysisResult, BatchAnalysisRequest, BatchAnalysisResult, BatchQuickSummary } from '@/types'
+import { API_TIMEOUTS } from './config'
 
 const api = axios.create({
   baseURL: '',
-  timeout: 120000,
+  timeout: API_TIMEOUTS.analysis,
 })
 
-export async function analyzeStock(data: AnalysisRequest): Promise<AnalysisResult> {
-  const response = await api.post('/api/analysis', data)
+export async function analyzeStock(data: AnalysisRequest, signal?: AbortSignal): Promise<AnalysisResult> {
+  const response = await api.post('/api/analysis', data, { signal })
   return response.data
 }
 
@@ -34,7 +35,7 @@ export interface QuickCompleteEvent {
   error_count: number
 }
 
-const SSE_TIMEOUT_MS = 120000
+const SSE_TIMEOUT_MS = API_TIMEOUTS.sse
 
 export async function batchQuickAnalyzeStream(
   stocks: AnalysisRequest[],
@@ -44,13 +45,14 @@ export async function batchQuickAnalyzeStream(
   signal?: AbortSignal,
 ): Promise<void> {
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), SSE_TIMEOUT_MS)
+  let timeoutId: ReturnType<typeof setTimeout> = setTimeout(() => controller.abort(), SSE_TIMEOUT_MS)
 
   let aborted = false
 
   const onExternalAbort = () => {
     if (!aborted) {
       aborted = true
+      clearTimeout(timeoutId)
       controller.abort()
     }
   }
@@ -65,6 +67,11 @@ export async function batchQuickAnalyzeStream(
     signal.addEventListener('abort', onExternalAbort)
   }
 
+  const cleanup = () => {
+    clearTimeout(timeoutId)
+    if (signal) signal.removeEventListener('abort', onExternalAbort)
+  }
+
   let response: Response
   try {
     response = await fetch('/api/analysis/batch-quick', {
@@ -74,8 +81,7 @@ export async function batchQuickAnalyzeStream(
       signal: controller.signal,
     })
   } catch (e: any) {
-    clearTimeout(timeoutId)
-    if (signal) signal.removeEventListener('abort', onExternalAbort)
+    cleanup()
     if (e.name === 'AbortError') {
       onError(aborted && signal?.aborted ? '分析已取消' : '请求超时')
     } else {
@@ -84,15 +90,15 @@ export async function batchQuickAnalyzeStream(
     return
   }
 
-  if (signal) signal.removeEventListener('abort', onExternalAbort)
-
   if (!response.ok) {
+    cleanup()
     onError(`HTTP ${response.status}`)
     return
   }
 
   const reader = response.body?.getReader()
   if (!reader) {
+    cleanup()
     onError('No response body')
     return
   }
@@ -103,7 +109,7 @@ export async function batchQuickAnalyzeStream(
 
   const resetStreamTimeout = () => {
     clearTimeout(timeoutId)
-    setTimeout(() => {
+    timeoutId = setTimeout(() => {
       if (!aborted) {
         aborted = true
         controller.abort()
@@ -148,9 +154,9 @@ export async function batchQuickAnalyzeStream(
         }
       }
     }
-    clearTimeout(timeoutId)
+    cleanup()
   } catch (e: any) {
-    clearTimeout(timeoutId)
+    cleanup()
     if (e.name === 'AbortError') {
       onError('分析已取消')
     } else {

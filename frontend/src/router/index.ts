@@ -8,6 +8,7 @@ const router = createRouter({
       path: '/',
       name: 'analysis',
       component: AnalysisView,
+      meta: { hideSidebar: true },
     },
     {
       path: '/backtest',

@@ -201,6 +201,18 @@ class DataFetcher:
             return self._validator.cross_validate(xtquant_data, backup_data)
         return {"is_valid": True, "source": "backup", "overall_confidence": 0.5}
 
+    def create_health_check_callback(self):
+        def callback(source):
+            try:
+                if source == "xtquant" and self._xtquant_adapter:
+                    detail = self._xtquant_adapter.get_instrument_detail("000001.SH")
+                    return detail is not None and not detail.get("error")
+                info = self._safe_fetch(get_stock_info, "000001")
+                return info is not None and len(info) > 0
+            except Exception:
+                return False
+        return callback
+
     def fetch_index_data(self, index_code: str = "000300") -> pd.DataFrame:
         try:
             import efinance as ef
