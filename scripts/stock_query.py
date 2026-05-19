@@ -8,6 +8,7 @@ import pandas as pd
 from typing import Dict, Optional, Tuple
 from datetime import datetime
 import time
+import concurrent.futures
 
 from .technical_indicators import calculate_all_indicators
 
@@ -19,6 +20,21 @@ try:
     XTQUANT_AVAILABLE = True
 except ImportError:
     xtdata = None
+
+
+def _call_with_timeout(func, *args, timeout=15, **kwargs):
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(func, *args, **kwargs)
+        done, not_done = concurrent.futures.wait([future], timeout=timeout)
+        if not_done:
+            not_done.pop().cancel()
+            return None
+        return future.result()
+    except Exception:
+        return None
+    finally:
+        executor.shutdown(wait=False)
 
 
 def clean_data(df: pd.DataFrame, stock_code: str = None, stock_name: str = None) -> pd.DataFrame:
@@ -141,7 +157,7 @@ def parse_stock_code(user_input: str) -> Tuple[Optional[str], Optional[str]]:
             print(f"通过 xtquant 查询失败: {e}")
 
     try:
-        df = ef.stock.get_base_info()
+        df = _call_with_timeout(ef.stock.get_base_info)
         if df is not None and not df.empty:
             if "股票简称" in df.columns:
                 match = df[df["股票简称"].str.contains(user_input, na=False)]
@@ -266,7 +282,7 @@ def get_stock_info(stock_code: str) -> Dict:
             print(f"xtquant 获取实时行情失败: {e}")
 
     try:
-        s = ef.stock.get_quote_snapshot(stock_code)
+        s = _call_with_timeout(ef.stock.get_quote_snapshot, stock_code)
         if s is not None and not s.empty:
             if info.get("名称") == "N/A" or "名称" not in info:
                 info["名称"] = s.get("名称", s.get("代码", "N/A"))
@@ -312,7 +328,7 @@ def get_stock_info(stock_code: str) -> Dict:
         print(f"efinance 获取实时行情失败: {e}")
 
     try:
-        base_info = ef.stock.get_base_info(stock_code)
+        base_info = _call_with_timeout(ef.stock.get_base_info, stock_code)
         if base_info is not None:
             if isinstance(base_info, pd.DataFrame) and not base_info.empty:
                 row = base_info.iloc[0]
@@ -446,7 +462,7 @@ def get_fund_flow(stock_code: str) -> Dict:
     fund_flow = {}
 
     try:
-        df = ef.stock.get_history_bill(stock_code)
+        df = _call_with_timeout(ef.stock.get_history_bill, stock_code)
         if df is not None and not df.empty:
             latest = df.iloc[-1]
             fund_flow["日期"] = latest.get("日期", "N/A")
@@ -478,7 +494,7 @@ def get_fund_flow(stock_code: str) -> Dict:
         fund_flow["error"] = f"获取资金流向失败: {e}"
 
     try:
-        df_minute = ef.stock.get_today_bill(stock_code)
+        df_minute = _call_with_timeout(ef.stock.get_today_bill, stock_code)
         if df_minute is not None and not df_minute.empty:
             minute_data = []
             for _, row in df_minute.iterrows():
@@ -512,7 +528,7 @@ def get_minute_data(stock_code: str) -> Dict:
     minute_data = {}
 
     try:
-        df = ef.stock.get_quote_history(stock_code, klt=1, fqt=1)
+        df = _call_with_timeout(ef.stock.get_quote_history, stock_code, klt=1, fqt=1)
         if df is not None and not df.empty:
             today = str(df.iloc[-1]["日期"])[:10]
             today_data = df[df["日期"].astype(str).str.startswith(today)]
@@ -611,7 +627,7 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
             print(f"xtquant 获取历史数据失败: {e}")
 
     try:
-        df = ef.stock.get_quote_history(stock_code, klt=101, fqt=1)
+        df = _call_with_timeout(ef.stock.get_quote_history, stock_code, klt=101, fqt=1)
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             df = clean_data(df, stock_code, stock_name)
             result = df.tail(days)
@@ -664,20 +680,21 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
         import baostock as bs
 
         bs.login()
-        rs = bs.query_history_k_data_plus(
-            f"{'sh' if market == 'sh' else 'sz'}.{stock_code}",
-            "date,open,high,low,close,volume,amount,turn,peTTM,pbMRQ",
-            start_date=start_date,
-            end_date=end_date,
-            frequency="d",
-            adjustflag="2",
-        )
+        try:
+            rs = bs.query_history_k_data_plus(
+                f"{'sh' if market == 'sh' else 'sz'}.{stock_code}",
+                "date,open,high,low,close,volume,amount,turn,peTTM,pbMRQ",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="2",
+            )
 
-        data_list = []
-        while rs.error_code == "0" and rs.next():
-            data_list.append(rs.get_row_data())
-
-        bs.logout()
+            data_list = []
+            while rs.error_code == "0" and rs.next():
+                data_list.append(rs.get_row_data())
+        finally:
+            bs.logout()
 
         if data_list:
             df = pd.DataFrame(

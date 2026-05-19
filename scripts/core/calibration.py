@@ -352,7 +352,21 @@ class ValidationCalibrator:
                 v += step
             return vals
         else:
-            return vals
+            coarse_vals = []
+            v = lo
+            while v <= hi + step * 0.01:
+                coarse_vals.append(round(v, 4))
+                v += step
+            fine_step = round(step / 5, 4)
+            fine_vals = []
+            mid_idx = len(coarse_vals) // 2
+            fv = max(lo, coarse_vals[mid_idx] - step) if coarse_vals else lo
+            upper = min(hi, coarse_vals[mid_idx] + step) if coarse_vals else hi
+            while fv <= upper + fine_step * 0.01:
+                if round(fv, 4) not in coarse_vals:
+                    fine_vals.append(round(fv, 4))
+                fv += fine_step
+            return fine_vals
 
     def _scan_single_param(
         self,

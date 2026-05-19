@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 import traceback
+import asyncio
 
 from backend.exceptions import InvalidStockCodeError, DataInsufficientError, AnalysisFailedError, StockQueryException
 from backend.services.backtest_service import run_prediction_validation, run_walk_forward_validation, BacktestTimeoutError
@@ -23,7 +24,8 @@ class WalkForwardRequest(BaseModel):
 @router.post("/backtest")
 async def backtest(req: BacktestRequest):
     try:
-        result = run_prediction_validation(req.stock_code)
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, run_prediction_validation, req.stock_code)
         return sanitize_for_json(result)
     except BacktestTimeoutError as e:
         raise StockQueryException(str(e))
@@ -42,11 +44,14 @@ async def backtest(req: BacktestRequest):
 @router.post("/backtest/walk-forward")
 async def walk_forward(req: WalkForwardRequest):
     try:
-        result = run_walk_forward_validation(
-            stock_code=req.stock_code,
-            train_window=req.train_window,
-            test_window=req.test_window,
-            step=req.step,
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            run_walk_forward_validation,
+            req.stock_code,
+            req.train_window,
+            req.test_window,
+            req.step,
         )
         return sanitize_for_json(result)
     except BacktestTimeoutError as e:

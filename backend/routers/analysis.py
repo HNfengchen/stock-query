@@ -33,7 +33,10 @@ class BatchAnalysisRequest(BaseModel):
 @router.post("/analysis")
 async def analyze(req: AnalysisRequest):
     try:
-        result = run_analysis(req.stock_input, req.position_status, req.cost_price)
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, run_analysis, req.stock_input, req.position_status, req.cost_price
+        )
         return sanitize_for_json(result)
     except ValueError as e:
         msg = str(e)
@@ -238,7 +241,7 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
         try:
             while True:
                 try:
-                    event_data = await asyncio.wait_for(stage_queue.get(), timeout=600)
+                    event_data = await asyncio.wait_for(stage_queue.get(), timeout=120)
                     stage = event_data.get("stage")
                     data = event_data.get("data", {})
 

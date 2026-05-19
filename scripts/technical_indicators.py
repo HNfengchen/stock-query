@@ -220,7 +220,7 @@ def calculate_kdj(
     highest_high = high.rolling(window=n, min_periods=n).max()
 
     rsv = (close - lowest_low) / (highest_high - lowest_low) * 100
-    rsv = rsv.fillna(50)
+    rsv = rsv.replace([np.inf, -np.inf], 50).fillna(50)
 
     k = pd.Series([np.nan] * len(close), index=close.index)
     d = pd.Series([np.nan] * len(close), index=close.index)
@@ -334,8 +334,8 @@ def calculate_boll(
     upper = middle + k * std
     lower = middle - k * std
 
-    bandwidth = ((upper - middle) / middle * 100).round(2)
-    pct_b = ((closes - lower) / (upper - lower) * 100).round(2)
+    bandwidth = ((upper - middle) / middle * 100).replace([np.inf, -np.inf], np.nan).round(2)
+    pct_b = ((closes - lower) / (upper - lower) * 100).replace([np.inf, -np.inf], np.nan).round(2)
 
     latest_bandwidth = bandwidth.iloc[-1] if not pd.isna(bandwidth.iloc[-1]) else None
     latest_pct_b = pct_b.iloc[-1] if not pd.isna(pct_b.iloc[-1]) else None
@@ -534,7 +534,7 @@ def calculate_distribution_features(
         return {"Distribution": {}, "state": {}}
 
     closes = pd.Series(closes).astype(float)
-    log_returns = np.log(closes / closes.shift(1)).dropna()
+    log_returns = np.log(closes / closes.shift(1)).replace([np.inf, -np.inf], np.nan).dropna()
 
     result = {}
     window_states = {}
@@ -572,7 +572,7 @@ def calculate_distribution_features(
         else:
             skew_signal = "对称"
 
-        if kurtosis > 3:
+        if kurtosis > 0:
             kurt_signal = "厚尾"
         elif kurtosis < -1:
             kurt_signal = "轻尾"
@@ -866,7 +866,7 @@ def calculate_historical_volatility(
     if closes is None:
         return {"latest": None, "series": {}, "signal": "数据不足", "state": {}}
 
-    log_returns = np.log(closes / closes.shift(1)).dropna()
+    log_returns = np.log(closes / closes.shift(1)).replace([np.inf, -np.inf], np.nan).dropna()
     if isinstance(windows, int):
         windows = [windows]
 
@@ -915,6 +915,7 @@ def calculate_parkinson_volatility(
         return {"latest": None, "series": pd.Series([None] * len(high)), "signal": "数据不足", "state": {}}
 
     log_hl_sq = (np.log(high / low)) ** 2
+    log_hl_sq = log_hl_sq.replace([np.inf, -np.inf], np.nan)
     factor = 1.0 / (4.0 * np.log(2.0))
     pv = np.sqrt(log_hl_sq.rolling(window=window).mean() * factor) * np.sqrt(252)
 
@@ -947,6 +948,8 @@ def calculate_garman_klass_volatility(
 
     log_hl = 0.5 * (np.log(high / low)) ** 2
     log_co = (2 * np.log(2) - 1) * (np.log(close / open_)) ** 2
+    log_hl = log_hl.replace([np.inf, -np.inf], np.nan)
+    log_co = log_co.replace([np.inf, -np.inf], np.nan)
     gk = log_hl - log_co
     gk_vol = np.sqrt(gk.rolling(window=window).mean()) * np.sqrt(252)
 
@@ -970,7 +973,7 @@ def calculate_realized_volatility(
     if closes is None:
         return {"latest": None, "series": pd.Series(), "signal": "数据不足", "state": {}}
 
-    log_returns = np.log(closes / closes.shift(1))
+    log_returns = np.log(closes / closes.shift(1)).replace([np.inf, -np.inf], np.nan)
     if len(log_returns) < window:
         return {"latest": None, "series": pd.Series([None] * len(closes)), "signal": "数据不足", "state": {}}
 

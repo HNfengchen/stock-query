@@ -80,7 +80,7 @@ class HMMRegimeDetector:
 
         try:
             model.fit(obs)
-        except ValueError:
+        except (ValueError, RuntimeError):
             model = GaussianHMM(
                 n_components=self.n_components,
                 covariance_type="spherical",

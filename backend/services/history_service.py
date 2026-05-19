@@ -1,6 +1,7 @@
 import json
 import os
 import fcntl
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
@@ -18,13 +19,15 @@ def _ensure_data_dir():
 @contextmanager
 def _watchlist_lock():
     _ensure_data_dir()
-    lock_fd = open(LOCK_PATH, "w")
+    lock_fd = None
     try:
+        lock_fd = open(LOCK_PATH, "w")
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         yield lock_fd
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
+        if lock_fd is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
 
 def _read_watchlist():
@@ -35,8 +38,18 @@ def _read_watchlist():
 
 
 def _write_watchlist(data):
-    with open(WATCHLIST_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _ensure_data_dir()
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix='.json.tmp')
+    try:
+        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, WATCHLIST_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def load_watchlist() -> List[Dict]:

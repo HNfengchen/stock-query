@@ -80,8 +80,9 @@ async function confirmAdd() {
   try {
     await store.addStock(newStock.value)
     dialogVisible.value = false
-  } catch (e) {
-    console.error(e)
+  } catch (e: any) {
+    const message = e?.response?.data?.detail || e?.message || '添加股票失败'
+    ElMessage.error(message)
   }
 }
 
@@ -285,9 +286,9 @@ async function removeStock(stockCode: string) {
             {{ item.position_status }}
           </el-tag>
         </div>
-        <div v-if="item.position_status === '已持有' && item.cost_price" class="card-cost">
+        <div v-if="item.position_status === '已持有' && item.cost_price != null" class="card-cost">
           <span class="cost-label">成本价</span>
-          <span class="cost-value font-mono">{{ item.cost_price.toFixed(2) }}</span>
+          <span class="cost-value font-mono">{{ Number(item.cost_price).toFixed(2) }}</span>
         </div>
         <div v-if="item.cached_signal" class="card-signal">
           <span
@@ -296,8 +297,8 @@ async function removeStock(stockCode: string) {
           >
             {{ item.cached_signal }}
           </span>
-          <span v-if="item.cached_signal_score" class="signal-score font-mono">
-            {{ item.cached_signal_score.toFixed(2) }}
+          <span v-if="item.cached_signal_score != null" class="signal-score font-mono">
+            {{ Number(item.cached_signal_score).toFixed(2) }}
           </span>
           <span v-if="item.cached_signal_time" class="signal-time">
             {{ new Date(item.cached_signal_time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}

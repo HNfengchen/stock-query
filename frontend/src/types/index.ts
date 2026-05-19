@@ -199,20 +199,22 @@ export interface Indicators {
 }
 
 export interface StockInfo {
-  '涨跌幅'?: number | string
-  '涨跌额'?: number | string
-  '今开'?: number | string
-  '昨收'?: number | string
-  '最高'?: number | string
-  '最低'?: number | string
-  '振幅'?: number | string
-  '换手率'?: number | string
-  '成交额'?: number | string
-  '市盈率-动态'?: number | string
-  '市净率'?: number | string
-  '总市值'?: number | string
-  '流通市值'?: number | string
+  '涨跌幅'?: number
+  '涨跌额'?: number
+  '今开'?: number
+  '昨收'?: number
+  '最高'?: number
+  '最低'?: number
+  '振幅'?: number
+  '换手率'?: number
+  '成交额'?: number
+  '市盈率-动态'?: number
+  '市净率'?: number
+  '总市值'?: number
+  '流通市值'?: number
   '所属行业'?: string
+  '名称'?: string
+  '最新价'?: number
   [key: string]: unknown
 }
 
@@ -407,4 +409,13 @@ export interface PredictionResult {
   confidence: number | null
   day1Trend: string | null
   day2Trend: string | null
+}
+
+export function getErrorMessage(error: unknown, fallback = '操作失败'): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null) {
+    const e = error as { response?: { data?: { detail?: string } }; message?: string }
+    return e.response?.data?.detail || e.message || fallback
+  }
+  return fallback
 }

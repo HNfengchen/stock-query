@@ -236,6 +236,7 @@ def orthogonalize_features(
         components = vt
     else:
         cov_matrix = np.dot(centered.T, centered) / (n_samples - 1)
+        cov_matrix = (cov_matrix + cov_matrix.T) / 2
         eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
 
         sorted_idx = np.argsort(eigenvalues)[::-1]
@@ -290,7 +291,15 @@ def build_feature_series_matrix(indicators_series: list) -> tuple:
             all_feature_values.append(values)
         else:
             if len(names) == len(all_feature_names):
-                all_feature_values.append(values)
+                if list(names) == list(all_feature_names):
+                    all_feature_values.append(values)
+                else:
+                    padded = np.zeros(len(all_feature_names), dtype=np.float64)
+                    name_to_idx = {n: i for i, n in enumerate(all_feature_names)}
+                    for i, n in enumerate(names):
+                        if n in name_to_idx:
+                            padded[name_to_idx[n]] = values[i]
+                    all_feature_values.append(padded)
             else:
                 padded = np.zeros(len(all_feature_names), dtype=np.float64)
                 name_to_idx = {n: i for i, n in enumerate(all_feature_names)}

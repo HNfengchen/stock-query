@@ -1,9 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { AnalysisResult, AnalysisRequest, MarketStatus, RiskAssessment, PredictionResult, Indicators, PositionStrategyNotHeld } from '@/types'
+import type { AnalysisResult, AnalysisRequest, MarketStatus, RiskAssessment, PredictionResult, Indicators, PositionStrategyNotHeld, LogEntry, StressTestResult } from '@/types'
 import { analyzeStock } from '@/api/analysis'
 import { API_TIMEOUTS } from '@/api/config'
 import { useLogStore } from './logStore'
+import { connectSSEStream } from '@/composables/useSSEStream'
 
 export const useAnalysisStore = defineStore('analysis', () => {
   const currentResult = ref<AnalysisResult | null>(null)
@@ -102,7 +103,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       const mlLow = current * (1 + mlReturn - mlVol)
       const mlHigh = current * (1 + mlReturn + mlVol)
 
-      if (hybridPrediction.day1Low != null && hybridPrediction.day1High != null && alpha > 0) {
+      if (hybridPrediction.day1Low != null && hybridPrediction.day1High != null && alpha > 0.01) {
         const ruleLow = (hybridPrediction.day1Low - (1 - alpha) * mlLow) / alpha
         const ruleHigh = (hybridPrediction.day1High - (1 - alpha) * mlHigh) / alpha
         rulePrediction = {
@@ -126,211 +127,142 @@ export const useAnalysisStore = defineStore('analysis', () => {
   })
 
   async function runAnalysis(data: AnalysisRequest) {
-    if (loading.value) return
+    if (loading.value) {
+      cancelAnalysis()
+    }
     const gen = ++analysisGeneration
+    currentResult.value = null
+    streamStage.value = ''
+    streamStageData.value = {}
     loading.value = true
     const logStore = useLogStore()
+
+    const controller = new AbortController()
+    streamAbortController = controller
+
+    const params = new URLSearchParams({
+      stock_input: data.stock_input,
+      position_status: data.position_status,
+    })
+    if (data.cost_price != null) {
+      params.set('cost_price', String(data.cost_price))
+    }
+
+    let sseFailed = false
+
     try {
-      await new Promise<void>((resolve, reject) => {
-        const controller = new AbortController()
-        streamAbortController = controller
-        streamStage.value = 'stage_basic'
-        streamStageData.value = {}
+      try {
+        await connectSSEStream({
+          url: `/api/analysis/stream?${params.toString()}`,
+          timeout: API_TIMEOUTS.sse,
+          signal: controller.signal,
+          onEvent: ({ event, data: eventData }) => {
+            if (gen !== analysisGeneration) return
 
-        const params = new URLSearchParams({
-          stock_input: data.stock_input,
-          position_status: data.position_status,
-        })
-        if (data.cost_price != null) {
-          params.set('cost_price', String(data.cost_price))
-        }
-
-        let timeoutId: ReturnType<typeof setTimeout>
-        const resetTimeout = () => {
-          clearTimeout(timeoutId)
-          timeoutId = setTimeout(() => {
-            controller.abort()
-            reject(new Error('流式分析超时，正在尝试普通接口...'))
-          }, API_TIMEOUTS.sse)
-        }
-        resetTimeout()
-
-        let sseFailed = false
-
-        fetch(`/api/analysis/stream?${params.toString()}`, { signal: controller.signal })
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}`)
-            }
-            const reader = response.body?.getReader()
-            if (!reader) {
-              throw new Error('No response body')
-            }
-            const decoder = new TextDecoder()
-            let buffer = ''
-            let currentEvent = ''
-
-            const processChunk = (): Promise<void> => {
-              return reader.read().then(({ done, value }) => {
-                if (done) {
-                  clearTimeout(timeoutId)
-                  if (gen === analysisGeneration) {
-                    loading.value = false
-                    streamAbortController = null
-                  }
-                  resolve()
-                  return
+            if (event === 'stage_basic') {
+              streamStage.value = 'stage_basic'
+              streamStageData.value = { ...streamStageData.value, basic: eventData }
+              if (currentResult.value) {
+                if ((eventData as any).stock_info) currentResult.value.stock_info = (eventData as any).stock_info
+              } else if ((eventData as any).stock_info) {
+                currentResult.value = {
+                  stock_code: '', stock_name: '', analysis: { technical_score: 0, fund_flow_score: 0, sentiment_score: 0, overall_score: 0, recommendation: '', details: {} },
+                  trading_signal: { score: 0, signal: '', signal_text: '' },
+                  price_prediction: { current: null, support: null, resistance: null, day1: { target_low: null, target_high: null, trend: 'neutral', signal: '' }, day2: { target_low: null, target_high: null, trend: 'neutral', signal: '' } },
+                  indicators: {} as Indicators, position_strategy: {} as PositionStrategyNotHeld, stock_info: (eventData as any).stock_info,
+                  charts: { kline: { dates: [], opens: [], closes: [], highs: [], lows: [], volumes: [], ma5: [], ma10: [], ma20: [], ma60: [], boll_upper: [], boll_middle: [], boll_lower: [] }, technical: { dates: [], macd: [], dif: [], dea: [], rsi6: [], rsi12: [], k: [], d: [], j: [] }, fund_flow: { dates: [], main_flow: [], main_flow_ratio: [], small_flow: [], change_pct: [] } },
                 }
-                buffer += decoder.decode(value, { stream: true })
-                const lines = buffer.split('\n')
-                buffer = lines.pop() || ''
-
-                let hasActivity = false
-                for (const line of lines) {
-                  if (line.startsWith('event: ')) {
-                    currentEvent = line.slice(7).trim()
-                    hasActivity = true
-                  } else if (line.startsWith('data: ')) {
-                    const dataStr = line.slice(6)
-                    hasActivity = true
-                    try {
-                      const eventData = JSON.parse(dataStr)
-                      if (currentEvent === 'stage_basic') {
-                        streamStage.value = 'stage_basic'
-                        streamStageData.value = { ...streamStageData.value, basic: eventData }
-                        if (currentResult.value) {
-                          if (eventData.stock_info) currentResult.value.stock_info = eventData.stock_info
-                        } else if (eventData.stock_info) {
-                          currentResult.value = {
-                            stock_code: '', stock_name: '', analysis: { technical_score: 0, fund_flow_score: 0, sentiment_score: 0, overall_score: 0, recommendation: '', details: {} },
-                            trading_signal: { score: 0, signal: '', signal_text: '' },
-                            price_prediction: { current: null, support: null, resistance: null, day1: { target_low: null, target_high: null, trend: 'neutral', signal: '' }, day2: { target_low: null, target_high: null, trend: 'neutral', signal: '' } },
-                            indicators: {} as Indicators, position_strategy: {} as PositionStrategyNotHeld, stock_info: eventData.stock_info,
-                            charts: { kline: { dates: [], opens: [], closes: [], highs: [], lows: [], volumes: [], ma5: [], ma10: [], ma20: [], ma60: [], boll_upper: [], boll_middle: [], boll_lower: [] }, technical: { dates: [], macd: [], dif: [], dea: [], rsi6: [], rsi12: [], k: [], d: [], j: [] }, fund_flow: { dates: [], main_flow: [], main_flow_ratio: [], small_flow: [], change_pct: [] } },
-                          }
-                        }
-                      } else if (currentEvent === 'stage_technical') {
-                        streamStage.value = 'stage_technical'
-                        streamStageData.value = { ...streamStageData.value, technical: eventData }
-                        if (currentResult.value) {
-                          if (eventData.indicators) currentResult.value.indicators = eventData.indicators
-                          if (eventData.technical_chart_data) {
-                            currentResult.value.charts = { ...currentResult.value.charts, ...eventData.technical_chart_data }
-                          }
-                        }
-                      } else if (currentEvent === 'stage_risk') {
-                        streamStage.value = 'stage_risk'
-                        streamStageData.value = { ...streamStageData.value, risk: eventData }
-                        if (currentResult.value) {
-                          if (eventData.signal) currentResult.value.trading_signal = eventData.signal
-                          if (eventData.validation) {
-                            if (currentResult.value.validation) {
-                              currentResult.value.validation = { ...currentResult.value.validation, ...eventData.validation }
-                            } else {
-                              currentResult.value.validation = eventData.validation
-                            }
-                          }
-                          if (eventData.tech_score != null || eventData.fund_score != null || eventData.sentiment_score != null) {
-                            currentResult.value.analysis = {
-                              ...currentResult.value.analysis,
-                              technical_score: eventData.tech_score ?? currentResult.value.analysis.technical_score,
-                              fund_flow_score: eventData.fund_score ?? currentResult.value.analysis.fund_flow_score,
-                              sentiment_score: eventData.sentiment_score ?? currentResult.value.analysis.sentiment_score,
-                            }
-                          }
-                        }
-                      } else if (currentEvent === 'stage_prediction') {
-                        streamStage.value = 'stage_prediction'
-                        streamStageData.value = { ...streamStageData.value, prediction: eventData }
-                        if (currentResult.value) {
-                          if (eventData.price_prediction) currentResult.value.price_prediction = eventData.price_prediction
-                          if (eventData.position_strategy) currentResult.value.position_strategy = eventData.position_strategy
-                        }
-                      } else if (currentEvent === 'stage_complete') {
-                        if (gen !== analysisGeneration) { resolve(); return }
-                        currentResult.value = eventData
-                        streamStage.value = 'stage_complete'
-                        clearTimeout(timeoutId)
-                        if (gen === analysisGeneration) {
-                          loading.value = false
-                          streamAbortController = null
-                        }
-                        resolve()
-                        return
-                      } else if (currentEvent === 'log') {
-                        logStore.addLog(eventData)
-                      } else if (currentEvent === 'stress_test_result') {
-                        if (currentResult.value?.validation) {
-                          currentResult.value.validation.stress_test = eventData
-                        }
-                      } else if (currentEvent === 'error') {
-                        clearTimeout(timeoutId)
-                        if (gen === analysisGeneration) {
-                          loading.value = false
-                          streamAbortController = null
-                        }
-                        reject(new Error(eventData.error || '分析失败'))
-                      } else if (currentEvent === 'heartbeat') {
-                      }
-                    } catch {
-                    }
-                    currentEvent = ''
-                  }
-                }
-                if (hasActivity) {
-                  resetTimeout()
-                }
-                return processChunk()
-              }).catch((e: any) => {
-                clearTimeout(timeoutId)
-                if (gen === analysisGeneration) {
-                  loading.value = false
-                  streamAbortController = null
-                }
-                if (e.name === 'AbortError') {
-                  resolve()
-                } else {
-                  reject(e)
-                }
-              })
-            }
-
-            return processChunk()
-          })
-          .catch(async (e: any) => {
-            clearTimeout(timeoutId)
-            if (sseFailed) return
-            if (gen !== analysisGeneration) {
-              streamAbortController = null
-              isReentering = false
-              resolve()
-              return
-            }
-            sseFailed = true
-            streamStage.value = ''
-            loading.value = true
-            clearResult()
-            const fbController = new AbortController()
-            fallbackAbortController = fbController
-            isReentering = true
-            try {
-              const result = await analyzeStock(data, fbController.signal)
-              if (gen !== analysisGeneration || fbController.signal.aborted) { resolve(); return }
-              currentResult.value = result
-              streamStage.value = 'stage_complete'
-              resolve()
-            } catch (fallbackErr) {
-              reject(fallbackErr)
-            } finally {
-              if (gen === analysisGeneration) {
-                loading.value = false
-                streamAbortController = null
-                fallbackAbortController = null
-                isReentering = false
               }
+            } else if (event === 'stage_technical') {
+              streamStage.value = 'stage_technical'
+              streamStageData.value = { ...streamStageData.value, technical: eventData }
+              if (currentResult.value) {
+                if ((eventData as any).indicators) currentResult.value.indicators = (eventData as any).indicators
+                if ((eventData as any).technical_chart_data) {
+                  currentResult.value.charts = { ...currentResult.value.charts, ...(eventData as any).technical_chart_data }
+                }
+              }
+            } else if (event === 'stage_risk') {
+              streamStage.value = 'stage_risk'
+              streamStageData.value = { ...streamStageData.value, risk: eventData }
+              if (currentResult.value) {
+                if ((eventData as any).signal) currentResult.value.trading_signal = (eventData as any).signal
+                if ((eventData as any).validation) {
+                  if (currentResult.value.validation) {
+                    currentResult.value.validation = { ...currentResult.value.validation, ...(eventData as any).validation }
+                  } else {
+                    currentResult.value.validation = (eventData as any).validation
+                  }
+                }
+                if ((eventData as any).tech_score != null || (eventData as any).fund_score != null || (eventData as any).sentiment_score != null) {
+                  currentResult.value.analysis = {
+                    ...currentResult.value.analysis,
+                    technical_score: (eventData as any).tech_score ?? currentResult.value.analysis.technical_score,
+                    fund_flow_score: (eventData as any).fund_score ?? currentResult.value.analysis.fund_flow_score,
+                    sentiment_score: (eventData as any).sentiment_score ?? currentResult.value.analysis.sentiment_score,
+                  }
+                }
+              }
+            } else if (event === 'stage_prediction') {
+              streamStage.value = 'stage_prediction'
+              streamStageData.value = { ...streamStageData.value, prediction: eventData }
+              if (currentResult.value) {
+                if ((eventData as any).price_prediction) currentResult.value.price_prediction = (eventData as any).price_prediction
+                if ((eventData as any).position_strategy) currentResult.value.position_strategy = (eventData as any).position_strategy
+              }
+            } else if (event === 'stage_complete') {
+              if (gen !== analysisGeneration) return
+              currentResult.value = eventData as AnalysisResult
+              streamStage.value = 'stage_complete'
+            } else if (event === 'log') {
+              logStore.addLog(eventData as LogEntry)
+            } else if (event === 'stress_test_result') {
+              if (currentResult.value?.validation) {
+                currentResult.value.validation.stress_test = eventData as StressTestResult
+              }
+            } else if (event === 'error') {
+              throw new Error((eventData as any).error || '分析失败')
             }
-          })
-      })
+          },
+          onComplete: () => {
+            if (gen === analysisGeneration) {
+              loading.value = false
+              streamAbortController = null
+            }
+          },
+        })
+        return
+      } catch (sseError) {
+        if (sseFailed) return
+        if (gen !== analysisGeneration) {
+          streamAbortController = null
+          isReentering = false
+          return
+        }
+        sseFailed = true
+      }
+
+      streamStage.value = ''
+      loading.value = true
+      clearResult()
+      const fbController = new AbortController()
+      fallbackAbortController = fbController
+      isReentering = true
+      try {
+        const result = await analyzeStock(data, fbController.signal)
+        if (gen !== analysisGeneration || fbController.signal.aborted) return
+        currentResult.value = result
+        streamStage.value = 'stage_complete'
+      } catch (fallbackErr) {
+        throw fallbackErr
+      } finally {
+        if (gen === analysisGeneration) {
+          loading.value = false
+          streamAbortController = null
+          fallbackAbortController = null
+          isReentering = false
+        }
+      }
     } catch (e) {
       loading.value = false
       streamAbortController = null
@@ -367,6 +299,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
     currentResult.value = null
   }
 
+  function setLoading(value: boolean) {
+    loading.value = value
+  }
+
   return {
     currentResult,
     loading,
@@ -380,5 +316,6 @@ export const useAnalysisStore = defineStore('analysis', () => {
     cancelAnalysis,
     cancelStreamAnalysis,
     clearResult,
+    setLoading,
   }
 })

@@ -109,5 +109,12 @@
     "cached_signal": "回避",
     "cached_signal_score": 0.273,
     "cached_signal_time": "2026-05-18T22:15:16.803528"
+  },
+  {
+    "stock_code": "000001",
+    "stock_name": "平安银行",
+    "position_status": "未持有",
+    "cost_price": null,
+    "added_at": "2026-05-19T09:48:48.013916"
   }
 ]

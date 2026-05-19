@@ -5,6 +5,7 @@
 """
 
 import json
+import logging
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -222,86 +223,18 @@ class ReportGenerator:
                 "j": [float(x) if not pd.isna(x) else 0.0 for x in j_series.tolist()] if hasattr(j_series, 'tolist') else [0.0] * n,
             }
 
-        # C-03：fallback分支（仅作防御性编程，实际使用时应传入indicators）
-        import logging
-        logging.warning("ReportGenerator: 使用fallback计算指标，可能与分析结果不一致")
-        closes = history_df["收盘"].tolist()
-        highs = history_df["最高"].tolist()
-        lows = history_df["最低"].tolist()
-
-        closes_series = pd.Series(closes)
-        highs_series = pd.Series(highs)
-        lows_series = pd.Series(lows)
-        n = len(closes)
-
-        dif_list = [None] * n
-        dea_list = [None] * n
-        macd_list = [None] * n
-        rsi6_list = [None] * n
-        rsi12_list = [None] * n
-        k_list = [None] * n
-        d_list = [None] * n
-        j_list = [None] * n
-
-        if n >= 34:
-            ema_fast = closes_series.ewm(span=12, adjust=False).mean()
-            ema_slow = closes_series.ewm(span=26, adjust=False).mean()
-            dif = ema_fast - ema_slow
-            dea = dif.ewm(span=9, adjust=False).mean()
-            macd_bar = (dif - dea) * 2
-
-            dif_list = [float(x) if not pd.isna(x) else 0.0 for x in dif.tolist()]
-            dea_list = [float(x) if not pd.isna(x) else 0.0 for x in dea.tolist()]
-            macd_list = [float(x) if not pd.isna(x) else 0.0 for x in macd_bar.tolist()]
-
-        if n >= 7:
-            deltas = closes_series.diff()
-            for period, rsi_list in [(6, rsi6_list), (12, rsi12_list)]:
-                if n >= period + 1:
-                    gain = deltas.where(deltas > 0, 0)
-                    loss = -deltas.where(deltas < 0, 0)
-                    avg_gain = gain.rolling(window=period, min_periods=period).mean()
-                    avg_loss = loss.rolling(window=period, min_periods=period).mean()
-                    rs = avg_gain / avg_loss.replace(0, float("inf"))
-                    rsi = (100 - (100 / (1 + rs))).fillna(0)
-                    rsi_list[:] = [
-                        float(x) if not pd.isna(x) else 0.0 for x in rsi.tolist()
-                    ]
-
-        if n >= 9:
-            low_nine = lows_series.rolling(window=9, min_periods=9).min()
-            high_nine = highs_series.rolling(window=9, min_periods=9).max()
-            rsv = (
-                (closes_series - low_nine) / (high_nine - low_nine).replace(0, 1) * 100
-            )
-            rsv = rsv.fillna(50)
-
-            k = [50.0] * n
-            d = [50.0] * n
-            for i in range(1, n):
-                k[i] = (
-                    2 / 3 * k[i - 1] + 1 / 3 * rsv.iloc[i]
-                    if not pd.isna(rsv.iloc[i])
-                    else k[i - 1]
-                )
-                d[i] = (
-                    2 / 3 * d[i - 1] + 1 / 3 * k[i] if not pd.isna(k[i]) else d[i - 1]
-                )
-
-            k_list = [float(v) if not pd.isna(v) else 0.0 for v in k]
-            d_list = [float(v) if not pd.isna(v) else 0.0 for v in d]
-            j_list = [float(3 * k[i] - 2 * d[i]) for i in range(n)]
-
+        logging.warning("ReportGenerator: indicators参数缺失，无法生成技术指标图表数据")
+        n = len(dates) if dates else 0
         return {
-            "labels": dates,
-            "dif": dif_list,
-            "dea": dea_list,
-            "macd": macd_list,
-            "rsi6": rsi6_list,
-            "rsi12": rsi12_list,
-            "k": k_list,
-            "d": d_list,
-            "j": j_list,
+            "labels": dates or [],
+            "dif": [0.0] * n,
+            "dea": [0.0] * n,
+            "macd": [0.0] * n,
+            "rsi6": [0.0] * n,
+            "rsi12": [0.0] * n,
+            "k": [0.0] * n,
+            "d": [0.0] * n,
+            "j": [0.0] * n,
         }
 
     def _prepare_fund_flow_data(self, fund_flow: Dict) -> Dict:

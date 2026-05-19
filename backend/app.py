@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
     yield
     try:
         from backend.routers.analysis import _executor
-        _executor.shutdown(wait=True)
+        _executor.shutdown(wait=False)
         logger.info("ThreadPoolExecutor 已关闭")
     except Exception as e:
         logger.warning(f"ThreadPoolExecutor 关闭失败: {e}")
@@ -68,11 +68,19 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.method in ("POST", "PUT", "PATCH"):
             content_length = request.headers.get("content-length")
-            if content_length and int(content_length) > self.max_body_size:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": f"请求体过大，最大允许 {self.max_body_size // (1024*1024)}MB"}
-                )
+            if content_length:
+                if int(content_length) > self.max_body_size:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": f"请求体过大，最大允许 {self.max_body_size // (1024*1024)}MB"}
+                    )
+            else:
+                body = await request.body()
+                if len(body) > self.max_body_size:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": f"请求体过大，最大允许 {self.max_body_size // (1024*1024)}MB"}
+                    )
         return await call_next(request)
 
 
@@ -103,6 +111,5 @@ async def analysis_failed_exception_handler(request: Request, exc: AnalysisFaile
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    traceback.print_exc()
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(status_code=500, content={"detail": "服务器内部错误，请稍后重试"})

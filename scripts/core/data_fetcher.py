@@ -23,21 +23,40 @@ from scripts.stock_query import (
     get_minute_data,
 )
 
-try:
-    from scripts.database import get_or_fetch_stock_data
-    import scripts.database as db_module
+_db_module = None
+_get_or_fetch_stock_data = None
+_database_available = None
 
-    # 尝试连接数据库测试
-    conn = db_module.get_connection()
-    conn.close()
-    DATABASE_AVAILABLE = True
-    print(f"[数据库] 连接测试成功!")
+try:
+    from scripts.database import get_or_fetch_stock_data as _get_or_fetch_fn
+    import scripts.database as _db_mod
+    _db_module = _db_mod
+    _get_or_fetch_stock_data = _get_or_fetch_fn
 except ImportError as e:
-    DATABASE_AVAILABLE = False
     print(f"[数据库] 模块导入失败: {e}")
-except Exception as e:
-    DATABASE_AVAILABLE = False
-    print(f"[数据库] 连接失败: {e}")
+
+
+def is_database_available() -> bool:
+    global _database_available
+    if _database_available is not None:
+        return _database_available
+    if _db_module is None:
+        _database_available = False
+        return False
+    try:
+        conn = _db_module.get_connection()
+        conn.close()
+        _database_available = True
+        print(f"[数据库] 连接测试成功!")
+    except Exception as e:
+        _database_available = False
+        print(f"[数据库] 连接失败: {e}")
+    return _database_available
+
+
+def reset_database_available():
+    global _database_available
+    _database_available = None
 
 try:
     from scripts.core.xtquant_adapter import XtQuantAdapter, DataValidator
@@ -45,6 +64,29 @@ try:
     XTQUANT_AVAILABLE = True
 except ImportError:
     XTQUANT_AVAILABLE = False
+
+
+_timeout_executor = None
+
+
+def _get_timeout_executor():
+    global _timeout_executor
+    if _timeout_executor is None:
+        _timeout_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    return _timeout_executor
+
+
+def _call_with_timeout(func, *args, timeout=15, **kwargs):
+    executor = _get_timeout_executor()
+    try:
+        future = executor.submit(func, *args, **kwargs)
+        done, not_done = concurrent.futures.wait([future], timeout=timeout)
+        if not_done:
+            not_done.pop().cancel()
+            return None
+        return future.result()
+    except Exception:
+        return None
 
 
 class DataFetchError(Exception):
@@ -94,14 +136,20 @@ class DataFetcher:
         """带重试和超时的函数包装器"""
         last_error = None
         for attempt in range(self.max_retries):
+            executor = ThreadPoolExecutor(max_workers=1)
             try:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(func, *args, **kwargs)
-                    return future.result(timeout=self.timeout)
-            except concurrent.futures.TimeoutError:
-                last_error = TimeoutError(f"Function {func.__name__} timed out after {self.timeout}s")
+                future = executor.submit(func, *args, **kwargs)
+                done, not_done = concurrent.futures.wait([future], timeout=self.timeout)
+                if not_done:
+                    not_done_future = not_done.pop()
+                    not_done_future.cancel()
+                    last_error = TimeoutError(f"Function {func.__name__} timed out after {self.timeout}s")
+                else:
+                    return future.result()
             except Exception as e:
                 last_error = e
+            finally:
+                executor.shutdown(wait=False)
             if attempt < self.max_retries - 1:
                 time.sleep(self.retry_delay)
         raise NetworkError(f"重试{self.max_retries}次后仍失败：{last_error}")
@@ -219,7 +267,7 @@ class DataFetcher:
 
             prefix = "sh" if index_code.startswith(("000", "9")) else "sz"
             ef_code = f"{prefix}{index_code}"
-            df = ef.stock.get_quote_history(ef_code)
+            df = _call_with_timeout(ef.stock.get_quote_history, ef_code)
             if df is not None and not df.empty:
                 col_map = {}
                 if "收盘" not in df.columns and "close" in df.columns:
@@ -275,7 +323,7 @@ class DataFetcher:
         try:
             import efinance as ef
 
-            sector_df = ef.stock.get_quote_snapshot(stock_code)
+            sector_df = _call_with_timeout(ef.stock.get_quote_snapshot, stock_code)
             if sector_df is not None and not sector_df.empty:
                 pass
         except Exception:
@@ -338,11 +386,12 @@ class DataFetcher:
             f"[DataFetcher] 解析股票代码: {stock_code}, 名称: {stock_name}, 市场: {market}"
         )
 
-        if DATABASE_AVAILABLE:
+        db_result = None
+        if is_database_available():
             fetcher_logger.info(
                 f"[DataFetcher] 数据库可用，检查并获取股票 {stock_code} 数据..."
             )
-            db_result = get_or_fetch_stock_data(
+            db_result = _get_or_fetch_stock_data(
                 stock_code, force_refresh=False, days=120
             )
 
@@ -362,18 +411,34 @@ class DataFetcher:
         if info is None:
             fetcher_logger.info(f"[DataFetcher] 从API并发获取最新数据...")
             result = {}
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            executor = ThreadPoolExecutor(max_workers=3)
+            try:
                 futures = {
                     executor.submit(self._safe_fetch, self.fetch_stock_info, stock_code): 'stock_info',
                     executor.submit(self._safe_fetch, self.fetch_fund_flow, stock_code): 'fund_flow',
                     executor.submit(self._safe_fetch, self.fetch_history_data, stock_code, 60): 'history_data',
                 }
-                for future in as_completed(futures, timeout=20):
-                    key = futures[future]
-                    try:
-                        result[key] = future.result(timeout=15)
-                    except Exception:
-                        result[key] = None
+                try:
+                    for future in as_completed(futures, timeout=20):
+                        key = futures[future]
+                        try:
+                            result[key] = future.result(timeout=15)
+                        except Exception:
+                            result[key] = None
+                except TimeoutError:
+                    fetcher_logger.warning("[DataFetcher] 并发获取数据超时，收集已完成的结果")
+                    for future, key in futures.items():
+                        if key not in result:
+                            if future.done():
+                                try:
+                                    result[key] = future.result()
+                                except Exception:
+                                    result[key] = None
+                            else:
+                                future.cancel()
+                                result[key] = None
+            finally:
+                executor.shutdown(wait=False)
 
             info = result.get('stock_info')
             fund_flow = result.get('fund_flow')
@@ -402,7 +467,7 @@ class DataFetcher:
         market_data = {}
         try:
             import efinance as ef
-            market_snapshot = ef.stock.get_quote_snapshot("000001")
+            market_snapshot = _call_with_timeout(ef.stock.get_quote_snapshot, "000001")
             if market_snapshot is not None and not market_snapshot.empty:
                 market_data = {
                     "涨跌幅": market_snapshot.iloc[0].get("涨跌幅", 0),
@@ -414,9 +479,9 @@ class DataFetcher:
         fetcher_logger.info(f"[DataFetcher] 数据获取完成，返回结果")
 
         data_quality = "unknown"
-        if DATABASE_AVAILABLE:
+        if is_database_available():
             try:
-                if self._xtquant_adapter and db_result.get("source") == "api":
+                if self._xtquant_adapter and db_result and db_result.get("source") == "api":
                     xtquant_full_code = f"{stock_code}.{'SH' if stock_code.startswith(('60', '68')) else 'SZ'}"
                     xtquant_info = self._xtquant_adapter.get_instrument_detail(xtquant_full_code)
                     if xtquant_info and not xtquant_info.get("error"):
@@ -432,7 +497,7 @@ class DataFetcher:
                         if validator_result.get("is_valid", False)
                         else "unvalidated"
                     )
-                elif not DATABASE_AVAILABLE:
+                elif not is_database_available():
                     validator_result = self.validate_data(info, {})
                     data_quality = (
                         "validated"

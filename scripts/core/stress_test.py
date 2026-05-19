@@ -81,7 +81,7 @@ class MonteCarloStressTest:
                 flip_count += 1
 
             sim_total_returns = perturbed_returns
-            simulated_returns_list.append(np.mean(sim_total_returns))
+            simulated_returns_list.append(sim_total_returns)
 
             dd = self._compute_max_drawdown(perturbed_prices)
             max_drawdown_list.append(dd)
@@ -89,12 +89,12 @@ class MonteCarloStressTest:
         signal_flip_rate = flip_count / self.n_simulations if self.n_simulations > 0 else 0.0
 
         if simulated_returns_list:
-            sim_returns_arr = np.array(simulated_returns_list)
-            mean_return = np.mean(sim_returns_arr)
+            all_returns = np.concatenate(simulated_returns_list)
+            mean_return = np.mean(all_returns)
             max_dd = np.max(max_drawdown_list) if max_drawdown_list else 0.0
-            sharpe = self._compute_sharpe(sim_returns_arr)
-            sortino = self._compute_sortino(sim_returns_arr)
-            calmar = self._compute_calmar(sim_returns_arr, max_dd)
+            sharpe = self._compute_sharpe(all_returns)
+            sortino = self._compute_sortino(all_returns)
+            calmar = self._compute_calmar(all_returns, max_dd)
         else:
             mean_return = 0.0
             max_dd = 0.0

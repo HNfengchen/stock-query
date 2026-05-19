@@ -1,8 +1,24 @@
 import os
+import re
 import logging
 import yaml
 
 logger = logging.getLogger("stock_query")
+
+_ENV_PATTERN = re.compile(r'\$\{([^}:]+)(?::([^}]*))?\}')
+
+def _resolve_env_vars(value):
+    if isinstance(value, str):
+        def _replace(match):
+            env_var = match.group(1)
+            default = match.group(2) if match.group(2) is not None else ""
+            return os.environ.get(env_var, default)
+        return _ENV_PATTERN.sub(_replace, value)
+    if isinstance(value, dict):
+        return {k: _resolve_env_vars(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_vars(item) for item in value]
+    return value
 
 _PROJECT_ROOT = None
 
@@ -28,13 +44,6 @@ def load_config(force_reload=False):
     else:
         _config_cache = {}
 
-    db_password = os.environ.get("DB_PASSWORD")
-    if db_password:
-        if "database" not in _config_cache:
-            _config_cache["database"] = {}
-        _config_cache["database"]["password"] = db_password
-    else:
-        if _config_cache.get("database", {}).get("password"):
-            logger.warning("数据库密码使用配置文件默认值，建议设置 DB_PASSWORD 环境变量")
+    _config_cache = _resolve_env_vars(_config_cache)
 
     return _config_cache

@@ -7,9 +7,15 @@ export const useWatchlistStore = defineStore('watchlist', () => {
   const watchlist = ref<WatchlistItem[]>([])
 
   async function loadWatchlist() {
-    const data = await getWatchlist()
-    watchlist.value = data
-    return data
+    try {
+      const data = await getWatchlist()
+      watchlist.value = data
+      return data
+    } catch (e) {
+      console.error('加载自选股失败:', e)
+      watchlist.value = []
+      return []
+    }
   }
 
   async function addStock(data: StockInput) {
@@ -32,11 +38,29 @@ export const useWatchlistStore = defineStore('watchlist', () => {
     return item
   }
 
+  function updateItemSignal(stockCode: string, signal: string, score: number) {
+    const idx = watchlist.value.findIndex(w => w.stock_code === stockCode)
+    if (idx >= 0) {
+      const existing = watchlist.value[idx]!
+      watchlist.value[idx] = {
+        stock_code: existing.stock_code,
+        stock_name: existing.stock_name,
+        position_status: existing.position_status,
+        cost_price: existing.cost_price,
+        added_at: existing.added_at,
+        cached_signal: signal,
+        cached_signal_score: score,
+        cached_signal_time: new Date().toISOString(),
+      }
+    }
+  }
+
   return {
     watchlist,
     loadWatchlist,
     addStock,
     removeStock,
     updateStock,
+    updateItemSignal,
   }
 })

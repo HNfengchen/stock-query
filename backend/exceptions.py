@@ -25,3 +25,24 @@ class AnalysisFailedError(StockQueryException):
 
     def __init__(self, detail: str = "分析引擎内部错误"):
         super().__init__(detail)
+
+
+class RateLimitError(StockQueryException):
+    status_code = 429
+
+    def __init__(self, detail: str = "请求过于频繁"):
+        super().__init__(detail)
+
+
+class TimeoutError(StockQueryException):
+    status_code = 408
+
+    def __init__(self, detail: str = "请求超时"):
+        super().__init__(detail)
+
+
+class DatabaseError(StockQueryException):
+    status_code = 503
+
+    def __init__(self, detail: str = "数据库服务不可用"):
+        super().__init__(detail)

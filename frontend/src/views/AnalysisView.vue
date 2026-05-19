@@ -68,12 +68,17 @@ async function doAnalyze() {
     ElMessage.warning('请输入股票代码或名称')
     return
   }
+  if (store.loading) {
+    store.cancelAnalysis()
+  }
   store.clearLogs()
   analysisState.toLoading()
   try {
     await store.runAnalysis(form.value)
     if (store.currentResult) {
       analysisState.toSuccess(store.currentResult)
+    } else {
+      analysisState.toError('分析未返回结果，请稍后重试')
     }
     await store.loadWatchlist()
   } catch (e: any) {

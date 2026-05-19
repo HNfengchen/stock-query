@@ -15,7 +15,7 @@ export const useBatchStore = defineStore('batch', () => {
 
   async function runBatchAnalysis(stocks: AnalysisRequest[]) {
     const analysisStore = useAnalysisStore()
-    analysisStore.loading = true
+    analysisStore.setLoading(true)
     batchProgress.value = { current: 0, total: stocks.length, currentStock: '', status: 'analyzing' }
     try {
       const result = await batchAnalyze({ stocks })
@@ -25,7 +25,7 @@ export const useBatchStore = defineStore('batch', () => {
       batchProgress.value.status = 'error'
       throw e
     } finally {
-      analysisStore.loading = false
+      analysisStore.setLoading(false)
     }
   }
 
@@ -33,11 +33,11 @@ export const useBatchStore = defineStore('batch', () => {
     const analysisStore = useAnalysisStore()
     const watchlistStore = useWatchlistStore()
     const logStore = useLogStore()
-    analysisStore.loading = true
+    analysisStore.setLoading(true)
     batchError.value = ''
     batchErrorStocks.value = []
-    batchProgress.value = { current: 0, total: stocks.length, currentStock: '', status: 'analyzing' }
     batchAbortController = new AbortController()
+    batchProgress.value = { current: 0, total: stocks.length, currentStock: '', status: 'analyzing' }
 
     try {
       await batchQuickAnalyzeStream(
@@ -50,20 +50,11 @@ export const useBatchStore = defineStore('batch', () => {
             batchProgress.value.current = event.current
             batchProgress.value.total = event.total
             batchProgress.value.currentStock = event.summary.stock_name || event.summary.stock_code
-            const idx = watchlistStore.watchlist.findIndex(w => w.stock_code === event.summary!.stock_code)
-            if (idx >= 0) {
-              const existing = watchlistStore.watchlist[idx]!
-              watchlistStore.watchlist[idx] = {
-                stock_code: existing.stock_code,
-                stock_name: existing.stock_name,
-                position_status: existing.position_status,
-                cost_price: existing.cost_price,
-                added_at: existing.added_at,
-                cached_signal: event.summary.signal_text,
-                cached_signal_score: event.summary.score,
-                cached_signal_time: new Date().toISOString(),
-              }
-            }
+            watchlistStore.updateItemSignal(
+              event.summary.stock_code,
+              event.summary.signal_text,
+              event.summary.score,
+            )
           }
           if (event.type === 'error' && event.error) {
             batchProgress.value.current = event.current
@@ -88,7 +79,7 @@ export const useBatchStore = defineStore('batch', () => {
         batchAbortController.signal,
       )
     } finally {
-      analysisStore.loading = false
+      analysisStore.setLoading(false)
       batchAbortController = null
     }
   }
@@ -99,7 +90,7 @@ export const useBatchStore = defineStore('batch', () => {
       batchAbortController.abort()
       batchAbortController = null
       batchProgress.value.status = ''
-      analysisStore.loading = false
+      analysisStore.setLoading(false)
     }
   }
 

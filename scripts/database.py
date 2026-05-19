@@ -6,8 +6,10 @@ PostgreSQL数据库操作模块
 import psycopg2
 import json
 import os
+import re
+import threading
 import yaml
-from psycopg2 import sql
+from psycopg2 import pool, sql
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, date as date_type
 from typing import Dict, List, Optional, Any
@@ -35,11 +37,11 @@ def to_python_type(val):
 
 
 DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "user": "postgres",
-    "password": "postgres",
-    "database": "stock_data",
+    "host": os.environ.get("DB_HOST", "localhost"),
+    "port": int(os.environ.get("DB_PORT", "5432")),
+    "user": os.environ.get("DB_USER", "postgres"),
+    "password": os.environ.get("DB_PASSWORD", "postgres"),
+    "database": os.environ.get("DB_NAME", "stock_data"),
 }
 
 def _load_db_config():
@@ -61,16 +63,29 @@ def _load_db_config():
     except Exception:
         pass
 
-    db_password = os.environ.get("DB_PASSWORD")
-    if db_password:
-        DB_CONFIG["password"] = db_password
-
 _load_db_config()
 
 
+_connection_pool = None
+_pool_lock = threading.Lock()
+
+def _init_pool():
+    global _connection_pool
+    _connection_pool = pool.ThreadedConnectionPool(
+        minconn=2, maxconn=10, **DB_CONFIG
+    )
+
 def get_connection():
-    """获取数据库连接"""
-    return psycopg2.connect(**DB_CONFIG)
+    global _connection_pool
+    with _pool_lock:
+        if _connection_pool is None:
+            _init_pool()
+    return _connection_pool.getconn()
+
+def release_connection(conn):
+    global _connection_pool
+    if _connection_pool and conn:
+        _connection_pool.putconn(conn)
 
 
 def init_database():
@@ -107,13 +122,13 @@ def init_database():
 
     conn = get_connection()
     cur = conn.cursor()
-
-    cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE")
-    cur.execute("CREATE EXTENSION IF NOT EXISTS vector CASCADE")
-    db_logger.info("TimescaleDB 和 Vector 扩展已启用")
-
-    cur.close()
-    conn.close()
+    try:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE")
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector CASCADE")
+        db_logger.info("TimescaleDB 和 Vector 扩展已启用")
+    finally:
+        cur.close()
+        release_connection(conn)
     db_logger.info("数据库初始化完成")
     db_logger.info("=" * 50)
 
@@ -122,6 +137,8 @@ class StockDataManager:
     """股票数据管理器"""
 
     def __init__(self, stock_code: str):
+        if not re.match(r'^\d{6}$', stock_code.zfill(6)):
+            raise ValueError(f"Invalid stock code: {stock_code}")
         self.stock_code = stock_code.zfill(6)
         self.table_name = f"stock_{self.stock_code}"
 
@@ -145,33 +162,45 @@ class StockDataManager:
         cur = conn.cursor()
         try:
             for col_name, col_type in new_columns:
-                cur.execute(f"""
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = '{self.table_name}' AND column_name = '{col_name}'
-                """)
+                cur.execute(
+                    "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+                    (self.table_name, col_name),
+                )
                 if not cur.fetchone():
-                    cur.execute(f"ALTER TABLE {self.table_name} ADD COLUMN {col_name} {col_type}")
+                    cur.execute(
+                        sql.SQL("ALTER TABLE {} ADD COLUMN {} {}").format(
+                            sql.Identifier(self.table_name),
+                            sql.Identifier(col_name),
+                            sql.SQL(col_type),
+                        )
+                    )
                     db_logger.info(f"[{self.stock_code}] 添加字段 {col_name}")
             for col_name, comment in column_comments.items():
-                cur.execute(f"COMMENT ON COLUMN {self.table_name}.{col_name} IS %s", (comment,))
+                cur.execute(
+                    sql.SQL("COMMENT ON COLUMN {}.{} IS %s").format(
+                        sql.Identifier(self.table_name),
+                        sql.Identifier(col_name),
+                    ),
+                    (comment,),
+                )
             db_logger.info(f"[{self.stock_code}] 迁移字段注释更新完成")
         finally:
             cur.close()
-            conn.close()
+            release_connection(conn)
 
     def table_exists(self) -> bool:
         """检查表是否存在"""
         conn = get_connection()
         cur = conn.cursor()
         try:
-            cur.execute(f"""
-                SELECT 1 FROM information_schema.tables 
-                WHERE table_name = '{self.table_name}'
-            """)
+            cur.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = %s",
+                (self.table_name,),
+            )
             return cur.fetchone() is not None
         finally:
             cur.close()
-            conn.close()
+            release_connection(conn)
 
     def create_table(self):
         """为单个股票创建独立的数据表"""
@@ -187,8 +216,8 @@ class StockDataManager:
         cur = conn.cursor()
 
         try:
-            create_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS {self.table_name} (
+            create_table_sql = sql.SQL("""
+            CREATE TABLE IF NOT EXISTS {} (
                 id SERIAL,
                 trade_date DATE NOT NULL,
                 trade_time TIMESTAMP NOT NULL,
@@ -246,7 +275,7 @@ class StockDataManager:
                 
                 PRIMARY KEY (id, trade_time)
             );
-            """
+            """).format(sql.Identifier(self.table_name))
 
             cur.execute(create_table_sql)
             db_logger.info(f"[{self.stock_code}] 表创建成功")
@@ -295,23 +324,34 @@ class StockDataManager:
             ]
 
             for col, desc in comments:
-                cur.execute(f"COMMENT ON COLUMN {self.table_name}.{col} IS %s", (desc,))
+                cur.execute(
+                    sql.SQL("COMMENT ON COLUMN {}.{} IS %s").format(
+                        sql.Identifier(self.table_name),
+                        sql.Identifier(col),
+                    ),
+                    (desc,),
+                )
 
             cur.execute(
-                f"COMMENT ON TABLE {self.table_name} IS %s",
+                sql.SQL("COMMENT ON TABLE {} IS %s").format(
+                    sql.Identifier(self.table_name),
+                ),
                 (f"股票{self.stock_code}历史行情数据",),
             )
 
-            cur.execute(f"""
-                ALTER TABLE {self.table_name} 
-                ADD CONSTRAINT {self.table_name}_trade_date_key UNIQUE (trade_date)
-            """)
+            cur.execute(
+                sql.SQL("ALTER TABLE {} ADD CONSTRAINT {} UNIQUE (trade_date)").format(
+                    sql.Identifier(self.table_name),
+                    sql.Identifier(f"{self.table_name}_trade_date_key"),
+                )
+            )
             db_logger.info(f"[{self.stock_code}] trade_date唯一约束添加完成")
             db_logger.info(f"[{self.stock_code}] 字段注释添加完成")
 
             try:
                 cur.execute(
-                    f"SELECT create_hypertable('{self.table_name}', 'trade_time', migrate_data => TRUE)"
+                    "SELECT create_hypertable(%s, 'trade_time', migrate_data => TRUE)",
+                    (self.table_name,),
                 )
                 db_logger.info(f"[{self.stock_code}] 已转换为时序超表")
             except psycopg2.errors.DuplicateObject:
@@ -320,11 +360,17 @@ class StockDataManager:
                 db_logger.warning(f"[{self.stock_code}] 时序超表创建跳过: {e}")
 
             cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.stock_code}_trade_date ON {self.table_name} (trade_date)"
+                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (trade_date)").format(
+                    sql.Identifier(f"idx_{self.stock_code}_trade_date"),
+                    sql.Identifier(self.table_name),
+                )
             )
             try:
                 cur.execute(
-                    f"CREATE INDEX IF NOT EXISTS idx_{self.stock_code}_features ON {self.table_name} USING ivfflat (features_vector vector_cosine_ops) WITH (lists = 100)"
+                    sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} USING ivfflat (features_vector vector_cosine_ops) WITH (lists = 100)").format(
+                        sql.Identifier(f"idx_{self.stock_code}_features"),
+                        sql.Identifier(self.table_name),
+                    )
                 )
             except Exception as e:
                 db_logger.warning(f"[{self.stock_code}] 向量索引创建失败(可忽略): {e}")
@@ -336,7 +382,7 @@ class StockDataManager:
             raise
         finally:
             cur.close()
-            conn.close()
+            release_connection(conn)
 
     def get_latest_trade_date(self) -> Optional[datetime]:
         """获取数据库中最新交易日期"""
@@ -345,7 +391,7 @@ class StockDataManager:
         cur = conn.cursor()
 
         try:
-            cur.execute(f"SELECT MAX(trade_date) FROM {self.table_name}")
+            cur.execute(sql.SQL("SELECT MAX(trade_date) FROM {}").format(sql.Identifier(self.table_name)))
             result = cur.fetchone()
             latest = result[0] if result and result[0] else None
             db_logger.debug(f"[{self.stock_code}] 最新交易日期: {latest}")
@@ -355,7 +401,7 @@ class StockDataManager:
             return None
         finally:
             cur.close()
-            conn.close()
+            release_connection(conn)
 
     def check_data_exists(self, trade_date: datetime) -> bool:
         """检查指定交易日的数据是否存在"""
@@ -365,10 +411,9 @@ class StockDataManager:
 
         try:
             cur.execute(
-                f"""
-                SELECT 1 FROM {self.table_name} 
-                WHERE trade_date = %s LIMIT 1
-            """,
+                sql.SQL("SELECT 1 FROM {} WHERE trade_date = %s LIMIT 1").format(
+                    sql.Identifier(self.table_name),
+                ),
                 (trade_date,),
             )
 
@@ -378,16 +423,16 @@ class StockDataManager:
             exists = False
         finally:
             cur.close()
-            conn.close()
+            release_connection(conn)
         return exists
 
     def insert_daily_data(self, data: Dict[str, Any]):
         """插入单条日线数据"""
         conn = get_connection()
         cur = conn.cursor()
-
-        insert_sql = f"""
-        INSERT INTO {self.table_name} (
+        try:
+            insert_sql = sql.SQL("""
+        INSERT INTO {} (
             trade_date, trade_time,
             open, high, low, close, volume, amount,
             change_pct, change_amount, turnover_rate,
@@ -409,27 +454,28 @@ class StockDataManager:
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             volume = EXCLUDED.volume,
-            amount = COALESCE(EXCLUDED.amount, {self.table_name}.amount),
-            change_pct = COALESCE(EXCLUDED.change_pct, {self.table_name}.change_pct),
-            change_amount = COALESCE(EXCLUDED.change_amount, {self.table_name}.change_amount),
-            turnover_rate = COALESCE(EXCLUDED.turnover_rate, {self.table_name}.turnover_rate),
-            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, {self.table_name}.pe_dynamic),
-            pb = COALESCE(EXCLUDED.pb, {self.table_name}.pb),
-            total_market_cap = COALESCE(EXCLUDED.total_market_cap, {self.table_name}.total_market_cap),
-            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, {self.table_name}.circ_market_cap),
-            main_flow = COALESCE(EXCLUDED.main_flow, {self.table_name}.main_flow),
-            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, {self.table_name}.main_flow_ratio),
-            day1_pred_high = COALESCE(EXCLUDED.day1_pred_high, {self.table_name}.day1_pred_high),
-            day1_pred_low = COALESCE(EXCLUDED.day1_pred_low, {self.table_name}.day1_pred_low),
-            day2_pred_high = COALESCE(EXCLUDED.day2_pred_high, {self.table_name}.day2_pred_high),
-            day2_pred_low = COALESCE(EXCLUDED.day2_pred_low, {self.table_name}.day2_pred_low),
-            trend = COALESCE(EXCLUDED.trend, {self.table_name}.trend)
-        """
+            amount = COALESCE(EXCLUDED.amount, {}.amount),
+            change_pct = COALESCE(EXCLUDED.change_pct, {}.change_pct),
+            change_amount = COALESCE(EXCLUDED.change_amount, {}.change_amount),
+            turnover_rate = COALESCE(EXCLUDED.turnover_rate, {}.turnover_rate),
+            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, {}.pe_dynamic),
+            pb = COALESCE(EXCLUDED.pb, {}.pb),
+            total_market_cap = COALESCE(EXCLUDED.total_market_cap, {}.total_market_cap),
+            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, {}.circ_market_cap),
+            main_flow = COALESCE(EXCLUDED.main_flow, {}.main_flow),
+            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, {}.main_flow_ratio),
+            day1_pred_high = COALESCE(EXCLUDED.day1_pred_high, {}.day1_pred_high),
+            day1_pred_low = COALESCE(EXCLUDED.day1_pred_low, {}.day1_pred_low),
+            day2_pred_high = COALESCE(EXCLUDED.day2_pred_high, {}.day2_pred_high),
+            day2_pred_low = COALESCE(EXCLUDED.day2_pred_low, {}.day2_pred_low),
+            trend = COALESCE(EXCLUDED.trend, {}.trend)
+        """).format(*([sql.Identifier(self.table_name)] * 16))
 
-        cur.execute(insert_sql, data)
-        conn.commit()
-        cur.close()
-        conn.close()
+            cur.execute(insert_sql, data)
+            conn.commit()
+        finally:
+            cur.close()
+            release_connection(conn)
 
     def batch_insert_daily_data(self, data_list: List[Dict[str, Any]]) -> tuple:
         """批量插入日线数据，返回 (新增数, 更新数)"""
@@ -438,14 +484,14 @@ class StockDataManager:
 
         conn = get_connection()
         cur = conn.cursor()
+        try:
+            cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(self.table_name)))
+            before_count = cur.fetchone()[0]
 
-        cur.execute(f"SELECT COUNT(*) FROM {self.table_name}")
-        before_count = cur.fetchone()[0]
+            db_logger.info(f"[{self.stock_code}] 批量插入 {len(data_list)} 条数据")
 
-        db_logger.info(f"[{self.stock_code}] 批量插入 {len(data_list)} 条数据")
-
-        insert_sql = f"""
-        INSERT INTO {self.table_name} (
+            insert_sql = sql.SQL("""
+        INSERT INTO {} (
             trade_date, trade_time,
             open, high, low, close, volume, amount,
             change_pct, change_amount, turnover_rate,
@@ -467,31 +513,31 @@ class StockDataManager:
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             volume = EXCLUDED.volume,
-            amount = COALESCE(EXCLUDED.amount, {self.table_name}.amount),
-            change_pct = COALESCE(EXCLUDED.change_pct, {self.table_name}.change_pct),
-            change_amount = COALESCE(EXCLUDED.change_amount, {self.table_name}.change_amount),
-            turnover_rate = COALESCE(EXCLUDED.turnover_rate, {self.table_name}.turnover_rate),
-            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, {self.table_name}.pe_dynamic),
-            pb = COALESCE(EXCLUDED.pb, {self.table_name}.pb),
-            total_market_cap = COALESCE(EXCLUDED.total_market_cap, {self.table_name}.total_market_cap),
-            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, {self.table_name}.circ_market_cap),
-            main_flow = COALESCE(EXCLUDED.main_flow, {self.table_name}.main_flow),
-            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, {self.table_name}.main_flow_ratio),
-            day1_pred_high = COALESCE(EXCLUDED.day1_pred_high, {self.table_name}.day1_pred_high),
-            day1_pred_low = COALESCE(EXCLUDED.day1_pred_low, {self.table_name}.day1_pred_low),
-            day2_pred_high = COALESCE(EXCLUDED.day2_pred_high, {self.table_name}.day2_pred_high),
-            day2_pred_low = COALESCE(EXCLUDED.day2_pred_low, {self.table_name}.day2_pred_low),
-            trend = COALESCE(EXCLUDED.trend, {self.table_name}.trend)
-        """
+            amount = COALESCE(EXCLUDED.amount, {}.amount),
+            change_pct = COALESCE(EXCLUDED.change_pct, {}.change_pct),
+            change_amount = COALESCE(EXCLUDED.change_amount, {}.change_amount),
+            turnover_rate = COALESCE(EXCLUDED.turnover_rate, {}.turnover_rate),
+            pe_dynamic = COALESCE(EXCLUDED.pe_dynamic, {}.pe_dynamic),
+            pb = COALESCE(EXCLUDED.pb, {}.pb),
+            total_market_cap = COALESCE(EXCLUDED.total_market_cap, {}.total_market_cap),
+            circ_market_cap = COALESCE(EXCLUDED.circ_market_cap, {}.circ_market_cap),
+            main_flow = COALESCE(EXCLUDED.main_flow, {}.main_flow),
+            main_flow_ratio = COALESCE(EXCLUDED.main_flow_ratio, {}.main_flow_ratio),
+            day1_pred_high = COALESCE(EXCLUDED.day1_pred_high, {}.day1_pred_high),
+            day1_pred_low = COALESCE(EXCLUDED.day1_pred_low, {}.day1_pred_low),
+            day2_pred_high = COALESCE(EXCLUDED.day2_pred_high, {}.day2_pred_high),
+            day2_pred_low = COALESCE(EXCLUDED.day2_pred_low, {}.day2_pred_low),
+            trend = COALESCE(EXCLUDED.trend, {}.trend)
+        """).format(*([sql.Identifier(self.table_name)] * 16))
 
-        cur.executemany(insert_sql, data_list)
-        conn.commit()
+            cur.executemany(insert_sql, data_list)
+            conn.commit()
 
-        cur.execute(f"SELECT COUNT(*) FROM {self.table_name}")
-        after_count = cur.fetchone()[0]
-
-        cur.close()
-        conn.close()
+            cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(self.table_name)))
+            after_count = cur.fetchone()[0]
+        finally:
+            cur.close()
+            release_connection(conn)
 
         inserted = after_count - before_count
         updated = len(data_list) - inserted
@@ -520,8 +566,8 @@ class StockDataManager:
         conn = get_connection()
         cur = conn.cursor()
 
-        update_sql = f"""
-        UPDATE {self.table_name} SET
+        update_sql = sql.SQL("""
+        UPDATE {} SET
             macd_dif = %(macd_dif)s,
             macd_dea = %(macd_dea)s,
             macd_hist = %(macd_hist)s,
@@ -539,12 +585,12 @@ class StockDataManager:
             boll_middle = %(boll_middle)s,
             boll_lower = %(boll_lower)s
         WHERE trade_date = %(trade_date)s
-        """
+        """).format(sql.Identifier(self.table_name))
 
         update_list = []
 
-        for i, (idx, row) in enumerate(history_df.iterrows()):
-            trade_date = pd.to_datetime(row.get("日期", idx))
+        for i, row in enumerate(history_df.itertuples()):
+            trade_date = pd.to_datetime(getattr(row, '日期', row.Index))
             if isinstance(trade_date, pd.Timestamp):
                 trade_date = trade_date.to_pydatetime()
             trade_date_only = (
@@ -652,12 +698,15 @@ class StockDataManager:
 
             update_list.append(ind_data)
 
-        if update_list:
-            cur.executemany(update_sql, update_list)
-            conn.commit()
-
-        cur.close()
-        conn.close()
+        try:
+            if update_list:
+                cur.executemany(update_sql, update_list)
+                conn.commit()
+        except Exception as e:
+            db_logger.warning(f"[{self.stock_code}] 技术指标批量更新失败: {e}")
+        finally:
+            cur.close()
+            release_connection(conn)
         db_logger.info(f"[{self.stock_code}] 技术指标批量更新完成")
 
     def has_null_fields(self) -> bool:
@@ -665,17 +714,19 @@ class StockDataManager:
         conn = get_connection()
         cur = conn.cursor()
         try:
-            cur.execute(f"""
-                SELECT COUNT(*) FROM {self.table_name}
-                WHERE change_pct IS NULL OR amount IS NULL OR turnover_rate IS NULL
-            """)
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) FROM {} WHERE change_pct IS NULL OR amount IS NULL OR turnover_rate IS NULL").format(
+                    sql.Identifier(self.table_name),
+                )
+            )
             null_count = cur.fetchone()[0]
             if null_count > 0:
                 return True
-            cur.execute(f"""
-                SELECT COUNT(DISTINCT total_market_cap) FROM {self.table_name}
-                WHERE total_market_cap IS NOT NULL
-            """)
+            cur.execute(
+                sql.SQL("SELECT COUNT(DISTINCT total_market_cap) FROM {} WHERE total_market_cap IS NOT NULL").format(
+                    sql.Identifier(self.table_name),
+                )
+            )
             distinct_cap = cur.fetchone()[0]
             if distinct_cap <= 1:
                 return True
@@ -684,18 +735,12 @@ class StockDataManager:
             return False
         finally:
             cur.close()
-            conn.close()
+            release_connection(conn)
 
     def get_historical_data(self, days: int = None) -> pd.DataFrame:
-        """获取历史数据"""
         conn = get_connection()
-
-        if days is not None and days > 0:
-            limit_clause = f"LIMIT {days}"
-        else:
-            limit_clause = ""
-
-        query_sql = f"""
+        try:
+            base_query = sql.SQL("""
         SELECT 
             trade_date, open, high, low, close, volume, amount,
             change_pct, turnover_rate,
@@ -705,13 +750,18 @@ class StockDataManager:
             ma5, ma10, ma20, ma60,
             boll_upper, boll_middle, boll_lower,
             main_flow, main_flow_ratio
-        FROM {self.table_name}
+        FROM {}
         ORDER BY trade_date DESC
-        {limit_clause}
-        """
+        """).format(sql.Identifier(self.table_name))
 
-        df = pd.read_sql(query_sql, conn)
-        conn.close()
+            if days is not None and days > 0:
+                query_sql = sql.SQL("{} LIMIT {}").format(base_query, sql.Literal(int(days)))
+            else:
+                query_sql = base_query
+
+            df = pd.read_sql(query_sql.as_string(conn), conn)
+        finally:
+            release_connection(conn)
 
         column_mapping = {
             "trade_date": "日期",
@@ -775,7 +825,7 @@ class StockDataManager:
                 db_logger.info("indicator_states表创建成功")
         finally:
             cur.close()
-            conn.close()
+            release_connection(conn)
 
     def save_indicator_states(self, states: Dict):
         self._ensure_indicator_states_table()
@@ -798,7 +848,7 @@ class StockDataManager:
             db_logger.info(f"[{self.stock_code}] 指标状态已保存: {list(states.keys())}")
         finally:
             cur.close()
-            conn.close()
+            release_connection(conn)
 
     def load_indicator_states(self) -> Dict:
         self._ensure_indicator_states_table()
@@ -822,7 +872,7 @@ class StockDataManager:
             return states
         finally:
             cur.close()
-            conn.close()
+            release_connection(conn)
 
 
 def _enrich_history_df(df: pd.DataFrame, stock_code: str = "") -> pd.DataFrame:
@@ -1033,25 +1083,30 @@ def get_or_fetch_stock_data(
                 cur = conn.cursor()
                 try:
                     cur.execute(
-                        f"SELECT MAX(created_at) FROM {manager.table_name}"
+                        sql.SQL("SELECT MAX(created_at) FROM {}").format(
+                            sql.Identifier(manager.table_name),
+                        )
                     )
                     row = cur.fetchone()
                     if row and row[0]:
                         age_seconds = (datetime.now() - row[0]).total_seconds()
                         if age_seconds < 300:
                             df = manager.get_historical_data()
-                            db_logger.info(
-                                f"[{stock_code}] 使用数据库缓存 ({len(df)} 条, 缓存年龄{age_seconds:.0f}秒)"
-                            )
-                            return {
-                                "source": "database",
-                                "stock_info": {},
-                                "fund_flow": {},
-                                "history_df": df,
-                            }
+                            if df is not None and not df.empty and len(df) >= 5:
+                                db_logger.info(
+                                    f"[{stock_code}] 使用数据库缓存 ({len(df)} 条, 缓存年龄{age_seconds:.0f}秒)"
+                                )
+                                return {
+                                    "source": "database",
+                                    "stock_info": {},
+                                    "fund_flow": {},
+                                    "history_df": df,
+                                }
+                            else:
+                                db_logger.info(f"[{stock_code}] 缓存数据不完整，重新获取")
                 finally:
                     cur.close()
-                    conn.close()
+                    release_connection(conn)
         except Exception as e:
             db_logger.warning(f"[{stock_code}] 数据库缓存检查失败，回退到API: {e}")
 
@@ -1090,8 +1145,8 @@ def get_or_fetch_stock_data(
 
         if not new_data_df.empty:
             data_list = []
-            for i, (idx, row) in enumerate(new_data_df.iterrows()):
-                trade_date = pd.to_datetime(row.get("日期", idx))
+            for i, row in enumerate(new_data_df.itertuples()):
+                trade_date = pd.to_datetime(getattr(row, '日期', row.Index))
                 if isinstance(trade_date, pd.Timestamp):
                     trade_date = trade_date.to_pydatetime()
                 trade_date_only = (
@@ -1102,26 +1157,26 @@ def get_or_fetch_stock_data(
                 daily_data = {
                     "trade_date": trade_date_only,
                     "trade_time": trade_date,
-                    "open": to_python_type(row.get("开盘")),
-                    "high": to_python_type(row.get("最高")),
-                    "low": to_python_type(row.get("最低")),
-                    "close": to_python_type(row.get("收盘")),
-                    "volume": int(row.get("成交量", 0)) if pd.notna(row.get("成交量")) else 0,
-                    "amount": to_python_type(row.get("成交额")),
-                    "change_pct": to_python_type(row.get("涨跌幅")),
-                    "change_amount": to_python_type(row.get("涨跌额")),
-                    "turnover_rate": to_python_type(row.get("换手率")) or (to_python_type(stock_info.get("换手率")) if is_latest_row else None),
-                    "pe_dynamic": to_python_type(row.get("市盈率-动态")) or (to_python_type(stock_info.get("市盈率-动态")) if is_latest_row else None),
-                    "pb": to_python_type(row.get("市净率")) or (to_python_type(stock_info.get("市净率")) if is_latest_row else None),
-                    "total_market_cap": to_python_type(row.get("总市值")),
-                    "circ_market_cap": to_python_type(row.get("流通市值")),
+                    "open": to_python_type(getattr(row, '开盘', None)),
+                    "high": to_python_type(getattr(row, '最高', None)),
+                    "low": to_python_type(getattr(row, '最低', None)),
+                    "close": to_python_type(getattr(row, '收盘', None)),
+                    "volume": int(getattr(row, '成交量', 0)) if pd.notna(getattr(row, '成交量', None)) else 0,
+                    "amount": to_python_type(getattr(row, '成交额', None)),
+                    "change_pct": to_python_type(getattr(row, '涨跌幅', None)),
+                    "change_amount": to_python_type(getattr(row, '涨跌额', None)),
+                    "turnover_rate": to_python_type(getattr(row, '换手率', None)) or (to_python_type(stock_info.get("换手率")) if is_latest_row else None),
+                    "pe_dynamic": to_python_type(getattr(row, '市盈率_动态', None)) or (to_python_type(stock_info.get("市盈率-动态")) if is_latest_row else None),
+                    "pb": to_python_type(getattr(row, '市净率', None)) or (to_python_type(stock_info.get("市净率")) if is_latest_row else None),
+                    "total_market_cap": to_python_type(getattr(row, '总市值', None)),
+                    "circ_market_cap": to_python_type(getattr(row, '流通市值', None)),
                     "main_flow": to_python_type(fund_flow.get("主力净流入")) if is_latest_row else None,
                     "main_flow_ratio": to_python_type(fund_flow.get("主力净流入占比")) if is_latest_row else None,
-                    "day1_pred_high": to_python_type(row.get("day1_pred_high")),
-                    "day1_pred_low": to_python_type(row.get("day1_pred_low")),
-                    "day2_pred_high": to_python_type(row.get("day2_pred_high")),
-                    "day2_pred_low": to_python_type(row.get("day2_pred_low")),
-                    "trend": to_python_type(row.get("trend")),
+                    "day1_pred_high": to_python_type(getattr(row, 'day1_pred_high', None)),
+                    "day1_pred_low": to_python_type(getattr(row, 'day1_pred_low', None)),
+                    "day2_pred_high": to_python_type(getattr(row, 'day2_pred_high', None)),
+                    "day2_pred_low": to_python_type(getattr(row, 'day2_pred_low', None)),
+                    "trend": to_python_type(getattr(row, 'trend', None)),
                 }
                 data_list.append(daily_data)
 
@@ -1184,7 +1239,7 @@ def _ensure_ml_models_table():
             db_logger.info("ml_models表创建成功")
     finally:
         cur.close()
-        conn.close()
+        release_connection(conn)
 
 
 def save_model_record(stock_code: str, model_path: str, metrics: dict, params: dict):
@@ -1220,7 +1275,7 @@ def save_model_record(stock_code: str, model_path: str, metrics: dict, params: d
         db_logger.info(f"[{stock_code}] 模型记录已保存")
     finally:
         cur.close()
-        conn.close()
+        release_connection(conn)
 
 
 def load_model_record(stock_code: str) -> dict:
@@ -1250,4 +1305,4 @@ def load_model_record(stock_code: str) -> dict:
         return {}
     finally:
         cur.close()
-        conn.close()
+        release_connection(conn)
