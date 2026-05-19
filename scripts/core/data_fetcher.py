@@ -243,6 +243,31 @@ class DataFetcher:
 
         return sector_info
 
+    def fetch_market_data(self) -> Optional[Dict]:
+        """获取大盘数据（上证指数快照）"""
+        try:
+            import efinance as ef
+            market_snapshot = _call_with_timeout(ef.stock.get_quote_snapshot, "000001")
+            if market_snapshot is not None and not market_snapshot.empty:
+                row = market_snapshot.iloc[0]
+                if isinstance(row, pd.Series):
+                    change_val = row.get("涨跌幅", 0)
+                elif isinstance(row, dict):
+                    change_val = row.get("涨跌幅", 0)
+                else:
+                    try:
+                        change_val = market_snapshot.iloc[0, market_snapshot.columns.get_loc("涨跌幅")]
+                    except (KeyError, ValueError, IndexError):
+                        change_val = 0
+                try:
+                    change_val = float(change_val)
+                except (ValueError, TypeError):
+                    change_val = 0
+                return {"涨跌幅": change_val, "名称": "上证指数"}
+        except Exception as e:
+            fetcher_logger.debug(f"[DataFetcher] 获取大盘数据失败: {e}")
+        return None
+
     def validate_data(self, xtquant_data: Dict, backup_data: Dict) -> Dict:
         """交叉验证数据"""
         if self._validator:
@@ -469,8 +494,23 @@ class DataFetcher:
             import efinance as ef
             market_snapshot = _call_with_timeout(ef.stock.get_quote_snapshot, "000001")
             if market_snapshot is not None and not market_snapshot.empty:
+                row = market_snapshot.iloc[0]
+                # iloc[0] 可能返回标量而非 Series，需要类型检查
+                if isinstance(row, pd.Series):
+                    change_val = row.get("涨跌幅", 0)
+                elif isinstance(row, dict):
+                    change_val = row.get("涨跌幅", 0)
+                else:
+                    try:
+                        change_val = market_snapshot.iloc[0, market_snapshot.columns.get_loc("涨跌幅")]
+                    except (KeyError, ValueError, IndexError):
+                        change_val = 0
+                try:
+                    change_val = float(change_val)
+                except (ValueError, TypeError):
+                    change_val = 0
                 market_data = {
-                    "涨跌幅": market_snapshot.iloc[0].get("涨跌幅", 0),
+                    "涨跌幅": change_val,
                     "名称": "上证指数",
                 }
         except Exception as e:

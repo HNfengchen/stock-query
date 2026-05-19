@@ -18,8 +18,11 @@ function maskStringPatterns(value: string): string {
   value = value.replace(ID_CARD_RE, m => m.slice(0, 3) + MASK + m.slice(-1))
   value = value.replace(BANK_CARD_RE, m => m.slice(0, 4) + MASK + m.slice(-4))
   value = value.replace(EMAIL_RE, m => {
-    const parts = m.split('@')
-    return parts[0].slice(0, 2) + MASK + '@' + parts[1]
+    const atIdx = m.indexOf('@')
+    if (atIdx > 0) {
+      return m.slice(0, 2) + MASK + m.slice(atIdx)
+    }
+    return m
   })
   return value
 }

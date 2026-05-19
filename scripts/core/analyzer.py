@@ -500,9 +500,38 @@ class StockAnalyzer:
         elif market_data is None:
             try:
                 import efinance as ef
-                market_snapshot = ef.stock.get_quote_snapshot("000001")
+                import concurrent.futures
+                _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                try:
+                    future = _executor.submit(ef.stock.get_quote_snapshot, "000001")
+                    done, not_done = concurrent.futures.wait([future], timeout=15)
+                    if not_done:
+                        not_done.pop().cancel()
+                        market_snapshot = None
+                    else:
+                        market_snapshot = future.result()
+                except Exception:
+                    market_snapshot = None
+                finally:
+                    _executor.shutdown(wait=False)
+
                 if market_snapshot is not None and not market_snapshot.empty:
-                    market_change = float(market_snapshot.iloc[0].get("涨跌幅", 0))
+                    row = market_snapshot.iloc[0]
+                    # iloc[0] 可能返回标量而非 Series，需要类型检查
+                    if isinstance(row, pd.Series):
+                        market_change = row.get("涨跌幅", 0)
+                    elif isinstance(row, dict):
+                        market_change = row.get("涨跌幅", 0)
+                    else:
+                        # 尝试通过列名直接取值
+                        try:
+                            market_change = market_snapshot.iloc[0, market_snapshot.columns.get_loc("涨跌幅")]
+                        except (KeyError, ValueError, IndexError):
+                            market_change = 0
+                    try:
+                        market_change = float(market_change)
+                    except (ValueError, TypeError):
+                        market_change = 0
                     if market_change > 1:
                         market_status = "大涨"
                         score += 0.1

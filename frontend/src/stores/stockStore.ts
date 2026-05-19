@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { computed } from 'vue'
 import { useAnalysisStore } from './analysisStore'
 import { useWatchlistStore } from './watchlistStore'
 import { useBatchStore } from './batchStore'
@@ -11,30 +12,30 @@ export const useStockStore = defineStore('stock', () => {
   const log = useLogStore()
 
   return {
-    currentResult: analysis.currentResult,
-    loading: analysis.loading,
-    hasResult: analysis.hasResult,
-    streamStage: analysis.streamStage,
-    streamStageData: analysis.streamStageData,
-    marketStatus: analysis.marketStatus,
-    riskAssessment: analysis.riskAssessment,
-    predictionResult: analysis.predictionResult,
+    currentResult: computed(() => analysis.currentResult),
+    loading: computed(() => analysis.loading),
+    hasResult: computed(() => analysis.hasResult),
+    streamStage: computed(() => analysis.streamStage),
+    streamStageData: computed(() => analysis.streamStageData),
+    marketStatus: computed(() => analysis.marketStatus),
+    riskAssessment: computed(() => analysis.riskAssessment),
+    predictionResult: computed(() => analysis.predictionResult),
     runAnalysis: analysis.runAnalysis,
     cancelAnalysis: analysis.cancelAnalysis,
     cancelStreamAnalysis: analysis.cancelStreamAnalysis,
     clearResult: analysis.clearResult,
-    watchlist: watchlist.watchlist,
+    watchlist: computed(() => watchlist.watchlist),
     loadWatchlist: watchlist.loadWatchlist,
     addStock: watchlist.addStock,
     removeStock: watchlist.removeStock,
     updateStock: watchlist.updateStock,
-    batchProgress: batch.batchProgress,
-    batchError: batch.batchError,
-    batchErrorStocks: batch.batchErrorStocks,
+    batchProgress: computed(() => batch.batchProgress),
+    batchError: computed(() => batch.batchError),
+    batchErrorStocks: computed(() => batch.batchErrorStocks),
     runBatchAnalysis: batch.runBatchAnalysis,
     runBatchQuickAnalysis: batch.runBatchQuickAnalysis,
     cancelBatchAnalysis: batch.cancelBatchAnalysis,
-    analysisLogs: log.analysisLogs,
+    analysisLogs: computed(() => log.analysisLogs),
     addLog: log.addLog,
     clearLogs: log.clearLogs,
   }

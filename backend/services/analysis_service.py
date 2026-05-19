@@ -240,6 +240,15 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         "history_data": history_df,
     }
 
+    # 获取大盘数据，避免后续 analyze_market_sentiment 重复调用 efinance
+    market_data = None
+    try:
+        market_data = fetcher.fetch_market_data()
+        if market_data:
+            all_data["market_data"] = market_data
+    except Exception as e:
+        logger.debug(f"获取大盘数据失败: {e}")
+
     if stage_callback:
         stage_callback('stage_basic', {
             'stock_info': info,
@@ -602,7 +611,13 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
     start_time = time.time()
     logger.info(f"开始分析: {stock_code}")
 
-    result = _run_analysis_core(stock_code, position_type, cost_price, logger, stage_callback)
+    try:
+        result = _run_analysis_core(stock_code, position_type, cost_price, logger, stage_callback)
+    except Exception as e:
+        logger.error(f"分析过程异常: {e}")
+        if stage_callback:
+            stage_callback('error', {'error': str(e)})
+        return None
 
     total_elapsed = time.time() - start_time
     logger.info(f"分析完成 (总耗时: {total_elapsed:.1f}s)")

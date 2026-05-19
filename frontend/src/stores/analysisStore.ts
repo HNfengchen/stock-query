@@ -253,6 +253,12 @@ export const useAnalysisStore = defineStore('analysis', () => {
         if (gen !== analysisGeneration || fbController.signal.aborted) return
         currentResult.value = result
         streamStage.value = 'stage_complete'
+        // Fallback 成功后写入分析日志到 logStore
+        if (result?.analysis_log && Array.isArray(result.analysis_log)) {
+          for (const entry of result.analysis_log) {
+            logStore.addLog(entry as LogEntry)
+          }
+        }
       } catch (fallbackErr) {
         throw fallbackErr
       } finally {
