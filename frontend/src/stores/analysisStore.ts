@@ -224,6 +224,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
               }
               currentResult.value = completeData
               streamStage.value = 'stage_complete'
+              loading.value = false
+              streamAbortController = null
             } else if (event === 'log') {
               logStore.addLog(eventData as LogEntry)
             } else if (event === 'stress_test_result') {
@@ -244,6 +246,12 @@ export const useAnalysisStore = defineStore('analysis', () => {
         return
       } catch (sseError) {
         logger.info('SSE失败，回退到普通API:', sseError)
+        // 如果已经收到 stage_complete（currentResult 不为空），不需要回退
+        if (currentResult.value) {
+          loading.value = false
+          streamAbortController = null
+          return
+        }
         if (sseFailed) return
         if (gen !== analysisGeneration) {
           streamAbortController = null
@@ -323,6 +331,12 @@ export const useAnalysisStore = defineStore('analysis', () => {
     loading.value = value
   }
 
+  function setAnalysisResult(result: AnalysisResult) {
+    currentResult.value = result
+    streamStage.value = 'stage_complete'
+    loading.value = false
+  }
+
   return {
     currentResult,
     loading,
@@ -337,5 +351,6 @@ export const useAnalysisStore = defineStore('analysis', () => {
     cancelStreamAnalysis,
     clearResult,
     setLoading,
+    setAnalysisResult,
   }
 })

@@ -16,6 +16,10 @@ import ValidationPanel from '@/components/ValidationPanel.vue'
 import AnalysisLogPanel from '@/components/AnalysisLogPanel.vue'
 import type { AnalysisRequest, AnalysisResult, StockInfo } from '@/types'
 import { fmtNum, fmtMarketCap, fmtVolume } from '@/utils/format'
+import { getCachedAnalysis } from '@/api/analysis'
+import { getLogger } from '@/utils/logger'
+
+const logger = getLogger('AnalysisView')
 
 const route = useRoute()
 const store = useStockStore()
@@ -39,13 +43,24 @@ watch(() => store.loading, (val) => {
   }
 })
 
+// 关键：当 store 层已完成（loading=false + currentResult有值）但 analysisState 还在 loading 时，
+// 立即同步 analysisState 为 success，确保报告立即显示
+watch(
+  () => [store.loading, store.currentResult] as const,
+  ([isLoading, result]) => {
+    if (!isLoading && result && analysisState.isLoading.value) {
+      analysisState.toSuccess(result)
+    }
+  },
+)
+
 let lastAnalyzedCode = ''
 let lastAnalyzedPosition = ''
 let lastAnalyzedCost = ''
 
 watch(
   () => [route.query.code, route.query.position, route.query.cost] as const,
-  ([code, position, cost]) => {
+  async ([code, position, cost]) => {
     if (!code) return
     const sCode = String(code)
     const sPosition = String(position ?? '')
@@ -57,6 +72,20 @@ watch(
     form.value.stock_input = sCode
     form.value.position_status = (sPosition || '未持有') as '已持有' | '未持有'
     form.value.cost_price = sCost ? parseFloat(sCost) : undefined
+
+    // 先查缓存，命中则直接显示结果
+    try {
+      const cacheResult = await getCachedAnalysis(sCode, sPosition || '未持有', sCost ? parseFloat(sCost) : undefined)
+      logger.info(`缓存查询: code=${sCode}, cached=${cacheResult.cached}, age=${cacheResult.age_seconds}s`)
+      if (cacheResult.cached && cacheResult.result) {
+        store.setAnalysisResult(cacheResult.result)
+        analysisState.toSuccess(cacheResult.result)
+        return
+      }
+    } catch (e) {
+      logger.warn('缓存查询失败，继续正常分析:', e)
+    }
+
     doAnalyze()
   },
   { immediate: true },
@@ -82,10 +111,14 @@ async function doAnalyze() {
     }
     await store.loadWatchlist()
   } catch (e: any) {
-    console.error('分析失败:', e)
-    const message = e?.message || '分析失败，请稍后重试'
-    analysisState.toError(message)
-    ElMessage.error(message)
+    // 如果 stage_complete 已收到（currentResult 不为空），仍显示报告
+    if (store.currentResult) {
+      analysisState.toSuccess(store.currentResult)
+    } else {
+      const message = e?.message || '分析失败，请稍后重试'
+      analysisState.toError(message)
+      ElMessage.error(message)
+    }
   }
 }
 
@@ -98,7 +131,12 @@ function handleAnalyze() {
 
 function handleCancel() {
   store.cancelAnalysis()
-  analysisState.reset()
+  // 如果已有结果，取消只停止loading，保留报告显示
+  if (store.currentResult) {
+    analysisState.toSuccess(store.currentResult)
+  } else {
+    analysisState.reset()
+  }
 }
 
 async function addToWatchlist() {

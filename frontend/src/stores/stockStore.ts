@@ -24,6 +24,7 @@ export const useStockStore = defineStore('stock', () => {
     cancelAnalysis: analysis.cancelAnalysis,
     cancelStreamAnalysis: analysis.cancelStreamAnalysis,
     clearResult: analysis.clearResult,
+    setAnalysisResult: analysis.setAnalysisResult,
     watchlist: computed(() => watchlist.watchlist),
     loadWatchlist: watchlist.loadWatchlist,
     addStock: watchlist.addStock,

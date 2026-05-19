@@ -15,6 +15,13 @@ export async function analyzeStock(data: AnalysisRequest, signal?: AbortSignal):
   return response.data
 }
 
+export async function getCachedAnalysis(stockInput: string, positionStatus: string = '未持有', costPrice?: number): Promise<{ cached: boolean; result?: AnalysisResult; age_seconds?: number }> {
+  const params: Record<string, string | number> = { stock_input: stockInput, position_status: positionStatus }
+  if (costPrice != null) params.cost_price = costPrice
+  const response = await api.get('/api/analysis/cache', { params, timeout: 5000 })
+  return response.data
+}
+
 export async function batchAnalyze(data: BatchAnalysisRequest): Promise<BatchAnalysisResult> {
   const response = await api.post('/api/analysis/batch', data)
   return response.data

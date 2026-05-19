@@ -8,7 +8,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from backend.exceptions import InvalidStockCodeError, DataInsufficientError, AnalysisFailedError, StockQueryException
-from backend.services.analysis_service import run_analysis, run_analysis_staged, AnalysisLogger
+from backend.services.analysis_service import run_analysis, run_analysis_staged, AnalysisLogger, _result_cache, _cache_lock
 from backend.utils import sanitize_for_json
 
 
@@ -49,6 +49,22 @@ async def analyze(req: AnalysisRequest):
     except Exception as e:
         traceback.print_exc()
         raise AnalysisFailedError(str(e))
+
+
+@router.get("/analysis/cache")
+async def get_cached_analysis(stock_input: str, position_status: str = "未持有", cost_price: Optional[float] = None):
+    """查询分析结果缓存 — 双写缓存确保通过原始输入或解析后代码都能命中"""
+    from datetime import datetime
+    cache_key = (stock_input, position_status, cost_price)
+    with _cache_lock:
+        if cache_key in _result_cache:
+            cached_result, cached_time = _result_cache[cache_key]
+            age_seconds = (datetime.now() - cached_time).total_seconds()
+            if age_seconds < 600:
+                logger.info(f"缓存命中: {stock_input}, age={age_seconds:.0f}s")
+                return {"cached": True, "age_seconds": int(age_seconds), "result": sanitize_for_json(cached_result)}
+    logger.info(f"缓存未命中: {stock_input}, key={cache_key}")
+    return {"cached": False}
 
 
 @router.post("/analysis/batch")

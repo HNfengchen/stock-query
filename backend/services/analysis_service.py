@@ -487,7 +487,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     with _cache_lock:
         if cache_key in _result_cache:
             cached_result, cached_time = _result_cache[cache_key]
-            if (now - cached_time).total_seconds() < 300:
+            if (now - cached_time).total_seconds() < 600:
                 if not skip_signal_cache:
                     try:
                         from backend.services.history_service import update_signal_cache
@@ -512,6 +512,11 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
 
     with _cache_lock:
         _result_cache[cache_key] = (result, now)
+        # 双写：用解析后的 stock_code 也缓存一份，确保通过代码查询时也能命中
+        resolved_code = result.get("stock_code", stock_input)
+        if resolved_code and resolved_code != stock_input:
+            cache_key_resolved = (resolved_code, position_status, cost_price)
+            _result_cache[cache_key_resolved] = (result, now)
         _cleanup_cache()
 
     if not skip_signal_cache:
@@ -572,7 +577,7 @@ def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
 
 def _cleanup_cache():
     now = datetime.now()
-    expired = [k for k, (_, t) in _result_cache.items() if (now - t).total_seconds() > 300]
+    expired = [k for k, (_, t) in _result_cache.items() if (now - t).total_seconds() > 600]
     for k in expired:
         del _result_cache[k]
 
@@ -633,6 +638,18 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
 
     if result is not None:
         result["analysis_log"] = logger.entries
+        # 写入结果缓存，供后续查询
+        # 同时用 stock_input 和解析后的 stock_code 做双写，确保缓存查询能命中
+        now = datetime.now()
+        cache_key_input = (stock_code, position_type, cost_price)
+        with _cache_lock:
+            _result_cache[cache_key_input] = (result, now)
+            # 如果 result 中有解析后的 stock_code 且与输入不同，也用 stock_code 缓存
+            resolved_code = result.get("stock_code", stock_code)
+            if resolved_code and resolved_code != stock_code:
+                cache_key_resolved = (resolved_code, position_type, cost_price)
+                _result_cache[cache_key_resolved] = (result, now)
+            _cleanup_cache()
         if stage_callback:
             log_data('transfer', 'analyzer', 'sse_callback', 'success',
                      stock_code=stock_code,

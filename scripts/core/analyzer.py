@@ -477,7 +477,7 @@ class StockAnalyzer:
         market_change = 0
         market_status = "未知"
 
-        if market_data and isinstance(market_data, dict):
+        if market_data and isinstance(market_data, dict) and market_data.get("涨跌幅") is not None:
             market_change = market_data.get("涨跌幅", 0)
             try:
                 market_change = float(market_change)
@@ -497,7 +497,7 @@ class StockAnalyzer:
                 score -= 0.05
             else:
                 market_status = "平稳"
-        elif market_data is None:
+        elif market_data is None or not market_data:
             try:
                 import efinance as ef
                 import concurrent.futures
