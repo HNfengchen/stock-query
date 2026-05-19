@@ -13,13 +13,29 @@ from starlette.responses import Response
 from contextlib import asynccontextmanager
 
 from backend.exceptions import StockQueryException, AnalysisFailedError
-from backend.routers import analysis, backtest, history, websocket
+from backend.routers import analysis, backtest, history, websocket, logs
+from backend.logging import (
+    setup_logging,
+    get_module_levels_from_env,
+    TraceMiddleware,
+    RequestLoggingMiddleware,
+    log_system,
+    get_trace_id,
+)
+
+setup_logging(
+    environment=os.environ.get('APP_ENV', 'development'),
+    console_level=os.environ.get('LOG_CONSOLE_LEVEL', 'INFO'),
+    file_level=os.environ.get('LOG_FILE_LEVEL', 'DEBUG'),
+    module_levels=get_module_levels_from_env(),
+)
 
 logger = logging.getLogger("stock_query")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log_system('startup', 'Stock Query API 服务启动', level='INFO')
     try:
         from backend.celery_app import init_celery, is_celery_enabled
         init_celery()
@@ -30,6 +46,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Celery 初始化失败: {e}，使用同步模式")
     yield
+    log_system('shutdown', 'Stock Query API 服务关闭', level='INFO')
     try:
         from backend.routers.analysis import _executor
         _executor.shutdown(wait=False)
@@ -39,6 +56,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Stock Query API", lifespan=lifespan)
+
+app.add_middleware(TraceMiddleware)
+app.add_middleware(RequestLoggingMiddleware, skip_paths={'/health', '/favicon.ico'})
 
 cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 origins_list = [o.strip() for o in cors_origins.split(",")]
@@ -90,6 +110,7 @@ app.include_router(analysis.router, prefix="/api")
 app.include_router(backtest.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(websocket.router)
+app.include_router(logs.router, prefix="/api")
 
 
 @app.get("/health")
@@ -99,17 +120,53 @@ async def health_check():
 
 @app.exception_handler(StockQueryException)
 async def stock_query_exception_handler(request: Request, exc: StockQueryException):
-    logger.warning(f"Business error: {exc.detail}")
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    trace_id = get_trace_id()
+    logger.warning(
+        f"Business error: {exc.detail}",
+        extra={
+            'log_category': 'error',
+            'trace_id': trace_id,
+            'log_extra': {
+                'error_type': type(exc).__name__,
+                'status_code': exc.status_code,
+                'path': str(request.url),
+            },
+        },
+    )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "trace_id": trace_id})
 
 
 @app.exception_handler(AnalysisFailedError)
 async def analysis_failed_exception_handler(request: Request, exc: AnalysisFailedError):
-    logger.error(f"Analysis failed: {exc.detail}", exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": "分析引擎内部错误，请稍后重试"})
+    trace_id = get_trace_id()
+    logger.error(
+        f"Analysis failed: {exc.detail}",
+        exc_info=True,
+        extra={
+            'log_category': 'error',
+            'trace_id': trace_id,
+            'log_extra': {
+                'error_type': 'AnalysisFailedError',
+                'path': str(request.url),
+            },
+        },
+    )
+    return JSONResponse(status_code=500, content={"detail": "分析引擎内部错误，请稍后重试", "trace_id": trace_id})
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": "服务器内部错误，请稍后重试"})
+    trace_id = get_trace_id()
+    logger.error(
+        f"Unhandled exception: {exc}",
+        exc_info=True,
+        extra={
+            'log_category': 'error',
+            'trace_id': trace_id,
+            'log_extra': {
+                'error_type': type(exc).__name__,
+                'path': str(request.url),
+            },
+        },
+    )
+    return JSONResponse(status_code=500, content={"detail": "服务器内部错误，请稍后重试", "trace_id": trace_id})

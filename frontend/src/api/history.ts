@@ -1,10 +1,13 @@
 import axios from 'axios'
 import type { WatchlistItem, StockInput } from '@/types'
+import { setupAxiosInterceptors } from '@/utils/logger'
 
 const api = axios.create({
   baseURL: '',
   timeout: 60000,
 })
+
+setupAxiosInterceptors(api)
 
 export async function getWatchlist(): Promise<WatchlistItem[]> {
   const response = await api.get('/api/watchlist')

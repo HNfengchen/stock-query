@@ -1,11 +1,14 @@
 import axios from 'axios'
 import type { BacktestRequest, BacktestResult, WalkForwardRequest, WalkForwardResult } from '@/types'
 import { API_TIMEOUTS } from './config'
+import { setupAxiosInterceptors } from '@/utils/logger'
 
 const api = axios.create({
   baseURL: '',
   timeout: API_TIMEOUTS.backtest,
 })
+
+setupAxiosInterceptors(api)
 
 export async function runBacktest(data: BacktestRequest): Promise<BacktestResult> {
   const response = await api.post('/api/backtest', data)

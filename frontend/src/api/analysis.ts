@@ -1,11 +1,14 @@
 import axios from 'axios'
 import type { AnalysisRequest, AnalysisResult, BatchAnalysisRequest, BatchAnalysisResult, BatchQuickSummary } from '@/types'
 import { API_TIMEOUTS } from './config'
+import { setupAxiosInterceptors } from '@/utils/logger'
 
 const api = axios.create({
   baseURL: '',
   timeout: API_TIMEOUTS.analysis,
 })
+
+setupAxiosInterceptors(api)
 
 export async function analyzeStock(data: AnalysisRequest, signal?: AbortSignal): Promise<AnalysisResult> {
   const response = await api.post('/api/analysis', data, { signal })
@@ -164,4 +167,3 @@ export async function batchQuickAnalyzeStream(
     }
   }
 }
-
