@@ -75,7 +75,7 @@ _timeout_executor = None
 def _get_timeout_executor():
     global _timeout_executor
     if _timeout_executor is None:
-        _timeout_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        _timeout_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
     return _timeout_executor
 
 
@@ -139,20 +139,10 @@ class DataFetcher:
         """带重试和超时的函数包装器"""
         last_error = None
         for attempt in range(self.max_retries):
-            executor = ThreadPoolExecutor(max_workers=1)
-            try:
-                future = executor.submit(func, *args, **kwargs)
-                done, not_done = concurrent.futures.wait([future], timeout=self.timeout)
-                if not_done:
-                    not_done_future = not_done.pop()
-                    not_done_future.cancel()
-                    last_error = TimeoutError(f"Function {func.__name__} timed out after {self.timeout}s")
-                else:
-                    return future.result()
-            except Exception as e:
-                last_error = e
-            finally:
-                executor.shutdown(wait=False)
+            result = _call_with_timeout(func, *args, timeout=self.timeout, **kwargs)
+            if result is not None:
+                return result
+            last_error = TimeoutError(f"Function {func.__name__} timed out after {self.timeout}s")
             if attempt < self.max_retries - 1:
                 time.sleep(self.retry_delay)
         raise NetworkError(f"重试{self.max_retries}次后仍失败：{last_error}")

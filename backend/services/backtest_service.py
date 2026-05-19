@@ -12,7 +12,7 @@ from psycopg2 import sql
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from scripts.database import get_connection
+from scripts.database import get_connection, release_connection
 from scripts.core.backtest import _get_trend_from_change, _is_trend_consistent, _trend_direction
 from scripts.core.walk_forward import WalkForwardValidator
 from backend.utils import sanitize_for_json
@@ -95,7 +95,7 @@ def _fetch_prediction_data(stock_code: str):
         return rows, all_price_rows
     finally:
         cur.close()
-        conn.close()
+        release_connection(conn)
 
 
 def _fetch_walk_forward_data(stock_code: str):
@@ -124,7 +124,7 @@ def _fetch_walk_forward_data(stock_code: str):
         return pred_rows, price_rows
     finally:
         cur.close()
-        conn.close()
+        release_connection(conn)
 
 
 def run_prediction_validation(stock_code: str) -> Dict:

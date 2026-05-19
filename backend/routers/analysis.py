@@ -19,6 +19,8 @@ _executor = ThreadPoolExecutor(max_workers=8)
 logger = logging.getLogger("stock_query.sse")
 
 BATCH_CONCURRENCY = 5
+SINGLE_STOCK_TIMEOUT = 90  # 单只股票分析超时(秒)
+BATCH_TOTAL_TIMEOUT_PER_STOCK = 60  # 批量分析中每只股票分配的总超时(秒)
 
 
 class AnalysisRequest(BaseModel):
@@ -122,7 +124,24 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
             def _run(sr=stock_req):
                 return run_analysis(sr.stock_input, sr.position_status, sr.cost_price, skip_signal_cache=True)
 
-            result = await loop.run_in_executor(_executor, _run)
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(_executor, _run),
+                    timeout=BATCH_TOTAL_TIMEOUT_PER_STOCK,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"BatchQuick: 分析超时 {stock_req.stock_input} ({BATCH_TOTAL_TIMEOUT_PER_STOCK}s)")
+                err = {"stock_input": stock_req.stock_input, "error": f"分析超时({BATCH_TOTAL_TIMEOUT_PER_STOCK}s)", "index": i}
+                async with lock:
+                    completed_count += 1
+                    all_errors.append(err)
+                await progress_queue.put({
+                    "type": "error",
+                    "current": completed_count,
+                    "total": total,
+                    "error": err,
+                })
+                return
             signal = result.get("trading_signal", {})
             signal_text = signal.get("signal_text", "")
             summary = {
@@ -172,8 +191,18 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
 
         try:
             sent_completed = 0
+            batch_deadline = asyncio.get_event_loop().time() + total * BATCH_TOTAL_TIMEOUT_PER_STOCK + 30
             while sent_completed < total:
-                event_data = await progress_queue.get()
+                remaining = batch_deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    logger.warning(f"BatchQuick: 批量分析总超时，已完成 {sent_completed}/{total}")
+                    break
+                try:
+                    event_data = await asyncio.wait_for(progress_queue.get(), timeout=min(remaining, 15))
+                except asyncio.TimeoutError:
+                    # 发送心跳，防止前端超时断开
+                    yield {"event": "heartbeat", "data": ""}
+                    continue
                 evt_type = event_data.get("type", "")
                 logger.info(f"BatchQuick: 发送SSE事件 type={evt_type}, current={event_data.get('current')}/{event_data.get('total')}, sent_completed={sent_completed}/{total}")
                 yield {"event": "progress", "data": json.dumps(event_data, ensure_ascii=False)}

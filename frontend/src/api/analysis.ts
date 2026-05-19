@@ -156,6 +156,9 @@ export async function batchQuickAnalyzeStream(
               onProgress(data)
             } else if (currentEvent === 'complete') {
               onComplete(data)
+              cleanup()
+              reader.cancel().catch(() => {})
+              return
             }
           } catch (parseErr) {
             console.warn('SSE parse error:', parseErr)

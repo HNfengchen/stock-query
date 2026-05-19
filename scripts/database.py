@@ -72,14 +72,21 @@ _pool_lock = threading.Lock()
 def _init_pool():
     global _connection_pool
     _connection_pool = pool.ThreadedConnectionPool(
-        minconn=2, maxconn=10, **DB_CONFIG
+        minconn=2, maxconn=20, **DB_CONFIG
     )
 
-def get_connection():
+def get_connection(timeout: float = 10.0):
     global _connection_pool
     with _pool_lock:
         if _connection_pool is None:
             _init_pool()
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            return _connection_pool.getconn()
+        except pool.PoolError:
+            time.sleep(0.1)
     return _connection_pool.getconn()
 
 def release_connection(conn):
@@ -940,6 +947,7 @@ def _supplement_from_baostock(df: pd.DataFrame, stock_code: str = "") -> pd.Data
     """从baostock补充PE/PB/换手率/成交额等字段，并从收盘价反推历史市值"""
     try:
         import baostock as bs
+        from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 
         if df.empty or "日期" not in df.columns or not stock_code:
             return df
@@ -951,20 +959,32 @@ def _supplement_from_baostock(df: pd.DataFrame, stock_code: str = "") -> pd.Data
         start_date = dates.min().strftime("%Y-%m-%d") if dates.notna().any() else "20200101"
         end_date = dates.max().strftime("%Y-%m-%d") if dates.notna().any() else "20991231"
 
-        bs.login()
-        rs = bs.query_history_k_data_plus(
-            bs_code,
-            "date,amount,turn,peTTM,pbMRQ",
-            start_date=start_date,
-            end_date=end_date,
-            frequency="d",
-            adjustflag="2",
-        )
+        def _baostock_fetch():
+            bs.login()
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,amount,turn,peTTM,pbMRQ",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="2",
+            )
+            data = []
+            while rs.error_code == "0" and rs.next():
+                data.append(rs.get_row_data())
+            bs.logout()
+            return data
 
-        bs_data = []
-        while rs.error_code == "0" and rs.next():
-            bs_data.append(rs.get_row_data())
-        bs.logout()
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(_baostock_fetch)
+            done, not_done = futures_wait([future], timeout=20)
+            if not_done:
+                db_logger.warning(f"[{stock_code}] baostock查询超时(20s)，跳过补充数据")
+                return df
+            bs_data = future.result()
+        finally:
+            executor.shutdown(wait=False)
 
         if not bs_data:
             return df
