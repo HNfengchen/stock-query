@@ -828,13 +828,19 @@ function stageLabel(stage: string): string {
 
 @media (max-width: 1200px) {
   .cockpit-layout {
-    flex-direction: column;
+    flex-wrap: wrap;
   }
 
   .cockpit-left,
   .cockpit-right {
     width: 100%;
     position: static;
+    order: 1;
+  }
+
+  .cockpit-center {
+    width: 100%;
+    order: 0;
   }
 
   .cockpit-left.collapsed,

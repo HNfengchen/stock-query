@@ -188,47 +188,48 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
     </div>
 
     <div v-if="stressTest" class="v-stress-test">
-      <span class="stress-label"><el-icon><Coin /></el-icon> 蒙特卡洛压力测试</span>
-      <div class="stress-content">
-        <div class="stress-row">
-          <div class="stress-item">
-            <span class="stress-item-label">信号翻转率</span>
-            <el-tag :type="flipRateType" effect="dark" size="small">
-              {{ flipRatePct != null ? flipRatePct + '%' : '-' }}
-            </el-tag>
-          </div>
-          <div class="stress-item">
-            <span class="stress-item-label">鲁棒性</span>
-            <el-tag :type="stressTest.is_robust ? 'success' : 'danger'" effect="dark" size="small">
-              <el-icon><CircleCheck v-if="stressTest.is_robust" /><Warning v-else /></el-icon> {{ stressTest.is_robust ? '鲁棒' : '不鲁棒' }}
-            </el-tag>
-          </div>
-          <div class="stress-item">
-            <span class="stress-item-label">原始信号</span>
-            <el-tag type="info" size="small" effect="plain">{{ stressTest.original_signal }}</el-tag>
-          </div>
-          <div class="stress-item">
-            <span class="stress-item-label">模拟次数</span>
-            <span class="stress-metric-val">{{ stressTest.simulation_count }}</span>
-          </div>
+      <div class="stress-header">
+        <el-icon><Coin /></el-icon>
+        <span class="stress-title">蒙特卡洛压力测试</span>
+      </div>
+      <div class="stress-grid">
+        <div class="stress-cell">
+          <span class="stress-cell-label">信号翻转率</span>
+          <span class="stress-cell-val" :style="{ color: flipRateColor }">
+            {{ flipRatePct != null ? flipRatePct + '%' : '-' }}
+          </span>
         </div>
-        <div v-if="stressTest.risk_metrics" class="stress-metrics">
-          <div class="stress-metric">
-            <span class="stress-metric-label">最大回撤</span>
-            <span class="stress-metric-val">{{ stressTest.risk_metrics.max_drawdown != null ? formatMetric(stressTest.risk_metrics.max_drawdown * 100) + '%' : '-' }}</span>
-          </div>
-          <div class="stress-metric">
-            <span class="stress-metric-label">Sharpe</span>
-            <span class="stress-metric-val">{{ formatMetric(stressTest.risk_metrics.sharpe) }}</span>
-          </div>
-          <div class="stress-metric">
-            <span class="stress-metric-label">Sortino</span>
-            <span class="stress-metric-val">{{ formatMetric(stressTest.risk_metrics.sortino) }}</span>
-          </div>
-          <div class="stress-metric">
-            <span class="stress-metric-label">Calmar</span>
-            <span class="stress-metric-val">{{ formatMetric(stressTest.risk_metrics.calmar) }}</span>
-          </div>
+        <div class="stress-cell">
+          <span class="stress-cell-label">鲁棒性</span>
+          <span class="stress-cell-val" :class="stressTest.is_robust ? 'up' : 'down'">
+            {{ stressTest.is_robust ? '鲁棒' : '不鲁棒' }}
+          </span>
+        </div>
+        <div class="stress-cell">
+          <span class="stress-cell-label">原始信号</span>
+          <span class="stress-cell-val">{{ stressTest.original_signal }}</span>
+        </div>
+        <div class="stress-cell">
+          <span class="stress-cell-label">模拟次数</span>
+          <span class="stress-cell-val">{{ stressTest.simulation_count }}</span>
+        </div>
+        <div v-if="stressTest.risk_metrics" class="stress-cell">
+          <span class="stress-cell-label">最大回撤</span>
+          <span class="stress-cell-val" :class="(stressTest.risk_metrics.max_drawdown || 0) > 0.2 ? 'down' : 'up'">
+            {{ stressTest.risk_metrics.max_drawdown != null ? formatMetric(stressTest.risk_metrics.max_drawdown * 100) + '%' : '-' }}
+          </span>
+        </div>
+        <div v-if="stressTest.risk_metrics" class="stress-cell">
+          <span class="stress-cell-label">Sharpe</span>
+          <span class="stress-cell-val">{{ formatMetric(stressTest.risk_metrics.sharpe) }}</span>
+        </div>
+        <div v-if="stressTest.risk_metrics" class="stress-cell">
+          <span class="stress-cell-label">Sortino</span>
+          <span class="stress-cell-val">{{ formatMetric(stressTest.risk_metrics.sortino) }}</span>
+        </div>
+        <div v-if="stressTest.risk_metrics" class="stress-cell">
+          <span class="stress-cell-label">Calmar</span>
+          <span class="stress-cell-val">{{ formatMetric(stressTest.risk_metrics.calmar) }}</span>
         </div>
       </div>
     </div>
@@ -421,73 +422,63 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
 }
 
 .v-stress-test {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
   margin-top: 12px;
-  padding: 10px 12px;
+  padding: 12px;
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   border-radius: var(--radius-sm, 6px);
 }
 
-.stress-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted, rgba(255, 255, 255, 0.38));
-  white-space: nowrap;
-  padding-top: 3px;
-  min-width: 120px;
-}
-
-.stress-content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.stress-row {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.stress-item {
+.stress-header {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.stress-item-label {
+  margin-bottom: 10px;
   font-size: 11px;
+  font-weight: 600;
   color: var(--text-muted, rgba(255, 255, 255, 0.38));
-  white-space: nowrap;
+  letter-spacing: 0.04em;
 }
 
-.stress-metrics {
+.stress-grid {
   display: flex;
-  gap: 16px;
   flex-wrap: wrap;
+  gap: 8px;
 }
 
-.stress-metric {
+.stress-cell {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 4px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-sm, 6px);
+  flex: 1 1 100px;
+  min-width: 100px;
+  max-width: 160px;
 }
 
-.stress-metric-label {
+.stress-cell-label {
   font-size: 10px;
   color: rgba(255, 255, 255, 0.4);
   white-space: nowrap;
 }
 
-.stress-metric-val {
-  font-size: 12px;
-  font-weight: 600;
+.stress-cell-val {
+  font-size: 13px;
+  font-weight: 700;
   color: var(--text-primary, rgba(255, 255, 255, 0.92));
   font-family: 'SF Mono', 'JetBrains Mono', monospace;
+  word-break: keep-all;
+}
+
+.stress-cell-val.up {
+  color: var(--color-up, #26a69a);
+}
+
+.stress-cell-val.down {
+  color: var(--color-down, #ef5350);
 }
 
 .v-weighted {

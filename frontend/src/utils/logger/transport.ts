@@ -152,14 +152,15 @@ export class RemoteTransport implements Transport {
     const batch = this.buffer.splice(0, this.batchSize)
     try {
       const sanitized = sanitizeData(batch)
+      const payload = JSON.stringify({ logs: sanitized })
       if (navigator.sendBeacon) {
-        const blob = new Blob([JSON.stringify(sanitized)], { type: 'application/json' })
+        const blob = new Blob([payload], { type: 'application/json' })
         navigator.sendBeacon(this.endpoint, blob)
       } else {
         await fetch(this.endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(sanitized),
+          body: payload,
           keepalive: true,
         })
       }
