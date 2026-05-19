@@ -17,7 +17,7 @@ from scripts.core.backtest import _get_trend_from_change, _is_trend_consistent, 
 from scripts.core.walk_forward import WalkForwardValidator
 from backend.utils import sanitize_for_json
 
-logger = logging.getLogger("stock_query")
+logger = logging.getLogger("stock_query.backtest_service")
 
 VALIDATION_TIMEOUT = 30
 WALK_FORWARD_TIMEOUT = 60

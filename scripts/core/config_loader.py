@@ -1,9 +1,10 @@
 import os
 import re
-import logging
 import yaml
 
-logger = logging.getLogger("stock_query")
+from scripts.logger import get_logger
+
+logger = get_logger("config_loader")
 
 _ENV_PATTERN = re.compile(r'\$\{([^}:]+)(?::([^}]*))?\}')
 

@@ -4,7 +4,7 @@ import yaml
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger("stock_query")
+logger = logging.getLogger("stock_query.config")
 
 _config_cache = None
 

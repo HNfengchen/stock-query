@@ -16,7 +16,7 @@ from scripts.core.feature_engineering import (
 from scripts.core.regime_detector import DynamicWeightManager, HMMRegimeDetector
 from scripts.core.ml_model import LightGBMPredictor, hybrid_predict
 
-analyzer_logger = get_logger("Analyzer")
+analyzer_logger = get_logger("analyzer")
 
 TREND_STRONG_UP = "strong_up"
 TREND_UP = "up"
@@ -516,18 +516,17 @@ class StockAnalyzer:
                     _executor.shutdown(wait=False)
 
                 if market_snapshot is not None and not market_snapshot.empty:
-                    row = market_snapshot.iloc[0]
-                    # iloc[0] 可能返回标量而非 Series，需要类型检查
-                    if isinstance(row, pd.Series):
-                        market_change = row.get("涨跌幅", 0)
-                    elif isinstance(row, dict):
-                        market_change = row.get("涨跌幅", 0)
-                    else:
-                        # 尝试通过列名直接取值
-                        try:
-                            market_change = market_snapshot.iloc[0, market_snapshot.columns.get_loc("涨跌幅")]
-                        except (KeyError, ValueError, IndexError):
+                    # get_quote_snapshot 对单只股票返回 Series，对多只返回 DataFrame
+                    if isinstance(market_snapshot, pd.DataFrame):
+                        row = market_snapshot.iloc[0]
+                        if isinstance(row, pd.Series):
+                            market_change = row.get("涨跌幅", 0)
+                        else:
                             market_change = 0
+                    elif isinstance(market_snapshot, pd.Series):
+                        market_change = market_snapshot.get("涨跌幅", 0)
+                    else:
+                        market_change = 0
                     try:
                         market_change = float(market_change)
                     except (ValueError, TypeError):

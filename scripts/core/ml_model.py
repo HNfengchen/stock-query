@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple
 
 from scripts.logger import get_logger
 
-ml_logger = get_logger("MLModel")
+ml_logger = get_logger("ml_model")
 
 try:
     import lightgbm as lgb

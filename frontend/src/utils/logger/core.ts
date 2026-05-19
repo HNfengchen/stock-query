@@ -13,11 +13,12 @@ export interface LoggerConfig {
   enableLocalStorage?: boolean
 }
 
-const DEFAULT_CONFIG: Required<Omit<LoggerConfig, 'remoteEndpoint'>> = {
+const DEFAULT_CONFIG: Required<LoggerConfig> = {
   level: 'INFO',
   service: 'stock-query-frontend',
   module: 'app',
   transports: [],
+  remoteEndpoint: '/api/logs',
   enableLocalStorage: true,
 }
 
@@ -45,7 +46,7 @@ export class Logger {
     }
 
     if (merged.remoteEndpoint && !this.transports.some(t => t instanceof RemoteTransport)) {
-      const remote = new RemoteTransport({ endpoint: merged.remoteEndpoint })
+      const remote = new RemoteTransport({ endpoint: merged.remoteEndpoint, minLevel: LogLevel.WARN })
       remote.start()
       this.transports.push(remote)
     }

@@ -13,7 +13,10 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.logger import fetcher_logger
+from scripts.logger import get_logger
+from backend.logging import log_data
+
+fetcher_logger = get_logger("data_fetcher")
 
 from scripts.stock_query import (
     parse_stock_code,
@@ -249,22 +252,26 @@ class DataFetcher:
             import efinance as ef
             market_snapshot = _call_with_timeout(ef.stock.get_quote_snapshot, "000001")
             if market_snapshot is not None and not market_snapshot.empty:
-                row = market_snapshot.iloc[0]
-                if isinstance(row, pd.Series):
-                    change_val = row.get("涨跌幅", 0)
-                elif isinstance(row, dict):
-                    change_val = row.get("涨跌幅", 0)
-                else:
-                    try:
-                        change_val = market_snapshot.iloc[0, market_snapshot.columns.get_loc("涨跌幅")]
-                    except (KeyError, ValueError, IndexError):
+                # get_quote_snapshot 对单只股票返回 Series，对多只返回 DataFrame
+                if isinstance(market_snapshot, pd.DataFrame):
+                    row = market_snapshot.iloc[0]
+                    if isinstance(row, pd.Series):
+                        change_val = row.get("涨跌幅", 0)
+                    else:
                         change_val = 0
+                elif isinstance(market_snapshot, pd.Series):
+                    change_val = market_snapshot.get("涨跌幅", 0)
+                else:
+                    change_val = 0
                 try:
                     change_val = float(change_val)
                 except (ValueError, TypeError):
                     change_val = 0
+                log_data('fetch', 'efinance', 'market_data', 'success',
+                         stock_code='000001', change_pct=change_val)
                 return {"涨跌幅": change_val, "名称": "上证指数"}
         except Exception as e:
+            log_data('fetch', 'efinance', 'market_data', 'failure', error=str(e))
             fetcher_logger.debug(f"[DataFetcher] 获取大盘数据失败: {e}")
         return None
 
@@ -427,6 +434,12 @@ class DataFetcher:
                 history_df = db_result["history_df"]
                 info = db_result.get("stock_info", {})
                 fund_flow = db_result.get("fund_flow", {})
+                log_data('fetch', 'database', 'history_df', 'success',
+                         stock_code=stock_code, data_count=len(history_df))
+                log_data('fetch', 'database', 'stock_info', 'success' if info else 'failure',
+                         stock_code=stock_code)
+                log_data('fetch', 'database', 'fund_flow', 'success' if fund_flow else 'failure',
+                         stock_code=stock_code)
             else:
                 info = None
         else:
@@ -469,6 +482,17 @@ class DataFetcher:
             fund_flow = result.get('fund_flow')
             history_df = result.get('history_data')
 
+            log_data('fetch', 'efinance', 'stock_info', 'success' if info else 'failure',
+                     stock_code=stock_code)
+            log_data('fetch', 'efinance', 'fund_flow', 'success' if fund_flow else 'failure',
+                     stock_code=stock_code)
+            if history_df is not None and not history_df.empty:
+                log_data('fetch', 'baostock/efinance', 'history_df', 'success',
+                         stock_code=stock_code, data_count=len(history_df))
+            else:
+                log_data('fetch', 'baostock/efinance', 'history_df', 'failure',
+                         stock_code=stock_code)
+
             fetcher_logger.debug(
                 f"[DataFetcher] 股票基本信息获取完成: {info.get('名称') if info else None}, 最新价: {info.get('最新价') if info else None}"
             )
@@ -494,17 +518,17 @@ class DataFetcher:
             import efinance as ef
             market_snapshot = _call_with_timeout(ef.stock.get_quote_snapshot, "000001")
             if market_snapshot is not None and not market_snapshot.empty:
-                row = market_snapshot.iloc[0]
-                # iloc[0] 可能返回标量而非 Series，需要类型检查
-                if isinstance(row, pd.Series):
-                    change_val = row.get("涨跌幅", 0)
-                elif isinstance(row, dict):
-                    change_val = row.get("涨跌幅", 0)
-                else:
-                    try:
-                        change_val = market_snapshot.iloc[0, market_snapshot.columns.get_loc("涨跌幅")]
-                    except (KeyError, ValueError, IndexError):
+                # get_quote_snapshot 对单只股票返回 Series，对多只返回 DataFrame
+                if isinstance(market_snapshot, pd.DataFrame):
+                    row = market_snapshot.iloc[0]
+                    if isinstance(row, pd.Series):
+                        change_val = row.get("涨跌幅", 0)
+                    else:
                         change_val = 0
+                elif isinstance(market_snapshot, pd.Series):
+                    change_val = market_snapshot.get("涨跌幅", 0)
+                else:
+                    change_val = 0
                 try:
                     change_val = float(change_val)
                 except (ValueError, TypeError):
@@ -513,7 +537,10 @@ class DataFetcher:
                     "涨跌幅": change_val,
                     "名称": "上证指数",
                 }
+                log_data('fetch', 'efinance', 'market_data', 'success',
+                         stock_code='000001', change_pct=change_val)
         except Exception as e:
+            log_data('fetch', 'efinance', 'market_data', 'failure', error=str(e))
             fetcher_logger.debug(f"[DataFetcher] 获取大盘数据失败: {e}")
 
         fetcher_logger.info(f"[DataFetcher] 数据获取完成，返回结果")
@@ -548,7 +575,7 @@ class DataFetcher:
                 fetcher_logger.warning(f"[DataFetcher] 数据验证失败: {e}")
                 data_quality = "validation_failed"
 
-        return {
+        all_data = {
             "stock_code": stock_code,
             "stock_name": stock_name,
             "market": market,
@@ -561,3 +588,12 @@ class DataFetcher:
             "data_quality": data_quality,
             "market_data": market_data,
         }
+        has_all = (history_df is not None and not history_df.empty
+                   and info and fund_flow and market_data)
+        log_data('assemble', 'all_sources', 'all_data', 'success' if has_all else 'partial',
+                 stock_code=stock_code,
+                 has_history=history_df is not None and not history_df.empty,
+                 has_stock_info=bool(info),
+                 has_fund_flow=bool(fund_flow),
+                 has_market_data=bool(market_data))
+        return all_data

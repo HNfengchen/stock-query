@@ -126,6 +126,7 @@ echo ""
 
 echo "[1/7] 安装 Python 依赖..."
 cd "$PROJECT_DIR"
+rm -rf logs
 
 PIP_CMD="pip3"
 if ! command -v pip3 &>/dev/null; then

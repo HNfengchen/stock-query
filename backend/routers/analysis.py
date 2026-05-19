@@ -11,11 +11,12 @@ from backend.exceptions import InvalidStockCodeError, DataInsufficientError, Ana
 from backend.services.analysis_service import run_analysis, run_analysis_staged, AnalysisLogger
 from backend.utils import sanitize_for_json
 
+
 router = APIRouter()
 
 _executor = ThreadPoolExecutor(max_workers=8)
 
-logger = logging.getLogger("stock_query")
+logger = logging.getLogger("stock_query.sse")
 
 BATCH_CONCURRENCY = 5
 
@@ -93,6 +94,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
         nonlocal completed_count
         loop = asyncio.get_running_loop()
         try:
+            logger.info(f"BatchQuick: 开始分析 {stock_req.stock_input}")
             await progress_queue.put({
                 "type": "analyzing",
                 "current": i,
@@ -106,10 +108,11 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
 
             result = await loop.run_in_executor(_executor, _run)
             signal = result.get("trading_signal", {})
+            signal_text = signal.get("signal_text", "")
             summary = {
                 "stock_code": result.get("stock_code", stock_req.stock_input),
                 "stock_name": result.get("stock_name", ""),
-                "signal_text": signal.get("signal_text", ""),
+                "signal_text": signal_text,
                 "score": signal.get("score", 0),
                 "action_gate": signal.get("action_gate", ""),
                 "recommendation": result.get("analysis", {}).get("recommendation", ""),
@@ -118,6 +121,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
             async with lock:
                 completed_count += 1
                 all_summaries.append(summary)
+            logger.info(f"BatchQuick: 分析完成 {stock_req.stock_input}, signal={signal_text}")
             await progress_queue.put({
                 "type": "completed",
                 "current": completed_count,
@@ -125,6 +129,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "summary": summary,
             })
         except Exception as e:
+            logger.warning(f"BatchQuick: 分析失败 {stock_req.stock_input}: {e}")
             err = {"stock_input": stock_req.stock_input, "error": str(e), "index": i}
             async with lock:
                 completed_count += 1
@@ -137,6 +142,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
             })
 
     async def event_generator():
+        logger.info(f"BatchQuick: 开始批量分析，共 {total} 只")
         semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
         cancel_event = asyncio.Event()
 
@@ -152,11 +158,15 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
             sent_completed = 0
             while sent_completed < total:
                 event_data = await progress_queue.get()
+                evt_type = event_data.get("type", "")
+                logger.info(f"BatchQuick: 发送SSE事件 type={evt_type}, current={event_data.get('current')}/{event_data.get('total')}, sent_completed={sent_completed}/{total}")
                 yield {"event": "progress", "data": json.dumps(event_data, ensure_ascii=False)}
-                if event_data.get("type") in ("completed", "error"):
+                if evt_type in ("completed", "error"):
                     sent_completed += 1
 
+            logger.info(f"BatchQuick: 所有进度事件已发送，等待任务完成")
             await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info(f"BatchQuick: 所有任务已完成，开始更新缓存")
         except (asyncio.CancelledError, GeneratorExit):
             cancel_event.set()
             for t in tasks:
@@ -189,11 +199,14 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
         except Exception as e:
             logger.warning(f"批量更新信号缓存失败: {e}")
 
+        success_count = total - len(all_errors)
+        logger.info(f"BatchQuick: 批量分析完成，成功 {success_count}，失败 {len(all_errors)}")
+
         yield {
             "event": "complete",
             "data": json.dumps({
                 "total": total,
-                "success_count": total - len(all_errors),
+                "success_count": success_count,
                 "error_count": len(all_errors),
                 "errors": all_errors,
                 "summaries": sorted(all_summaries, key=lambda x: x.get("index", 0)),
@@ -206,6 +219,8 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
 @router.get("/analysis/stream")
 async def analysis_stream(stock_input: str, position_status: str = "未持有", cost_price: Optional[float] = None):
     from sse_starlette.sse import EventSourceResponse
+
+    logger.info(f"SSE流: 连接建立, stock_input={stock_input}")
 
     async def event_generator():
         stage_queue: asyncio.Queue = asyncio.Queue()
@@ -229,8 +244,12 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
 
         def _run_staged():
             try:
+                stock_code = stock_input  # 供日志使用
+                logger.info(f"SSE流: 开始分析 {stock_code}, position={position_status}")
+                logger.info("SSE流: 开始执行分析线程")
                 run_analysis_staged(stock_input, position_status, cost_price, stage_callback=stage_callback, logger=analysis_logger)
             except Exception as e:
+                logger.error(f"SSE流: 分析线程异常: {e}")
                 asyncio.run_coroutine_threadsafe(
                     stage_queue.put({"stage": "error", "data": {"error": str(e)}}),
                     loop,
@@ -244,9 +263,11 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
                     event_data = await asyncio.wait_for(stage_queue.get(), timeout=120)
                     stage = event_data.get("stage")
                     data = event_data.get("data", {})
+                    logger.info(f"SSE流: 收到事件 stage={stage}")
 
                     if stage == "stage_complete":
                         yield {"event": "stage_complete", "data": json.dumps(sanitize_for_json(data), ensure_ascii=False)}
+                        logger.info("SSE流: 发送 stage_complete，分析完成")
 
                         from backend.services.analysis_service import get_analyzer
                         analyzer = get_analyzer()
@@ -274,14 +295,17 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
                         break
                     elif stage == "error":
                         yield {"event": "error", "data": json.dumps(sanitize_for_json(data), ensure_ascii=False)}
+                        logger.info("SSE流: 发送 error 事件")
                         break
                     else:
                         yield {"event": stage, "data": json.dumps(sanitize_for_json(data), ensure_ascii=False)}
                 except asyncio.TimeoutError:
+                    logger.info("SSE流: 等待事件超时，发送心跳")
                     yield {"event": "heartbeat", "data": ""}
         except (asyncio.CancelledError, GeneratorExit):
             return
         finally:
+            logger.info("SSE流: 连接关闭")
             if not task.done():
                 task.cancel()
 

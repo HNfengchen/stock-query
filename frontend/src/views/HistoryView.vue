@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
 import { useStockStore } from '@/stores/stockStore'
+import { useWatchlistStore } from '@/stores/watchlistStore'
+import { useBatchStore } from '@/stores/batchStore'
 import { useAsyncState } from '@/composables/useAsyncState'
 import { useRouter } from 'vue-router'
 import type { AnalysisRequest, WatchlistItem } from '@/types'
@@ -8,6 +10,8 @@ import { DataAnalysis } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const store = useStockStore()
+const watchlistStore = useWatchlistStore()
+const batchStore = useBatchStore()
 const router = useRouter()
 const batchState = useAsyncState()
 
@@ -40,7 +44,7 @@ const newStock = ref<AnalysisRequest>({
   cost_price: undefined,
 })
 
-const isBatchAnalyzing = computed(() => store.loading && store.batchProgress.status === 'analyzing')
+const isBatchAnalyzing = computed(() => store.loading && batchStore.batchProgress.status === 'analyzing')
 
 const batchElapsed = computed(() => {
   tickCounter.value
@@ -52,22 +56,23 @@ const batchElapsed = computed(() => {
 
 const batchEta = computed(() => {
   tickCounter.value
-  if (!batchStartTime.value || !isBatchAnalyzing.value || store.batchProgress.current === 0) return ''
+  if (!batchStartTime.value || !isBatchAnalyzing.value || batchStore.batchProgress.current === 0) return ''
   const elapsed = (Date.now() - batchStartTime.value) / 1000
-  const perItem = elapsed / store.batchProgress.current
-  const remaining = Math.round(perItem * (store.batchProgress.total - store.batchProgress.current))
+  const perItem = elapsed / batchStore.batchProgress.current
+  const remaining = Math.round(perItem * (batchStore.batchProgress.total - batchStore.batchProgress.current))
   if (remaining < 0) return ''
   if (remaining < 60) return `约${remaining}秒`
   return `约${Math.floor(remaining / 60)}分${remaining % 60}秒`
 })
 
 const batchPercentage = computed(() => {
-  if (store.batchProgress.total === 0) return 0
-  return Math.round((store.batchProgress.current / store.batchProgress.total) * 100)
+  if (batchStore.batchProgress.total === 0) return 0
+  return Math.round((batchStore.batchProgress.current / batchStore.batchProgress.total) * 100)
 })
 
 onMounted(() => {
-  store.loadWatchlist()
+  console.log('[HistoryView] onMounted, 加载自选股列表')
+  watchlistStore.loadWatchlist()
 })
 
 function openAddDialog() {
@@ -78,7 +83,7 @@ function openAddDialog() {
 async function confirmAdd() {
   if (!newStock.value.stock_input.trim()) return
   try {
-    await store.addStock(newStock.value)
+    await watchlistStore.addStock(newStock.value)
     dialogVisible.value = false
   } catch (e: any) {
     const message = e?.response?.data?.detail || e?.message || '添加股票失败'
@@ -112,12 +117,12 @@ function getSignalClass(signal: string): string {
 }
 
 async function batchQuickAnalyze() {
-  if (store.watchlist.length === 0 || batchDebouncePending.value || batchState.isLoading.value) return
+  if (watchlistStore.watchlist.length === 0 || batchDebouncePending.value || batchState.isLoading.value) return
   batchDebouncePending.value = true
   batchDebounceTimer = setTimeout(async () => {
     batchDebouncePending.value = false
     batchDebounceTimer = null
-    const stocks: AnalysisRequest[] = store.watchlist.map(item => ({
+    const stocks: AnalysisRequest[] = watchlistStore.watchlist.map(item => ({
       stock_input: item.stock_code,
       position_status: item.position_status,
       cost_price: item.cost_price ?? undefined,
@@ -126,13 +131,13 @@ async function batchQuickAnalyze() {
     startTick()
     batchState.toLoading()
     try {
-      await store.runBatchQuickAnalysis(stocks)
-      if (store.batchError) {
-        batchState.toError(store.batchError)
-        ElMessage.warning(store.batchError)
-      } else if (store.batchProgress.status === 'completed') {
+      await batchStore.runBatchQuickAnalysis(stocks)
+      if (batchStore.batchError) {
+        batchState.toError(batchStore.batchError)
+        ElMessage.warning(batchStore.batchError)
+      } else if (batchStore.batchProgress.status === 'completed') {
         batchState.toSuccess(null)
-        ElMessage.success(`分析完成: ${store.batchProgress.total}只股票`)
+        ElMessage.success(`分析完成: ${batchStore.batchProgress.total}只股票`)
       }
     } catch (e: any) {
       const message = e.message || '分析失败'
@@ -151,7 +156,7 @@ function cancelBatch() {
     batchDebounceTimer = null
     batchDebouncePending.value = false
   }
-  store.cancelBatchAnalysis()
+  batchStore.cancelBatchAnalysis()
   batchStartTime.value = null
   stopTick()
   batchState.reset()
@@ -161,7 +166,7 @@ function cancelBatch() {
 async function confirmEdit() {
   if (!editingStock.value) return
   try {
-    await store.updateStock(editingStock.value.stock_code, {
+    await watchlistStore.updateStock(editingStock.value.stock_code, {
       position_status: editingStock.value.position_status,
       cost_price: editingStock.value.cost_price,
     })
@@ -173,7 +178,7 @@ async function confirmEdit() {
 
 async function removeStock(stockCode: string) {
   try {
-    await store.removeStock(stockCode)
+    await watchlistStore.removeStock(stockCode)
   } catch (e) {
     console.error(e)
   }
@@ -192,11 +197,11 @@ async function removeStock(stockCode: string) {
           v-if="!batchState.isLoading.value"
           type="success"
           size="small"
-          :disabled="store.watchlist.length === 0 || batchDebouncePending"
+          :disabled="watchlistStore.watchlist.length === 0 || batchDebouncePending"
           @click="batchQuickAnalyze"
         >
           <el-icon><DataAnalysis /></el-icon>
-          <span>一键分析 ({{ store.watchlist.length }})</span>
+          <span>一键分析 ({{ watchlistStore.watchlist.length }})</span>
         </el-button>
         <el-button
           v-else
@@ -218,7 +223,7 @@ async function removeStock(stockCode: string) {
       <div class="progress-header">
         <span class="progress-title">批量分析中</span>
         <span class="progress-stats font-mono">
-          {{ store.batchProgress.current }}/{{ store.batchProgress.total }}
+          {{ batchStore.batchProgress.current }}/{{ batchStore.batchProgress.total }}
           <span class="progress-pct">{{ batchPercentage }}%</span>
         </span>
       </div>
@@ -231,17 +236,17 @@ async function removeStock(stockCode: string) {
         :show-text="false"
       />
       <div class="progress-footer">
-        <span class="progress-current" v-if="store.batchProgress.currentStock">
-          正在分析: {{ store.batchProgress.currentStock }}
+        <span class="progress-current" v-if="batchStore.batchProgress.currentStock">
+          正在分析: {{ batchStore.batchProgress.currentStock }}
         </span>
         <span class="progress-time">
           <span v-if="batchElapsed">已用 {{ batchElapsed }}</span>
           <span v-if="batchEta" class="progress-eta"> · 预计剩余 {{ batchEta }}</span>
         </span>
       </div>
-      <div v-if="store.batchErrorStocks.length > 0" class="progress-errors">
+      <div v-if="batchStore.batchErrorStocks.length > 0" class="progress-errors">
         <span class="error-label">失败股票:</span>
-        <span v-for="(err, idx) in store.batchErrorStocks" :key="idx" class="error-item">
+        <span v-for="(err, idx) in batchStore.batchErrorStocks" :key="idx" class="error-item">
           {{ err.stock_input }}: {{ err.error }}
         </span>
       </div>
@@ -258,7 +263,7 @@ async function removeStock(stockCode: string) {
 
     <div v-if="batchState.isSuccess.value" class="batch-success-banner">
       <el-icon><CircleCheckFilled /></el-icon>
-      <span>批量分析完成，共 {{ store.batchProgress.total }} 只股票</span>
+      <span>批量分析完成，共 {{ batchStore.batchProgress.total }} 只股票</span>
       <el-button size="small" text @click="batchState.reset()">
         <el-icon><Close /></el-icon>
         <span>关闭</span>
@@ -267,7 +272,7 @@ async function removeStock(stockCode: string) {
 
     <div class="stock-grid">
       <div
-        v-for="item in store.watchlist"
+        v-for="item in watchlistStore.watchlist"
         :key="item.stock_code"
         class="stock-card"
         @click="analyzeStock(item)"
@@ -320,7 +325,7 @@ async function removeStock(stockCode: string) {
       </div>
     </div>
 
-    <div v-if="store.watchlist.length === 0" class="empty-state">
+    <div v-if="watchlistStore.watchlist.length === 0" class="empty-state">
       <el-icon class="empty-icon"><DocumentDelete /></el-icon>
       <span class="empty-text">暂无历史股票</span>
       <el-button type="primary" size="small" @click="openAddDialog">添加第一只股票</el-button>

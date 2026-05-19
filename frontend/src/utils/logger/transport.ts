@@ -1,5 +1,4 @@
-import type { LogLevel } from './levels'
-import { LOG_LEVEL_NAMES } from './levels'
+import { LogLevel, LOG_LEVEL_NAMES } from './levels'
 import { sanitizeData } from './sensitive'
 import { getTraceId } from './trace'
 
@@ -97,6 +96,7 @@ interface RemoteTransportOptions {
   endpoint: string
   batchSize?: number
   flushInterval?: number
+  minLevel?: LogLevel
 }
 
 export class RemoteTransport implements Transport {
@@ -104,6 +104,7 @@ export class RemoteTransport implements Transport {
   private endpoint: string
   private batchSize: number
   private flushInterval: number
+  private minLevel: LogLevel
   private buffer: LogEntry[] = []
   private timer: ReturnType<typeof setInterval> | null = null
   private isFlushing = false
@@ -112,9 +113,16 @@ export class RemoteTransport implements Transport {
     this.endpoint = options.endpoint
     this.batchSize = options.batchSize ?? 20
     this.flushInterval = options.flushInterval ?? 5000
+    this.minLevel = options.minLevel ?? LogLevel.DEBUG
+  }
+
+  private getLevelValue(level: string): LogLevel {
+    const entry = Object.entries(LOG_LEVEL_NAMES).find(([, v]) => v === level)
+    return entry ? (Number(entry[0]) as LogLevel) : LogLevel.DEBUG
   }
 
   log(entry: LogEntry): void {
+    if (this.getLevelValue(entry.level) < this.minLevel) return
     this.buffer.push(entry)
     if (this.buffer.length >= this.batchSize) {
       this.flush()
@@ -160,5 +168,10 @@ export class RemoteTransport implements Transport {
     } finally {
       this.isFlushing = false
     }
+  }
+
+  destroy(): void {
+    this.stop()
+    this.flush()
   }
 }

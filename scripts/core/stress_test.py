@@ -3,7 +3,7 @@ import pandas as pd
 from typing import Dict, Optional
 from scripts.logger import get_logger
 
-stress_logger = get_logger("StressTest")
+stress_logger = get_logger("stress_test")
 
 
 class MonteCarloStressTest:
@@ -133,18 +133,33 @@ class MonteCarloStressTest:
             return None
 
         try:
+            # 压力测试期间临时提高日志级别，避免大量重复日志
+            from scripts.logger import get_logger
+            _al = get_logger("analyzer")
+            _rl = get_logger("regime_detector")
+            _orig_al_level = _al.level
+            _orig_rl_level = _rl.level
+            _al.setLevel(max(_orig_al_level, 30))  # WARNING=30
+            _rl.setLevel(max(_orig_rl_level, 30))
+
             tech_result = analyzer.analyze_technical(indicators, current_price)
             fund_result = analyzer.analyze_fund_flow({})
-            sentiment_result = analyzer.analyze_market_sentiment({"stock_info": {}})
+            # 压力测试中传入空 market_data 避免触发 efinance API 调用
+            sentiment_result = analyzer.analyze_market_sentiment({"stock_info": {}}, market_data={})
 
             analysis = {
                 "technical": tech_result,
                 "fund_flow": fund_result,
                 "sentiment": sentiment_result,
             }
-            signal_result = analyzer.generate_trading_signal(analysis)
+            signal_result = analyzer.generate_trading_signal(analysis, market_data={})
+
+            _al.setLevel(_orig_al_level)
+            _rl.setLevel(_orig_rl_level)
             return signal_result.get("signal", "hold")
         except Exception as e:
+            _al.setLevel(_orig_al_level)
+            _rl.setLevel(_orig_rl_level)
             stress_logger.debug(f"获取信号失败: {e}")
             return None
 

@@ -20,7 +20,7 @@ try:
 except ImportError:
     JOBLIB_AVAILABLE = False
 
-regime_logger = get_logger("RegimeDetector")
+regime_logger = get_logger("regime_detector")
 
 REGIME_ALIASES = {
     "恐慌": "极端恐慌",

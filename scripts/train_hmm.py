@@ -15,7 +15,7 @@ import yaml
 from scripts.core.regime_detector import HMMRegimeDetector, HMMLEARN_AVAILABLE
 from scripts.logger import get_logger
 
-train_logger = get_logger("TrainHMM")
+train_logger = get_logger("train_hmm")
 
 
 def load_config(config_path: str) -> dict:

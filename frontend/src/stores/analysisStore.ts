@@ -5,8 +5,10 @@ import { analyzeStock } from '@/api/analysis'
 import { API_TIMEOUTS } from '@/api/config'
 import { useLogStore } from './logStore'
 import { connectSSEStream } from '@/composables/useSSEStream'
+import { getLogger } from '@/utils/logger'
 
 export const useAnalysisStore = defineStore('analysis', () => {
+  const logger = getLogger('store.analysis')
   const currentResult = ref<AnalysisResult | null>(null)
   const loading = ref(false)
   const streamStage = ref<string>('')
@@ -136,6 +138,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     streamStageData.value = {}
     loading.value = true
     const logStore = useLogStore()
+    logger.info('开始分析: stock_input=' + data.stock_input)
 
     const controller = new AbortController()
     streamAbortController = controller
@@ -152,12 +155,14 @@ export const useAnalysisStore = defineStore('analysis', () => {
 
     try {
       try {
+        logger.info('SSE连接已建立')
         await connectSSEStream({
           url: `/api/analysis/stream?${params.toString()}`,
           timeout: API_TIMEOUTS.sse,
           signal: controller.signal,
           onEvent: ({ event, data: eventData }) => {
             if (gen !== analysisGeneration) return
+            logger.info(`SSE事件: ${event}, stage=${streamStage.value}`)
 
             if (event === 'stage_basic') {
               streamStage.value = 'stage_basic'
@@ -212,7 +217,12 @@ export const useAnalysisStore = defineStore('analysis', () => {
               }
             } else if (event === 'stage_complete') {
               if (gen !== analysisGeneration) return
-              currentResult.value = eventData as AnalysisResult
+              const completeData = eventData as AnalysisResult
+              if (completeData && 'error' in completeData && !completeData.stock_code) {
+                logger.warn('stage_complete 包含错误:', (completeData as any).error)
+                throw new Error((completeData as any).error || '分析失败')
+              }
+              currentResult.value = completeData
               streamStage.value = 'stage_complete'
             } else if (event === 'log') {
               logStore.addLog(eventData as LogEntry)
@@ -233,6 +243,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
         })
         return
       } catch (sseError) {
+        logger.info('SSE失败，回退到普通API:', sseError)
         if (sseFailed) return
         if (gen !== analysisGeneration) {
           streamAbortController = null
@@ -251,6 +262,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       try {
         const result = await analyzeStock(data, fbController.signal)
         if (gen !== analysisGeneration || fbController.signal.aborted) return
+        logger.info('Fallback API成功，stock_code=' + result.stock_code)
         currentResult.value = result
         streamStage.value = 'stage_complete'
         // Fallback 成功后写入分析日志到 logStore
@@ -260,6 +272,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
           }
         }
       } catch (fallbackErr) {
+        logger.info('Fallback API失败:', fallbackErr)
         throw fallbackErr
       } finally {
         if (gen === analysisGeneration) {
@@ -270,6 +283,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
         }
       }
     } catch (e) {
+      logger.error('分析异常:', e)
       loading.value = false
       streamAbortController = null
       isReentering = false

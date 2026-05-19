@@ -29,7 +29,7 @@ export const useStockStore = defineStore('stock', () => {
     addStock: watchlist.addStock,
     removeStock: watchlist.removeStock,
     updateStock: watchlist.updateStock,
-    batchProgress: computed(() => batch.batchProgress),
+    batchProgress: batch.batchProgress,
     batchError: computed(() => batch.batchError),
     batchErrorStocks: computed(() => batch.batchErrorStocks),
     runBatchAnalysis: batch.runBatchAnalysis,

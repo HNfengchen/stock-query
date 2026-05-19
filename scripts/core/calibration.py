@@ -162,7 +162,7 @@ def evaluate_validation_config(
                 "fund_flow": fund_flow_data,
                 "sentiment": sentiment_data,
             }
-            trading_signal = analyzer.generate_trading_signal(analysis, "未持有")
+            trading_signal = analyzer.generate_trading_signal(analysis, "未持有", market_data={})
 
             all_data = {
                 "history_data": history_up_to,

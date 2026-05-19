@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -16,7 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from scripts.core.data_fetcher import DataFetcher
 from scripts.core.analyzer import StockAnalyzer
 from scripts.technical_indicators import calculate_all_indicators
+
 from backend.utils import clean_float, to_list, deep_clean_nan, clean_nested
+from backend.logging import log_data
+
+_svc_logger = logging.getLogger("stock_query.analysis_service")
 
 
 class AnalysisLogger:
@@ -244,10 +249,18 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     market_data = None
     try:
         market_data = fetcher.fetch_market_data()
-        if market_data:
-            all_data["market_data"] = market_data
     except Exception as e:
         logger.debug(f"获取大盘数据失败: {e}")
+    # 即使获取失败也传入空 dict，避免 analyze_market_sentiment 再次调用 efinance
+    if not market_data:
+        market_data = {}
+    all_data["market_data"] = market_data
+
+    log_data('transfer', 'data_fetcher', 'analyzer', 'success',
+             stock_code=stock_code,
+             has_history=all_data.get('history_data') is not None,
+             has_stock_info=all_data.get('stock_info') is not None,
+             has_market_data='market_data' in all_data)
 
     if stage_callback:
         stage_callback('stage_basic', {
@@ -481,8 +494,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
                         stock_code = cached_result.get("stock_code", stock_input)
                         update_signal_cache(stock_code, position_status, cached_result.get("trading_signal", {}), cost_price=cost_price)
                     except Exception as e:
-                        import logging
-                        logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
+                        _svc_logger.warning(f"更新信号缓存失败: {e}")
                 return cached_result
 
     logger = AnalysisLogger()
@@ -507,22 +519,19 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
             from backend.services.history_service import update_signal_cache
             update_signal_cache(result.get("stock_code", stock_input), position_status, result.get("trading_signal", {}), cost_price=cost_price)
         except Exception as e:
-            import logging
-            logging.getLogger("stock_query").warning(f"更新信号缓存失败: {e}")
+            _svc_logger.warning(f"更新信号缓存失败: {e}")
 
     try:
         _update_prediction_to_db(result.get("stock_code", stock_input), result.get("price_prediction", {}))
     except Exception as e:
-        import logging
-        logging.getLogger("stock_query").warning(f"更新预测值到数据库失败: {e}")
+        _svc_logger.warning(f"更新预测值到数据库失败: {e}")
 
     return result
 
 
 def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
     _validate_stock_code(stock_code)
-    import logging
-    logger = logging.getLogger("stock_query")
+    logger = _svc_logger
 
     if not price_prediction:
         logger.debug(f"[{stock_code}] 无预测数据，跳过写入")
@@ -625,6 +634,10 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
     if result is not None:
         result["analysis_log"] = logger.entries
         if stage_callback:
+            log_data('transfer', 'analyzer', 'sse_callback', 'success',
+                     stock_code=stock_code,
+                     has_signal=result.get('trading_signal') is not None,
+                     has_prediction=result.get('price_prediction') is not None)
             stage_callback('stage_complete', result)
         return result
     else:

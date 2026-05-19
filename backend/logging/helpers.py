@@ -93,3 +93,32 @@ def log_system(
 
     log_level = level_map.get(level.upper(), logging.INFO)
     logger.log(log_level, f'System: {event}', extra=extra_fields)
+
+
+def log_data(action: str, source: str, target: str, status: str, **kwargs):
+    """记录数据流转日志
+
+    Args:
+        action: 操作类型（如 fetch/transfer/cache_write/cache_read）
+        source: 数据来源
+        target: 数据目标
+        status: 状态（success/failure/partial）
+        **kwargs: 额外信息（如 stock_code, data_count, duration_ms, error等）
+    """
+    data_logger = logging.getLogger('stock_query.data')
+    extra = {
+        'log_category': 'data',
+        'log_extra': {
+            'action': action,
+            'source': source,
+            'target': target,
+            'status': status,
+            **kwargs,
+        },
+    }
+    if status == 'success':
+        data_logger.info(f"[DATA] {action}: {source} → {target} ({status})", extra=extra)
+    elif status == 'failure':
+        data_logger.error(f"[DATA] {action}: {source} → {target} ({status})", extra=extra)
+    else:
+        data_logger.warning(f"[DATA] {action}: {source} → {target} ({status})", extra=extra)

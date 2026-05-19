@@ -6,6 +6,12 @@ from backend.logging.formatter import JsonFormatter, ConsoleFormatter
 from backend.logging.handler import SizeAndTimeRotatingFileHandler
 
 
+class ErrorOnlyFilter(logging.Filter):
+    """仅允许 ERROR 及以上级别的日志通过"""
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.ERROR
+
+
 LOG_LEVELS = {
     'TRACE': logging.DEBUG - 5,
     'DEBUG': logging.DEBUG,
@@ -65,6 +71,8 @@ def setup_logging(
         'stock_query.request': os.path.join(log_dir, 'request.log'),
         'stock_query.business': os.path.join(log_dir, 'business.log'),
         'stock_query.system': os.path.join(log_dir, 'system.log'),
+        'stock_query.data': os.path.join(log_dir, 'data.log'),
+        'stock_query.error': os.path.join(log_dir, 'error.log'),
     }
 
     for logger_name, file_path in log_files.items():
@@ -75,6 +83,10 @@ def setup_logging(
         )
         file_handler.setLevel(LOG_LEVELS.get(file_level.upper(), logging.DEBUG))
         file_handler.setFormatter(json_formatter)
+
+        # 为 error logger 添加 ErrorOnlyFilter
+        if logger_name == 'stock_query.error':
+            file_handler.addFilter(ErrorOnlyFilter())
 
         module_logger = logging.getLogger(logger_name)
         module_logger.handlers.clear()
@@ -97,6 +109,9 @@ def setup_logging(
     logging.getLogger('urllib3').setLevel(logging.WARNING)
     logging.getLogger('httpx').setLevel(logging.WARNING)
     logging.getLogger('httpcore').setLevel(logging.WARNING)
+
+    from scripts.logger import mark_setup_done
+    mark_setup_done()
 
 
 def get_module_levels_from_env() -> Dict[str, str]:

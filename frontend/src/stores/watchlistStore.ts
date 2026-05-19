@@ -2,26 +2,37 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { WatchlistItem, StockInput } from '@/types'
 import { getWatchlist, addToWatchlist, removeFromWatchlist, updateWatchlist } from '@/api/history'
+import { getLogger } from '@/utils/logger'
 
 export const useWatchlistStore = defineStore('watchlist', () => {
+  const logger = getLogger('store.watchlist')
   const watchlist = ref<WatchlistItem[]>([])
 
   async function loadWatchlist() {
+    logger.info('加载自选股列表')
     try {
       const data = await getWatchlist()
       watchlist.value = data
+      logger.info(`自选股加载成功: ${data.length} 只`)
       return data
     } catch (e) {
-      console.error('加载自选股失败:', e)
+      logger.error('自选股加载失败:', e)
       watchlist.value = []
       return []
     }
   }
 
   async function addStock(data: StockInput) {
-    const item = await addToWatchlist(data)
-    watchlist.value.push(item)
-    return item
+    logger.info('添加股票: ' + data.stock_input)
+    try {
+      const item = await addToWatchlist(data)
+      watchlist.value.push(item)
+      logger.info(`股票添加成功: ${item.stock_code} ${item.stock_name}`)
+      return item
+    } catch (e) {
+      logger.error('股票添加失败:', e)
+      throw e
+    }
   }
 
   async function removeStock(stockCode: string) {

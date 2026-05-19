@@ -1,7 +1,7 @@
 import os
 import logging
 
-logger = logging.getLogger("stock_query")
+logger = logging.getLogger("stock_query.celery")
 
 celery_app = None
 celery_enabled = False

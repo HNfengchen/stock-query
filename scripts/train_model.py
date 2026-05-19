@@ -12,7 +12,7 @@ import yaml
 
 from scripts.logger import get_logger
 
-train_logger = get_logger("TrainModel")
+train_logger = get_logger("train_model")
 
 
 def load_config(config_path: str = "config/config.yaml") -> dict:

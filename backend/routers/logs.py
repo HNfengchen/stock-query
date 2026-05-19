@@ -1,7 +1,8 @@
 import os
 import json
 import gzip
-from fastapi import APIRouter, Query
+import logging
+from fastapi import APIRouter, Query, Request
 from typing import Optional, List
 
 router = APIRouter(tags=["logs"])
@@ -131,3 +132,36 @@ async def query_by_trace_id(
         "total": len(all_entries),
         "entries": all_entries[:limit],
     }
+
+
+_LEVEL_MAP = {
+    'DEBUG': logging.DEBUG,
+    'INFO': logging.INFO,
+    'WARN': logging.WARNING,
+    'WARNING': logging.WARNING,
+    'ERROR': logging.ERROR,
+}
+
+
+@router.post("/logs")
+async def receive_logs(request: Request):
+    """接收前端上报的日志"""
+    error_logger = logging.getLogger("stock_query.error")
+    try:
+        body = await request.json()
+        logs = body.get("logs", [])
+        for entry in logs:
+            level_str = entry.get("level", "ERROR").upper()
+            level = _LEVEL_MAP.get(level_str, logging.ERROR)
+            module = entry.get("module", "frontend")
+            message = entry.get("message", "")
+            timestamp = entry.get("timestamp", "")
+
+            log_entry = f"[FRONTEND][{module}] {message}" + (f" (at {timestamp})" if timestamp else "")
+
+            error_logger.log(level, log_entry)
+
+        return {"status": "ok", "count": len(logs)}
+    except Exception as e:
+        error_logger.error(f"接收前端日志失败: {e}")
+        return {"status": "error", "message": str(e)}

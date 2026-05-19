@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
@@ -14,6 +15,8 @@ from backend.services.analysis_service import get_fetcher
 
 router = APIRouter()
 
+logger = logging.getLogger("stock_query.history")
+
 
 class WatchlistRequest(BaseModel):
     stock_input: str
@@ -28,7 +31,9 @@ class WatchlistUpdateRequest(BaseModel):
 
 @router.get("/watchlist")
 async def get_watchlist():
-    return load_watchlist()
+    watchlist = load_watchlist()
+    logger.info(f"Watchlist: 加载自选股列表, count={len(watchlist)}")
+    return watchlist
 
 
 @router.post("/watchlist")
@@ -57,6 +62,7 @@ async def create_watchlist_item(req: WatchlistRequest):
 async def update_watchlist_item(stock_code: str, req: WatchlistUpdateRequest):
     try:
         item = update_watchlist(stock_code, req.position_status, req.cost_price)
+        logger.info(f"Watchlist: 更新股票 {stock_code}")
         return item
     except ValueError as e:
         raise DataInsufficientError(str(e))
@@ -65,4 +71,5 @@ async def update_watchlist_item(stock_code: str, req: WatchlistUpdateRequest):
 @router.delete("/watchlist/{stock_code}")
 async def delete_watchlist_item(stock_code: str):
     delete_from_watchlist(stock_code)
+    logger.info(f"Watchlist: 删除股票 {stock_code}")
     return {"message": "deleted"}

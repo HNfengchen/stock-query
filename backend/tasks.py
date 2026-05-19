@@ -1,7 +1,7 @@
 import logging
 import traceback
 
-logger = logging.getLogger("stock_query")
+logger = logging.getLogger("stock_query.tasks")
 
 _analyze_stock_task = None
 _batch_analyze_task = None

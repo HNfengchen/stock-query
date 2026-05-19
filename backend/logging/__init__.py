@@ -11,7 +11,7 @@ from backend.logging.trace import (
     SPAN_ID_HEADER,
 )
 from backend.logging.middleware import RequestLoggingMiddleware
-from backend.logging.helpers import log_business, log_system
+from backend.logging.helpers import log_business, log_system, log_data
 from backend.logging.sensitive import sanitize_data
 
 __all__ = [
@@ -28,6 +28,7 @@ __all__ = [
     'RequestLoggingMiddleware',
     'log_business',
     'log_system',
+    'log_data',
     'sanitize_data',
     'TRACE_ID_HEADER',
     'SPAN_ID_HEADER',

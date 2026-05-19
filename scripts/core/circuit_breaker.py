@@ -1,9 +1,10 @@
 import time
 import threading
-import logging
 from typing import Dict, List, Optional
 
-logger = logging.getLogger("CircuitBreaker")
+from scripts.logger import get_logger
+
+logger = get_logger("circuit_breaker")
 
 
 class CircuitBreaker:

@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from scripts.logger import get_logger
 
-backtest_logger = get_logger("Backtest")
+backtest_logger = get_logger("backtest")
 
 TREND_STRONG_UP = "strong_up"
 TREND_UP = "up"
