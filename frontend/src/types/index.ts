@@ -239,6 +239,7 @@ export interface AnalysisResult {
   indicators: Indicators
   position_strategy: PositionStrategyHeld | PositionStrategyNotHeld
   stock_info: StockInfo
+  market_data?: Record<string, unknown>
   charts: {
     kline: KlineData
     technical: TechnicalChartData

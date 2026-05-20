@@ -498,27 +498,29 @@ class StockAnalyzer:
             else:
                 market_status = "平稳"
         elif market_data is None or not market_data:
-            # 兜底：用 baostock 获取上证指数涨跌幅
+            # 兜底：用 baostock 获取上证指数涨跌幅（加锁防并发冲突）
             try:
+                from scripts.core.data_fetcher import _baostock_lock
                 import baostock as bs
                 from datetime import datetime, timedelta
 
                 def _fetch_index():
-                    lg = bs.login()
-                    try:
-                        today = datetime.now().strftime('%Y-%m-%d')
-                        start = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
-                        rs = bs.query_history_k_data_plus(
-                            'sh.000001', 'date,pctChg',
-                            start_date=start, end_date=today, frequency='d'
-                        )
-                        rows = []
-                        while rs.error_code == '0' and rs.next():
-                            rows.append(rs.get_row_data())
-                        if rows:
-                            return float(rows[-1][1]) if len(rows[-1]) > 1 else 0
-                    finally:
-                        bs.logout()
+                    with _baostock_lock:
+                        lg = bs.login()
+                        try:
+                            today = datetime.now().strftime('%Y-%m-%d')
+                            start = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
+                            rs = bs.query_history_k_data_plus(
+                                'sh.000001', 'date,pctChg',
+                                start_date=start, end_date=today, frequency='d'
+                            )
+                            rows = []
+                            while rs.error_code == '0' and rs.next():
+                                rows.append(rs.get_row_data())
+                            if rows:
+                                return float(rows[-1][1]) if len(rows[-1]) > 1 else 0
+                        finally:
+                            bs.logout()
                     return None
 
                 import concurrent.futures

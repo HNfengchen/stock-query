@@ -4,6 +4,7 @@
 """
 
 import time
+import threading
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Optional
@@ -17,6 +18,9 @@ from scripts.logger import get_logger
 from backend.logging import log_data
 
 fetcher_logger = get_logger("data_fetcher")
+
+# baostock 不支持并发 login/logout，用全局锁串行化
+_baostock_lock = threading.Lock()
 
 from scripts.stock_query import (
     parse_stock_code,
@@ -240,33 +244,33 @@ class DataFetcher:
         """获取大盘数据（上证指数涨跌幅）
 
         数据源回退链: efinance(仅股票快照，不支持指数) -> baostock(支持指数历史数据)
+        baostock 不支持并发，使用全局锁串行化。
         """
-        # 方法1: efinance get_quote_snapshot 不支持指数代码，跳过
-        # 方法2: baostock 获取上证指数最新涨跌幅
         try:
             import baostock as bs
             from datetime import datetime, timedelta
 
             def _baostock_fetch():
-                lg = bs.login()
-                try:
-                    today = datetime.now().strftime('%Y-%m-%d')
-                    start = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
-                    rs = bs.query_history_k_data_plus(
-                        'sh.000001',
-                        'date,pctChg',
-                        start_date=start, end_date=today,
-                        frequency='d'
-                    )
-                    rows = []
-                    while rs.error_code == '0' and rs.next():
-                        rows.append(rs.get_row_data())
-                    if rows:
-                        last = rows[-1]
-                        change_val = float(last[1]) if len(last) > 1 else 0
-                        return {"涨跌幅": change_val, "名称": "上证指数"}
-                finally:
-                    bs.logout()
+                with _baostock_lock:
+                    lg = bs.login()
+                    try:
+                        today = datetime.now().strftime('%Y-%m-%d')
+                        start = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
+                        rs = bs.query_history_k_data_plus(
+                            'sh.000001',
+                            'date,pctChg',
+                            start_date=start, end_date=today,
+                            frequency='d'
+                        )
+                        rows = []
+                        while rs.error_code == '0' and rs.next():
+                            rows.append(rs.get_row_data())
+                        if rows:
+                            last = rows[-1]
+                            change_val = float(last[1]) if len(last) > 1 else 0
+                            return {"涨跌幅": change_val, "名称": "上证指数"}
+                    finally:
+                        bs.logout()
                 return None
 
             result = _call_with_timeout(_baostock_fetch, timeout=20)
