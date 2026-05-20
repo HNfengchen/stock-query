@@ -498,53 +498,61 @@ class StockAnalyzer:
             else:
                 market_status = "平稳"
         elif market_data is None or not market_data:
+            # 兜底：用 baostock 获取上证指数涨跌幅
             try:
-                import efinance as ef
+                import baostock as bs
+                from datetime import datetime, timedelta
+
+                def _fetch_index():
+                    lg = bs.login()
+                    try:
+                        today = datetime.now().strftime('%Y-%m-%d')
+                        start = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
+                        rs = bs.query_history_k_data_plus(
+                            'sh.000001', 'date,pctChg',
+                            start_date=start, end_date=today, frequency='d'
+                        )
+                        rows = []
+                        while rs.error_code == '0' and rs.next():
+                            rows.append(rs.get_row_data())
+                        if rows:
+                            return float(rows[-1][1]) if len(rows[-1]) > 1 else 0
+                    finally:
+                        bs.logout()
+                    return None
+
                 import concurrent.futures
                 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                 try:
-                    future = _executor.submit(ef.stock.get_quote_snapshot, "000001")
-                    done, not_done = concurrent.futures.wait([future], timeout=15)
+                    future = _executor.submit(_fetch_index)
+                    done, not_done = concurrent.futures.wait([future], timeout=20)
                     if not_done:
                         not_done.pop().cancel()
-                        market_snapshot = None
                     else:
-                        market_snapshot = future.result()
+                        market_change = future.result() or 0
                 except Exception:
-                    market_snapshot = None
+                    market_change = 0
                 finally:
                     _executor.shutdown(wait=False)
 
-                if market_snapshot is not None and not market_snapshot.empty:
-                    # get_quote_snapshot 对单只股票返回 Series，对多只返回 DataFrame
-                    if isinstance(market_snapshot, pd.DataFrame):
-                        row = market_snapshot.iloc[0]
-                        if isinstance(row, pd.Series):
-                            market_change = row.get("涨跌幅", 0)
-                        else:
-                            market_change = 0
-                    elif isinstance(market_snapshot, pd.Series):
-                        market_change = market_snapshot.get("涨跌幅", 0)
-                    else:
-                        market_change = 0
-                    try:
-                        market_change = float(market_change)
-                    except (ValueError, TypeError):
-                        market_change = 0
-                    if market_change > 1:
-                        market_status = "大涨"
-                        score += 0.1
-                    elif market_change > 0.5:
-                        market_status = "上涨"
-                        score += 0.05
-                    elif market_change < -1:
-                        market_status = "大跌"
-                        score -= 0.1
-                    elif market_change < -0.5:
-                        market_status = "下跌"
-                        score -= 0.05
-                    else:
-                        market_status = "平稳"
+                try:
+                    market_change = float(market_change)
+                except (ValueError, TypeError):
+                    market_change = 0
+                if market_change > 1:
+                    market_status = "大涨"
+                    score += 0.1
+                elif market_change > 0.5:
+                    market_status = "上涨"
+                    score += 0.05
+                elif market_change < -1:
+                    market_status = "大跌"
+                    score -= 0.1
+                elif market_change < -0.5:
+                    market_status = "下跌"
+                    score -= 0.05
+                else:
+                    market_status = "平稳"
             except Exception as e:
                 analyzer_logger.debug(f"获取大盘数据失败: {e}")
 

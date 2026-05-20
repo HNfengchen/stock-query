@@ -237,32 +237,47 @@ class DataFetcher:
         return sector_info
 
     def fetch_market_data(self) -> Optional[Dict]:
-        """获取大盘数据（上证指数快照）"""
+        """获取大盘数据（上证指数涨跌幅）
+
+        数据源回退链: efinance(仅股票快照，不支持指数) -> baostock(支持指数历史数据)
+        """
+        # 方法1: efinance get_quote_snapshot 不支持指数代码，跳过
+        # 方法2: baostock 获取上证指数最新涨跌幅
         try:
-            import efinance as ef
-            market_snapshot = _call_with_timeout(ef.stock.get_quote_snapshot, "000001")
-            if market_snapshot is not None and not market_snapshot.empty:
-                # get_quote_snapshot 对单只股票返回 Series，对多只返回 DataFrame
-                if isinstance(market_snapshot, pd.DataFrame):
-                    row = market_snapshot.iloc[0]
-                    if isinstance(row, pd.Series):
-                        change_val = row.get("涨跌幅", 0)
-                    else:
-                        change_val = 0
-                elif isinstance(market_snapshot, pd.Series):
-                    change_val = market_snapshot.get("涨跌幅", 0)
-                else:
-                    change_val = 0
+            import baostock as bs
+            from datetime import datetime, timedelta
+
+            def _baostock_fetch():
+                lg = bs.login()
                 try:
-                    change_val = float(change_val)
-                except (ValueError, TypeError):
-                    change_val = 0
-                log_data('fetch', 'efinance', 'market_data', 'success',
-                         stock_code='000001', change_pct=change_val)
-                return {"涨跌幅": change_val, "名称": "上证指数"}
+                    today = datetime.now().strftime('%Y-%m-%d')
+                    start = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
+                    rs = bs.query_history_k_data_plus(
+                        'sh.000001',
+                        'date,pctChg',
+                        start_date=start, end_date=today,
+                        frequency='d'
+                    )
+                    rows = []
+                    while rs.error_code == '0' and rs.next():
+                        rows.append(rs.get_row_data())
+                    if rows:
+                        last = rows[-1]
+                        change_val = float(last[1]) if len(last) > 1 else 0
+                        return {"涨跌幅": change_val, "名称": "上证指数"}
+                finally:
+                    bs.logout()
+                return None
+
+            result = _call_with_timeout(_baostock_fetch, timeout=20)
+            if result:
+                log_data('fetch', 'baostock', 'market_data', 'success',
+                         change_pct=result.get("涨跌幅"))
+                return result
         except Exception as e:
-            log_data('fetch', 'efinance', 'market_data', 'failure', error=str(e))
-            fetcher_logger.debug(f"[DataFetcher] 获取大盘数据失败: {e}")
+            log_data('fetch', 'baostock', 'market_data', 'failure', error=str(e))
+            fetcher_logger.debug(f"[DataFetcher] baostock获取大盘数据失败: {e}")
+
         return None
 
     def validate_data(self, xtquant_data: Dict, backup_data: Dict) -> Dict:
@@ -504,33 +519,13 @@ class DataFetcher:
             info["所属行业"] = sector_info["所属行业"]
 
         market_data = {}
+        # 使用 fetch_market_data() 获取上证指数（baostock 回退）
         try:
-            import efinance as ef
-            market_snapshot = _call_with_timeout(ef.stock.get_quote_snapshot, "000001")
-            if market_snapshot is not None and not market_snapshot.empty:
-                # get_quote_snapshot 对单只股票返回 Series，对多只返回 DataFrame
-                if isinstance(market_snapshot, pd.DataFrame):
-                    row = market_snapshot.iloc[0]
-                    if isinstance(row, pd.Series):
-                        change_val = row.get("涨跌幅", 0)
-                    else:
-                        change_val = 0
-                elif isinstance(market_snapshot, pd.Series):
-                    change_val = market_snapshot.get("涨跌幅", 0)
-                else:
-                    change_val = 0
-                try:
-                    change_val = float(change_val)
-                except (ValueError, TypeError):
-                    change_val = 0
-                market_data = {
-                    "涨跌幅": change_val,
-                    "名称": "上证指数",
-                }
-                log_data('fetch', 'efinance', 'market_data', 'success',
-                         stock_code='000001', change_pct=change_val)
+            result = self.fetch_market_data()
+            if result:
+                market_data = result
         except Exception as e:
-            log_data('fetch', 'efinance', 'market_data', 'failure', error=str(e))
+            log_data('fetch', 'baostock', 'market_data', 'failure', error=str(e))
             fetcher_logger.debug(f"[DataFetcher] 获取大盘数据失败: {e}")
 
         fetcher_logger.info(f"[DataFetcher] 数据获取完成，返回结果")

@@ -25,7 +25,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     const r = currentResult.value
     if (!r) return { indexChange: null, sentiment: '未知', volatilityState: '未知', riskLevel: '未知', hmmState: null }
 
-    const indexChange = (() => { const v = Number(r.stock_info?.['涨跌幅']); return isNaN(v) ? null : v })()
+    const indexChange = (() => { const v = Number((r as any)?.market_data?.['涨跌幅']); return isNaN(v) ? null : v })()
     const sentimentScore = r.analysis?.sentiment_score ?? 0.5
     let sentiment = '中性'
     if (sentimentScore >= 0.65) sentiment = '乐观'

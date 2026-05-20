@@ -471,6 +471,7 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         "position_strategy": clean_nested(strategy),
         "validation": clean_nested(validation),
         "stock_info": {k: clean_float(v) for k, v in info.items()},
+        "market_data": market_data if market_data else {},
         "charts": charts,
     }
 
