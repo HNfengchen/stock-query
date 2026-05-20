@@ -553,7 +553,7 @@ def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
         logger.debug(f"[{stock_code}] 预测值全为None，跳过写入")
         return
 
-    from scripts.database import get_connection
+    from scripts.database import get_connection, release_connection
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -572,7 +572,7 @@ def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
         logger.info(f"[{stock_code}] 预测值写入DB: day1={day1_low}-{day1_high}, day2={day2_low}-{day2_high}, 影响行数={updated}")
     finally:
         cur.close()
-        conn.close()
+        release_connection(conn)
 
 
 def _cleanup_cache():
