@@ -1,6 +1,6 @@
 """
 LightGBM模型训练CLI脚本
-支持股票池批量训练、dry-run模式
+支持股票池批量训练、dry-run模式、自动读取自选股列表
 """
 
 import argparse
@@ -14,10 +14,31 @@ from scripts.logger import get_logger
 
 train_logger = get_logger("train_model")
 
+# 默认自选股列表路径
+DEFAULT_WATCHLIST_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "watchlist.json"
+)
+
 
 def load_config(config_path: str = "config/config.yaml") -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def load_stock_codes_from_watchlist(watchlist_path: str) -> list:
+    """从 watchlist.json 读取股票代码列表"""
+    if not os.path.exists(watchlist_path):
+        train_logger.warning(f"自选股列表不存在: {watchlist_path}")
+        return []
+    try:
+        with open(watchlist_path, "r", encoding="utf-8") as f:
+            watchlist = json.load(f)
+        codes = [item["stock_code"] for item in watchlist if "stock_code" in item]
+        train_logger.info(f"从自选股列表读取 {len(codes)} 只股票: {watchlist_path}")
+        return codes
+    except Exception as e:
+        train_logger.error(f"读取自选股列表失败: {e}")
+        return []
 
 
 def train_stock(stock_code: str, config: dict, model_dir: str, dry_run: bool = False) -> dict:
@@ -80,6 +101,9 @@ def main():
     parser = argparse.ArgumentParser(description="LightGBM模型训练")
     parser.add_argument("--stock-pool", type=str, default="",
                         help="股票代码，逗号分隔 (e.g. 000001,600519)")
+    parser.add_argument("--watchlist", type=str, nargs="?", const=DEFAULT_WATCHLIST_PATH,
+                        default=None,
+                        help="从自选股列表读取股票代码（默认: data/watchlist.json）")
     parser.add_argument("--model-dir", type=str, default=None,
                         help="模型保存目录")
     parser.add_argument("--alpha", type=float, default=None,
@@ -97,10 +121,15 @@ def main():
     model_dir = args.model_dir or ml_config.get("model_dir", "models/")
     alpha = args.alpha if args.alpha is not None else ml_config.get("alpha", 0.5)
 
+    # 确定股票列表：--stock-pool 优先，其次 --watchlist，最后报错
+    stock_codes = []
     if args.stock_pool:
         stock_codes = [code.strip() for code in args.stock_pool.split(",") if code.strip()]
-    else:
-        train_logger.error("请通过 --stock-pool 指定股票代码")
+    elif args.watchlist:
+        stock_codes = load_stock_codes_from_watchlist(args.watchlist)
+
+    if not stock_codes:
+        train_logger.error("请通过 --stock-pool 指定股票代码，或使用 --watchlist 从自选股列表读取")
         sys.exit(1)
 
     train_logger.info(f"开始训练: stocks={stock_codes}, model_dir={model_dir}, alpha={alpha}, dry_run={args.dry_run}")

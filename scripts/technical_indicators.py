@@ -878,7 +878,7 @@ def calculate_historical_volatility(
 
     for w in windows:
         if len(log_returns) < w:
-            result_series[f"HV{w}"] = pd.Series([None] * len(closes))
+            result_series[f"HV{w}"] = pd.Series([None] * len(closes), index=closes.index)
             result_latest[f"HV{w}"] = None
             continue
         hv = log_returns.rolling(window=w).std() * np.sqrt(252)

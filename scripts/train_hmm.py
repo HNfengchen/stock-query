@@ -29,9 +29,8 @@ def fetch_training_data(index_code: str) -> dict:
     try:
         import efinance as ef
 
-        prefix = "sh" if index_code.startswith(("000", "9")) else "sz"
-        ef_code = f"{prefix}{index_code}"
-        df = ef.stock.get_quote_history(ef_code)
+        # efinance 指数代码不加交易所前缀，直接用6位代码
+        df = ef.stock.get_quote_history(index_code)
         if df is not None and not df.empty:
             train_logger.info(f"efinance获取数据成功: {len(df)}条")
             return _process_dataframe(df)
@@ -39,21 +38,25 @@ def fetch_training_data(index_code: str) -> dict:
         train_logger.warning(f"efinance获取失败: {e}")
 
     try:
+        from scripts.core.data_fetcher import _baostock_lock
         import baostock as bs
 
-        lg = bs.login()
-        prefix = "sh" if index_code.startswith(("000", "9")) else "sz"
-        bs_code = f"{prefix}.{index_code}"
-        rs = bs.query_history_k_data_plus(
-            bs_code,
-            "date,close,volume",
-            start_date="2020-01-01",
-            frequency="d",
-        )
-        rows = []
-        while rs.error_code == "0" and rs.next():
-            rows.append(rs.get_row_data())
-        bs.logout()
+        with _baostock_lock:
+            lg = bs.login()
+            try:
+                prefix = "sh" if index_code.startswith(("000", "9")) else "sz"
+                bs_code = f"{prefix}.{index_code}"
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,close,volume",
+                    start_date="2020-01-01",
+                    frequency="d",
+                )
+                rows = []
+                while rs.error_code == "0" and rs.next():
+                    rows.append(rs.get_row_data())
+            finally:
+                bs.logout()
         if rows:
             import pandas as pd
             df = pd.DataFrame(rows, columns=["日期", "收盘", "成交量"])
