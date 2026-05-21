@@ -142,6 +142,7 @@ class LightGBMPredictor:
 
     def predict(self, X: np.ndarray) -> dict:
         if not self.is_ready():
+            ml_logger.warning("predict调用但模型未就绪")
             return {}
 
         result = {}
@@ -169,6 +170,13 @@ class LightGBMPredictor:
             result["confidence"] = min(1.0, abs(result["next_day_return"]) * 10)
         else:
             result["confidence"] = 0.0
+
+        ml_logger.info(
+            f"ML predict: return={result.get('next_day_return', 'N/A'):.4f}, "
+            f"direction={result.get('direction', 'N/A')}, "
+            f"volatility={result.get('volatility', 'N/A'):.4f}, "
+            f"confidence={result.get('confidence', 'N/A'):.3f}"
+        )
 
         return result
 
@@ -467,6 +475,14 @@ def hybrid_predict(
 
     result["hybrid_alpha"] = alpha
     result["ml_prediction"] = ml_prediction
+
+    ml_logger.info(
+        f"hybrid_predict: alpha={alpha}, "
+        f"rule_low={rule_low}, rule_high={rule_high}, "
+        f"ml_low={ml_low:.2f}, ml_high={ml_high:.2f}, "
+        f"hybrid_low={result.get('target_low')}, hybrid_high={result.get('target_high')}, "
+        f"direction_agreement={direction_agreement}, trend={result.get('trend')}"
+    )
 
     for key in ("current", "support", "resistance", "day1", "day2"):
         if key in rule_prediction:

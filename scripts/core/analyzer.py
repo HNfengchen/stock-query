@@ -52,7 +52,7 @@ class StockAnalyzer:
         self._ml_enabled = self._ml_config.get("enabled", False)
         self._ml_alpha = self._ml_config.get("alpha", 0.5)
         self._ml_predictor = LightGBMPredictor(config)
-        self._ml_attempted_stocks: set = set()
+        self._ml_loaded_stock = None  # 当前加载模型的股票代码
 
         hmm_config = config.get("hmm", {})
         self._hmm_detector = None
@@ -1521,17 +1521,32 @@ class StockAnalyzer:
 
         if self._ml_enabled and stock_code:
             try:
-                if stock_code not in self._ml_attempted_stocks:
-                    model_dir = self._ml_config.get("model_dir", "models/")
-                    stock_model_dir = os.path.join(model_dir, stock_code)
-                    if os.path.isdir(stock_model_dir):
-                        self._ml_predictor.load(stock_model_dir)
-                    self._ml_attempted_stocks.add(stock_code)
+                model_dir = self._ml_config.get("model_dir", "models/")
+                stock_model_dir = os.path.join(model_dir, stock_code)
+
+                # 每次分析都检查是否需要加载对应股票的模型
+                need_load = False
+                need_load_reason = ""
+                if self._ml_loaded_stock != stock_code:
+                    need_load = True
+                    need_load_reason = f"当前加载={self._ml_loaded_stock}, 目标={stock_code}"
                 elif not self._ml_predictor.is_ready():
-                    model_dir = self._ml_config.get("model_dir", "models/")
-                    stock_model_dir = os.path.join(model_dir, stock_code)
+                    need_load = True
+                    need_load_reason = f"模型未就绪(loaded_stock={self._ml_loaded_stock})"
+
+                if need_load:
+                    analyzer_logger.info(f"ML模型需加载: {need_load_reason}")
                     if os.path.isdir(stock_model_dir):
-                        self._ml_predictor.load(stock_model_dir)
+                        load_ok = self._ml_predictor.load(stock_model_dir)
+                        if load_ok:
+                            self._ml_loaded_stock = stock_code
+                            analyzer_logger.info(f"ML模型加载成功: {stock_code} -> {stock_model_dir}")
+                        else:
+                            analyzer_logger.warning(f"ML模型加载失败: {stock_model_dir}")
+                            self._ml_loaded_stock = None
+                    else:
+                        analyzer_logger.info(f"ML模型目录不存在: {stock_model_dir}, 使用纯规则预测")
+                        self._ml_loaded_stock = None
 
                 if self._ml_predictor.is_ready():
                     from scripts.core.feature_engineering import extract_feature_vector
@@ -1547,6 +1562,10 @@ class StockAnalyzer:
                                 f"ml_return={ml_prediction.get('next_day_return', 'N/A')}, "
                                 f"ml_direction={ml_prediction.get('direction', 'N/A')}"
                             )
+                    else:
+                        analyzer_logger.warning("ML特征提取为空，跳过ML预测")
+                else:
+                    analyzer_logger.info(f"ML模型未就绪，使用纯规则预测: {stock_code}")
             except Exception as e:
                 analyzer_logger.warning(f"ML混合预测异常，使用纯规则预测: {e}")
 

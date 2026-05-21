@@ -2,6 +2,7 @@ import sys
 import os
 import re
 import logging
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -528,7 +529,10 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
             _svc_logger.warning(f"更新信号缓存失败: {e}")
 
     try:
-        _update_prediction_to_db(result.get("stock_code", stock_input), result.get("price_prediction", {}))
+        pred = result.get("price_prediction", {})
+        resolved = result.get("stock_code", stock_input)
+        _svc_logger.info(f"写入预测值到DB: {resolved}, day1={pred.get('day1', {})}, day2={pred.get('day2', {})}")
+        _update_prediction_to_db(resolved, pred)
     except Exception as e:
         _svc_logger.warning(f"更新预测值到数据库失败: {e}")
 
@@ -545,17 +549,33 @@ def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
 
     day1 = price_prediction.get("day1", {})
     day2 = price_prediction.get("day2", {})
-    day1_high = day1.get("target_high")
-    day1_low = day1.get("target_low")
-    day2_high = day2.get("target_high")
-    day2_low = day2.get("target_low")
+    # 确保转换为原生 Python float，避免 np.float64 被 psycopg2 序列化为 "np.float64(xxx)"
+    def _to_native_float(v):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            if math.isnan(f) or math.isinf(f):
+                return None
+            return round(f, 2)
+        except (TypeError, ValueError):
+            return None
+
+    day1_high = _to_native_float(day1.get("target_high"))
+    day1_low = _to_native_float(day1.get("target_low"))
+    day2_high = _to_native_float(day2.get("target_high"))
+    day2_low = _to_native_float(day2.get("target_low"))
 
     if all(v is None for v in [day1_high, day1_low, day2_high, day2_low]):
         logger.debug(f"[{stock_code}] 预测值全为None，跳过写入")
         return
 
     from scripts.database import get_connection, release_connection
-    conn = get_connection()
+    try:
+        conn = get_connection()
+    except Exception as e:
+        logger.error(f"[{stock_code}] 获取数据库连接失败: {e}")
+        return
     cur = conn.cursor()
     try:
         table_ident = sql.Identifier(f"stock_{stock_code}")
@@ -570,7 +590,16 @@ def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
         cur.execute(query, (day1_high, day1_low, day2_high, day2_low))
         updated = cur.rowcount
         conn.commit()
-        logger.info(f"[{stock_code}] 预测值写入DB: day1={day1_low}-{day1_high}, day2={day2_low}-{day2_high}, 影响行数={updated}")
+        if updated > 0:
+            logger.info(f"[{stock_code}] 预测值写入DB成功: day1={day1_low}-{day1_high}, day2={day2_low}-{day2_high}, 影响行数={updated}")
+        else:
+            logger.warning(f"[{stock_code}] 预测值写入DB: 无匹配行更新，表stock_{stock_code}可能无数据")
+    except Exception as e:
+        logger.error(f"[{stock_code}] 预测值写入DB SQL执行失败: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
     finally:
         cur.close()
         release_connection(conn)
@@ -651,6 +680,22 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
                 cache_key_resolved = (resolved_code, position_type, cost_price)
                 _result_cache[cache_key_resolved] = (result, now)
             _cleanup_cache()
+
+        # 写入预测值到数据库
+        try:
+            resolved_code = result.get("stock_code", stock_code)
+            pred = result.get("price_prediction", {})
+            _svc_logger.info(
+                f"[staged] 写入预测值到DB: {resolved_code}, "
+                f"day1_low={pred.get('day1', {}).get('target_low')}, "
+                f"day1_high={pred.get('day1', {}).get('target_high')}, "
+                f"day2_low={pred.get('day2', {}).get('target_low')}, "
+                f"day2_high={pred.get('day2', {}).get('target_high')}"
+            )
+            _update_prediction_to_db(resolved_code, pred)
+        except Exception as e:
+            _svc_logger.warning(f"[staged] 预测值写入数据库失败: {stock_code}, error={e}")
+
         if stage_callback:
             log_data('transfer', 'analyzer', 'sse_callback', 'success',
                      stock_code=stock_code,

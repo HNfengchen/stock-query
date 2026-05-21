@@ -6,15 +6,17 @@ import pandas as pd
 def clean_float(v):
     if v is None:
         return None
-    if isinstance(v, float):
-        if math.isnan(v) or math.isinf(v):
-            return None
-        return round(v, 6)
+    # np.floating 必须在 float 之前检查，因为 np.float64 继承自 float
+    # round(np.float64, 6) 返回 np.float64，而 round(float, 6) 返回 float
     if isinstance(v, (np.integer, np.floating)):
         f = float(v)
         if math.isnan(f) or math.isinf(f):
             return None
         return round(f, 6)
+    if isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            return None
+        return round(v, 6)
     if isinstance(v, (np.bool_,)):
         return bool(v)
     if isinstance(v, pd.Series):
