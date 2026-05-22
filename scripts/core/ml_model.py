@@ -45,7 +45,7 @@ class LightGBMPredictor:
         self._feature_names = []
         self._is_ready = False
 
-    def train(self, X: np.ndarray, y: dict, params: dict = None) -> dict:
+    def train(self, X: np.ndarray, y: dict, params: dict = None, feature_names: list = None) -> dict:
         if not _LGB_AVAILABLE:
             ml_logger.warning("lightgbm未安装，无法训练模型")
             return {"error": "lightgbm not available"}
@@ -54,10 +54,22 @@ class LightGBMPredictor:
             ml_logger.warning(f"训练数据不足: {X.shape[0]} < {self.min_training_days}")
             return {"error": f"insufficient data: {X.shape[0]} < {self.min_training_days}"}
 
+        # 保存特征名，用于特征重要性和预测时构造 DataFrame
+        if feature_names and len(feature_names) == X.shape[1]:
+            self._feature_names = feature_names
+
         train_params = params or self.hyperparams
 
         split_idx = int(X.shape[0] * 0.8)
         X_train, X_val = X[:split_idx], X[split_idx:]
+
+        # 如果有特征名，构造 DataFrame 以消除 sklearn 特征名警告
+        if self._feature_names:
+            import pandas as pd
+            X_train_df = pd.DataFrame(X_train, columns=self._feature_names)
+            X_val_df = pd.DataFrame(X_val, columns=self._feature_names)
+        else:
+            X_train_df, X_val_df = X_train, X_val
 
         metrics = {}
         feature_importance = {}
@@ -73,11 +85,11 @@ class LightGBMPredictor:
                 verbose=-1,
             )
             self._return_model.fit(
-                X_train, y_train_r,
-                eval_set=[(X_train, y_train_r), (X_val, y_val_r)],
+                X_train_df, y_train_r,
+                eval_set=[(X_train_df, y_train_r), (X_val_df, y_val_r)],
             )
-            train_pred_r = self._return_model.predict(X_train)
-            val_pred_r = self._return_model.predict(X_val)
+            train_pred_r = self._return_model.predict(X_train_df)
+            val_pred_r = self._return_model.predict(X_val_df)
             metrics["return_train_loss"] = float(np.mean((train_pred_r - y_train_r) ** 2))
             metrics["return_val_loss"] = float(np.mean((val_pred_r - y_val_r) ** 2))
             feature_importance["return"] = dict(zip(
@@ -96,11 +108,11 @@ class LightGBMPredictor:
                 verbose=-1,
             )
             self._direction_model.fit(
-                X_train, y_train_d,
-                eval_set=[(X_train, y_train_d), (X_val, y_val_d)],
+                X_train_df, y_train_d,
+                eval_set=[(X_train_df, y_train_d), (X_val_df, y_val_d)],
             )
-            train_pred_d = self._direction_model.predict(X_train)
-            val_pred_d = self._direction_model.predict(X_val)
+            train_pred_d = self._direction_model.predict(X_train_df)
+            val_pred_d = self._direction_model.predict(X_val_df)
             metrics["direction_train_acc"] = float(np.mean(train_pred_d == y_train_d))
             metrics["direction_val_acc"] = float(np.mean(val_pred_d == y_val_d))
             feature_importance["direction"] = dict(zip(
@@ -119,11 +131,11 @@ class LightGBMPredictor:
                 verbose=-1,
             )
             self._volatility_model.fit(
-                X_train, y_train_v,
-                eval_set=[(X_train, y_train_v), (X_val, y_val_v)],
+                X_train_df, y_train_v,
+                eval_set=[(X_train_df, y_train_v), (X_val_df, y_val_v)],
             )
-            train_pred_v = self._volatility_model.predict(X_train)
-            val_pred_v = self._volatility_model.predict(X_val)
+            train_pred_v = self._volatility_model.predict(X_train_df)
+            val_pred_v = self._volatility_model.predict(X_val_df)
             metrics["volatility_train_loss"] = float(np.mean((train_pred_v - y_train_v) ** 2))
             metrics["volatility_val_loss"] = float(np.mean((val_pred_v - y_val_v) ** 2))
             feature_importance["volatility"] = dict(zip(
@@ -140,20 +152,30 @@ class LightGBMPredictor:
 
         return metrics
 
-    def predict(self, X: np.ndarray) -> dict:
+    def predict(self, X: np.ndarray, feature_names: list = None) -> dict:
         if not self.is_ready():
             ml_logger.warning("predict调用但模型未就绪")
             return {}
 
+        # 如果提供了特征名，构造 DataFrame 以消除 sklearn 特征名警告
+        if feature_names and len(feature_names) == X.shape[-1]:
+            import pandas as pd
+            if X.ndim == 1:
+                X_input = pd.DataFrame([X], columns=feature_names)
+            else:
+                X_input = pd.DataFrame(X, columns=feature_names)
+        else:
+            X_input = X
+
         result = {}
 
         if self._return_model is not None:
-            pred_return = self._return_model.predict(X)
+            pred_return = self._return_model.predict(X_input)
             result["next_day_return"] = float(pred_return[-1]) if len(pred_return) > 0 else 0.0
 
         if self._direction_model is not None:
-            pred_direction = self._direction_model.predict(X)
-            pred_proba = self._direction_model.predict_proba(X)
+            pred_direction = self._direction_model.predict(X_input)
+            pred_proba = self._direction_model.predict_proba(X_input)
             result["direction"] = int(pred_direction[-1]) if len(pred_direction) > 0 else 0
             if pred_proba.ndim == 2:
                 result["direction_confidence"] = float(np.max(pred_proba[-1]))
@@ -161,7 +183,7 @@ class LightGBMPredictor:
                 result["direction_confidence"] = 0.5
 
         if self._volatility_model is not None:
-            pred_volatility = self._volatility_model.predict(X)
+            pred_volatility = self._volatility_model.predict(X_input)
             result["volatility"] = float(pred_volatility[-1]) if len(pred_volatility) > 0 else 0.0
 
         if "next_day_return" in result and "direction_confidence" in result:

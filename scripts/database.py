@@ -766,7 +766,11 @@ class StockDataManager:
             else:
                 query_sql = base_query
 
-            df = pd.read_sql(query_sql.as_string(conn), conn)
+            query_str = query_sql.as_string(conn)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*pandas only supports SQLAlchemy.*", category=UserWarning)
+                df = pd.read_sql(query_str, conn)
         finally:
             release_connection(conn)
 

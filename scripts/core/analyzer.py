@@ -1553,7 +1553,7 @@ class StockAnalyzer:
                     feature_names, feature_values = extract_feature_vector(indicators)
                     if len(feature_values) > 0:
                         X = feature_values.reshape(1, -1)
-                        ml_prediction = self._ml_predictor.predict(X)
+                        ml_prediction = self._ml_predictor.predict(X, feature_names=feature_names)
                         if ml_prediction:
                             alpha = self._ml_alpha
                             result = hybrid_predict(result, ml_prediction, alpha)

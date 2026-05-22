@@ -75,9 +75,8 @@ def train_stock(stock_code: str, config: dict, model_dir: str, dry_run: bool = F
         return {"stock_code": stock_code, "status": "dry_run", "stats": stats}
 
     predictor = LightGBMPredictor(config)
-    predictor._feature_names = feature_names
 
-    metrics = predictor.train(X, y)
+    metrics = predictor.train(X, y, feature_names=feature_names)
 
     if "error" in metrics:
         train_logger.warning(f"[{stock_code}] 训练失败: {metrics['error']}")
