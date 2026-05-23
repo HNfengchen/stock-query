@@ -87,6 +87,7 @@ class LightGBMPredictor:
             self._return_model.fit(
                 X_train_df, y_train_r,
                 eval_set=[(X_train_df, y_train_r), (X_val_df, y_val_r)],
+                callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)],
             )
             train_pred_r = self._return_model.predict(X_train_df)
             val_pred_r = self._return_model.predict(X_val_df)
@@ -110,6 +111,7 @@ class LightGBMPredictor:
             self._direction_model.fit(
                 X_train_df, y_train_d,
                 eval_set=[(X_train_df, y_train_d), (X_val_df, y_val_d)],
+                callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)],
             )
             train_pred_d = self._direction_model.predict(X_train_df)
             val_pred_d = self._direction_model.predict(X_val_df)
@@ -133,6 +135,7 @@ class LightGBMPredictor:
             self._volatility_model.fit(
                 X_train_df, y_train_v,
                 eval_set=[(X_train_df, y_train_v), (X_val_df, y_val_v)],
+                callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)],
             )
             train_pred_v = self._volatility_model.predict(X_train_df)
             val_pred_v = self._volatility_model.predict(X_val_df)
@@ -469,14 +472,21 @@ def hybrid_predict(
     weighted_rule = alpha * rule_direction
     weighted_ml = (1 - alpha) * ml_direction
     hybrid_direction_score = weighted_rule + weighted_ml
-    hybrid_direction = 1 if hybrid_direction_score > 0.5 else 0
+    if hybrid_direction_score > 0.55:
+        hybrid_direction = 1
+    elif hybrid_direction_score < 0.45:
+        hybrid_direction = 0
+    else:
+        hybrid_direction = 0.5  # 中性
 
     result["direction"] = hybrid_direction
 
     if hybrid_direction == 1:
         result["trend"] = "up" if hybrid_direction_score < 0.7 else "strong_up"
-    else:
+    elif hybrid_direction == 0:
         result["trend"] = "down" if hybrid_direction_score > 0.3 else "strong_down"
+    else:
+        result["trend"] = "neutral"
 
     rule_dir_binary = 1 if rule_direction > 0.5 else 0
     ml_dir_binary = ml_direction

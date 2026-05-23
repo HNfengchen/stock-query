@@ -75,7 +75,7 @@ def _init_pool():
         minconn=2, maxconn=20, **DB_CONFIG
     )
 
-def get_connection(timeout: float = 10.0):
+def get_connection(timeout: float = 30.0):
     global _connection_pool
     with _pool_lock:
         if _connection_pool is None:
@@ -87,11 +87,16 @@ def get_connection(timeout: float = 10.0):
             return _connection_pool.getconn()
         except pool.PoolError:
             time.sleep(0.1)
-    return _connection_pool.getconn()
+    raise pool.PoolError(f"获取数据库连接超时({timeout}秒)，连接池已耗尽")
 
 def release_connection(conn):
     global _connection_pool
     if _connection_pool and conn:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.autocommit = True
         _connection_pool.putconn(conn)
 
 
@@ -490,6 +495,7 @@ class StockDataManager:
             return (0, 0)
 
         conn = get_connection()
+        conn.autocommit = False
         cur = conn.cursor()
         try:
             cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(self.table_name)))
@@ -571,6 +577,7 @@ class StockDataManager:
         boll_data = indicators.get("BOLL", {})
 
         conn = get_connection()
+        conn.autocommit = False
         cur = conn.cursor()
 
         update_sql = sql.SQL("""
@@ -841,6 +848,7 @@ class StockDataManager:
     def save_indicator_states(self, states: Dict):
         self._ensure_indicator_states_table()
         conn = get_connection()
+        conn.autocommit = False
         cur = conn.cursor()
         try:
             for indicator_name, state in states.items():

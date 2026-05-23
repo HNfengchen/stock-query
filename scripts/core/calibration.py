@@ -130,6 +130,7 @@ def evaluate_validation_config(
         split_idx = min_idx + int(total_test_points * train_ratio)
 
         fund_flow_data = _fetch_fund_flow_score(fetcher, code, lookback_days)
+        fund_flow_data["_lookahead_bias"] = True
 
         for test_idx in range(min_idx, len(df) - 1):
             history_up_to = df.iloc[:test_idx + 1].copy()
@@ -232,6 +233,7 @@ def evaluate_validation_config(
         "consistency": correct_when_has_consensus / (has_consensus or 1),
         "width_penalty": width_penalty,
         "drawdown_penalty": drawdown_penalty,
+        "lookahead_bias": True,
         "total_predictions": len(all_predictions),
         "train_predictions": len(train_preds),
         "val_predictions": len(val_preds),
@@ -323,8 +325,13 @@ class ValidationCalibrator:
         consistency = metrics.get("consistency", 0)
         width_penalty = metrics.get("width_penalty", 0)
         drawdown_penalty = metrics.get("drawdown_penalty", 0)
+        lookahead_bias = metrics.get("lookahead_bias", False)
         base = 0.35 * accuracy + 0.25 * trend_accuracy + 0.25 * consistency
-        return max(0.0, base - 0.10 * width_penalty - 0.05 * drawdown_penalty)
+        score = max(0.0, base - 0.10 * width_penalty - 0.05 * drawdown_penalty)
+        # fund_flow维度含前视偏差，降低其权重影响（近似为整体评分打折）
+        if lookahead_bias:
+            score *= 0.9
+        return score
 
     def _build_modified_config(self, overrides: dict) -> dict:
         cfg = deepcopy(self.base_config)
@@ -501,6 +508,7 @@ class ValidationCalibrator:
             "improvement": {
                 "composite_score_delta": round(calibrated_score - baseline_score, 4),
             },
+            "warning": "fund_flow维度使用当前数据，存在前视偏差，评分已相应打折",
         }
 
         if not dry_run and self.config_path and optimal_overrides:

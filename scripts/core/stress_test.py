@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from typing import Dict, Optional
+from scipy.stats import t as t_dist
 from scripts.logger import get_logger
 
 stress_logger = get_logger("stress_test")
@@ -177,7 +178,7 @@ class MonteCarloStressTest:
         std = np.std(returns)
         if std == 0:
             return returns.copy()
-        noise = np.random.normal(0, noise_scale * std, size=returns.shape)
+        noise = t_dist.rvs(df=5, scale=noise_scale * std * 0.775, size=returns.shape)
         return returns + noise
 
     def _reconstruct_prices(self, original_close: np.ndarray, perturbed_returns: np.ndarray) -> np.ndarray:
@@ -206,7 +207,7 @@ class MonteCarloStressTest:
         std = np.std(returns)
         if std == 0:
             return 0.0
-        return (np.mean(returns) - risk_free) / std
+        return (np.mean(returns) - risk_free) / std * np.sqrt(252)
 
     def _compute_sortino(self, returns: np.ndarray, risk_free: float = 0.0) -> float:
         if len(returns) == 0:
@@ -215,10 +216,10 @@ class MonteCarloStressTest:
         if len(negative_returns) == 0:
             downside_std = 0.0
         else:
-            downside_std = np.std(negative_returns)
+            downside_std = np.std(negative_returns, ddof=1)
         if downside_std == 0:
             return 0.0 if np.mean(returns) - risk_free <= 0 else float("inf")
-        return (np.mean(returns) - risk_free) / downside_std
+        return (np.mean(returns) - risk_free) / downside_std * np.sqrt(252)
 
     def _compute_calmar(self, returns: np.ndarray, max_drawdown: float) -> float:
         if max_drawdown == 0:

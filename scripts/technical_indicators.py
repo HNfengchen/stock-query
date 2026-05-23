@@ -675,7 +675,7 @@ def calculate_beta(
         s = stock_ret[i - window:i]
         idx = index_ret[i - window:i]
         cov_mat = np.cov(s, idx)
-        var_idx = np.var(idx)
+        var_idx = np.var(idx, ddof=1)
         if var_idx != 0:
             b = cov_mat[0, 1] / var_idx
         else:
@@ -685,7 +685,7 @@ def calculate_beta(
     s_w = stock_ret[-window:]
     idx_w = index_ret[-window:]
     cov_mat = np.cov(s_w, idx_w)
-    var_idx = np.var(idx_w)
+    var_idx = np.var(idx_w, ddof=1)
     if var_idx != 0:
         beta = cov_mat[0, 1] / var_idx
     else:
@@ -951,6 +951,7 @@ def calculate_garman_klass_volatility(
     log_hl = log_hl.replace([np.inf, -np.inf], np.nan)
     log_co = log_co.replace([np.inf, -np.inf], np.nan)
     gk = log_hl - log_co
+    gk = gk.clip(lower=0)
     gk_vol = np.sqrt(gk.rolling(window=window).mean()) * np.sqrt(252)
 
     latest = round(gk_vol.iloc[-1], 4) if not pd.isna(gk_vol.iloc[-1]) else None

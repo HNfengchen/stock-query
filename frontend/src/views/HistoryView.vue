@@ -36,7 +36,13 @@ function stopTick() {
   }
 }
 
-onUnmounted(() => { stopTick() })
+onUnmounted(() => {
+  stopTick()
+  if (batchDebounceTimer) {
+    clearTimeout(batchDebounceTimer)
+    batchDebounceTimer = null
+  }
+})
 
 const newStock = ref<AnalysisRequest>({
   stock_input: '',
@@ -171,16 +177,16 @@ async function confirmEdit() {
       cost_price: editingStock.value.cost_price,
     })
     editDialogVisible.value = false
-  } catch (e) {
-    console.error(e)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '更新失败')
   }
 }
 
 async function removeStock(stockCode: string) {
   try {
     await watchlistStore.removeStock(stockCode)
-  } catch (e) {
-    console.error(e)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
   }
 }
 </script>

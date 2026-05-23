@@ -71,11 +71,12 @@ watch(
     lastAnalyzedCost = sCost
     form.value.stock_input = sCode
     form.value.position_status = (sPosition || '未持有') as '已持有' | '未持有'
-    form.value.cost_price = sCost ? parseFloat(sCost) : undefined
+    const parsedCost = sCost ? parseFloat(sCost) : undefined
+    form.value.cost_price = parsedCost != null && !isNaN(parsedCost) ? parsedCost : undefined
 
     // 先查缓存，命中则直接显示结果
     try {
-      const cacheResult = await getCachedAnalysis(sCode, sPosition || '未持有', sCost ? parseFloat(sCost) : undefined)
+      const cacheResult = await getCachedAnalysis(sCode, sPosition || '未持有', form.value.cost_price)
       logger.info(`缓存查询: code=${sCode}, cached=${cacheResult.cached}, age=${cacheResult.age_seconds}s`)
       if (cacheResult.cached && cacheResult.result) {
         store.setAnalysisResult(cacheResult.result)

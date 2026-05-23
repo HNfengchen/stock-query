@@ -118,6 +118,13 @@ def preprocess_data(df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
 
 
 def kalman_filter_denoise(series: pd.Series, Q: float = 1e-5, R: float = 1e-2) -> pd.Series:
+    # 基于近期波动率自适应调整Q，波动大时增大Q允许更快跟踪
+    Q_adaptive = Q
+    if len(series) >= 20:
+        vol = series.pct_change().rolling(20).std().iloc[-1]
+        if not np.isnan(vol):
+            Q_adaptive = Q * (1 + vol * 100)
+
     x = None
     P = 1.0
     result = np.full(len(series), np.nan)
@@ -132,7 +139,7 @@ def kalman_filter_denoise(series: pd.Series, Q: float = 1e-5, R: float = 1e-2) -
             continue
 
         x_pred = x
-        P_pred = P + Q
+        P_pred = P + Q_adaptive
 
         if np.isnan(z):
             x = x_pred

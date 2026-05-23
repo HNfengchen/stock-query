@@ -6,6 +6,7 @@
 import os
 import pandas as pd
 import numpy as np
+from collections import deque
 from typing import Dict, Optional
 from scripts.logger import get_logger
 from scripts.core.feature_engineering import (
@@ -73,6 +74,7 @@ class StockAnalyzer:
 
         self._stress_test_config = config.get("stress_test", {})
         self._pending_stress_test = None
+        self._feature_history = deque(maxlen=20)
 
     def analyze_technical(self, indicators: Dict, current_price: float = 0) -> Dict:
         """分析技术指标"""
@@ -162,10 +164,10 @@ class StockAnalyzer:
                 r24 = float(rsi_24_val) if not hasattr(rsi_24_val, 'iloc') else float(rsi_24_val.iloc[-1])
                 if r6 > 70 and r24 < 40:
                     score -= 10
-                    signals.append("RSI顶背离")
+                    signals.append("RSI周期矛盾（偏空）")
                 elif r6 < 30 and r24 > 60:
                     score += 10
-                    signals.append("RSI底背离")
+                    signals.append("RSI周期矛盾（偏多）")
             except (TypeError, ValueError):
                 pass
 
@@ -224,11 +226,9 @@ class StockAnalyzer:
                 boll_bandwidth = boll_latest.get("bandwidth") if isinstance(boll_latest, dict) else None
                 if boll_bandwidth is not None:
                     if boll_bandwidth < 10:
-                        score += 5
-                        signals.append("BOLL收窄")
+                        signals.append("BOLL收窄(方向待定)")
                     elif boll_bandwidth > 25:
-                        score -= 5
-                        signals.append("BOLL扩张")
+                        signals.append("BOLL扩张(方向待定)")
             except (TypeError, ValueError):
                 pass
 
@@ -258,8 +258,9 @@ class StockAnalyzer:
         MIN_SCORE = -75
         MAX_SCORE = 75
 
-        upward_signals = sum(1 for s in signals if any(x in s for x in ["金叉", "超卖", "多头", "偏强"]))
-        downward_signals = sum(1 for s in signals if any(x in s for x in ["死叉", "超买", "空头", "偏弱", "空头排列"]))
+        upward_signals = sum(1 for s in signals if any(x in s for x in ["金叉", "多头", "偏强"]))
+        downward_signals = sum(1 for s in signals if any(x in s for x in ["死叉", "空头", "偏弱", "空头排列"]))
+        # 超卖/超买为反转信号，不参与方向冲突计算
 
         conflict_penalty = 0
         if upward_signals > 0 and downward_signals > 0:
@@ -293,44 +294,49 @@ class StockAnalyzer:
                 feature_names, feature_values = extract_feature_vector(indicators)
                 if len(feature_values) >= 2:
                     feature_dict = dict(zip(feature_names, feature_values))
-                    corr_result = compute_feature_correlation(feature_dict)
-                    result["feature_correlation"] = {
-                        "high_correlation_pairs": corr_result["high_correlation_pairs"],
-                        "feature_names": corr_result["feature_names"],
-                    }
+                    self._feature_history.append(feature_values.copy())
 
-                    corr_threshold = fe_config.get("correlation_threshold", 0.7)
-                    if corr_result["high_correlation_pairs"]:
-                        variance_threshold = fe_config.get("variance_threshold", 0.95)
-                        single_row = feature_values.reshape(1, -1)
-                        orth_result = orthogonalize_features(
-                            single_row, feature_names, variance_threshold
-                        )
-                        if orth_result["n_components"] > 0:
-                            orth_features = orth_result["orthogonal_features"][0]
-                            orth_score = np.sum(orth_features)
-                            max_possible = np.sum(np.abs(orth_features)) if np.sum(np.abs(orth_features)) > 0 else 1.0
-                            if max_possible > 0:
-                                orth_normalized = (orth_score / max_possible + 1) / 2
-                            else:
-                                orth_normalized = 0.5
-                            orth_normalized = max(0, min(1, orth_normalized))
+                    if len(self._feature_history) >= 5:
+                        feature_matrix = np.array(list(self._feature_history))
+                        corr_result = compute_feature_correlation(feature_dict)
+                        result["feature_correlation"] = {
+                            "high_correlation_pairs": corr_result["high_correlation_pairs"],
+                            "feature_names": corr_result["feature_names"],
+                        }
 
-                            blend = 0.3
-                            result["score"] = normalized_score * (1 - blend) + orth_normalized * blend
-                            result["feature_correlation"]["orthogonalized"] = True
-                            result["feature_correlation"]["n_components"] = orth_result["n_components"]
-                            result["feature_correlation"]["explained_variance_ratio"] = orth_result["explained_variance_ratio"].tolist()
-                            analyzer_logger.info(
-                                f"特征正交化: {orth_result['n_components']}个主成分, "
-                                f"原始评分={normalized_score:.3f}, 正交评分={orth_normalized:.3f}, "
-                                f"混合评分={result['score']:.3f}"
+                        corr_threshold = fe_config.get("correlation_threshold", 0.7)
+                        if corr_result["high_correlation_pairs"]:
+                            variance_threshold = fe_config.get("variance_threshold", 0.95)
+                            orth_result = orthogonalize_features(
+                                feature_matrix, feature_names, variance_threshold
                             )
+                            if orth_result["n_components"] > 0:
+                                orth_features = orth_result["orthogonal_features"][-1]
+                                orth_score = np.sum(orth_features)
+                                max_possible = np.sum(np.abs(orth_features)) if np.sum(np.abs(orth_features)) > 0 else 1.0
+                                if max_possible > 0:
+                                    orth_normalized = (orth_score / max_possible + 1) / 2
+                                else:
+                                    orth_normalized = 0.5
+                                orth_normalized = max(0, min(1, orth_normalized))
+
+                                blend = 0.3
+                                result["score"] = normalized_score * (1 - blend) + orth_normalized * blend
+                                result["feature_correlation"]["orthogonalized"] = True
+                                result["feature_correlation"]["n_components"] = orth_result["n_components"]
+                                result["feature_correlation"]["explained_variance_ratio"] = orth_result["explained_variance_ratio"].tolist()
+                                analyzer_logger.info(
+                                    f"特征正交化: {orth_result['n_components']}个主成分, "
+                                    f"原始评分={normalized_score:.3f}, 正交评分={orth_normalized:.3f}, "
+                                    f"混合评分={result['score']:.3f}"
+                                )
+                            else:
+                                result["feature_correlation"]["orthogonalized"] = False
                         else:
                             result["feature_correlation"]["orthogonalized"] = False
+                            analyzer_logger.info("特征相关性低，无需正交化")
                     else:
-                        result["feature_correlation"]["orthogonalized"] = False
-                        analyzer_logger.info("特征相关性低，无需正交化")
+                        analyzer_logger.info(f"特征历史不足5期(当前{len(self._feature_history)}期)，跳过正交化")
             except Exception as e:
                 analyzer_logger.warning(f"特征正交化处理异常: {e}")
                 result["feature_correlation"] = {"error": str(e)}
@@ -866,26 +872,17 @@ class StockAnalyzer:
             active_weight_total += pred_weight
             opposing_factors.append("短线价格预测承压")
 
+        # MACD/RSI/KDJ/BOLL信号已通过technical_score计入，不再独立计权
         macd_signal = indicators.get("MACD", {}).get("signal", "")
-        macd_weight = 0.10
         if macd_signal in ("金叉", "金叉确认", "多头"):
-            weighted_bullish += macd_weight
-            active_weight_total += macd_weight
             supporting_factors.append(f"MACD{macd_signal}")
         elif macd_signal in ("死叉", "死叉确认", "空头"):
-            weighted_bearish += macd_weight
-            active_weight_total += macd_weight
             opposing_factors.append(f"MACD{macd_signal}")
 
         kdj_signal = indicators.get("KDJ", {}).get("signal", "")
-        kdj_weight = 0.08
         if kdj_signal in ("金叉", "超卖"):
-            weighted_bullish += kdj_weight
-            active_weight_total += kdj_weight
             supporting_factors.append(f"KDJ{kdj_signal}")
         elif kdj_signal in ("死叉", "超买"):
-            weighted_bearish += kdj_weight
-            active_weight_total += kdj_weight
             opposing_factors.append(f"KDJ{kdj_signal}")
 
         rsi_12 = indicators.get("RSI", {}).get("RSI(12)", {})
@@ -895,25 +892,16 @@ class StockAnalyzer:
         else:
             rsi_latest = self._latest_indicator_value(rsi_12)
             rsi_signal = ""
-        rsi_weight = 0.07
         rsi_value = None
         try:
             rsi_value = float(rsi_latest) if rsi_latest is not None else None
             if rsi_value is not None and rsi_value >= 70:
-                weighted_bearish += rsi_weight
-                active_weight_total += rsi_weight
                 opposing_factors.append("RSI接近超买")
             elif rsi_value is not None and rsi_value <= 30:
-                weighted_bullish += rsi_weight
-                active_weight_total += rsi_weight
                 supporting_factors.append("RSI接近超卖反弹区")
             elif rsi_signal == "偏强":
-                weighted_bullish += rsi_weight
-                active_weight_total += rsi_weight
                 supporting_factors.append("RSI偏强")
             elif rsi_signal == "偏弱":
-                weighted_bearish += rsi_weight
-                active_weight_total += rsi_weight
                 opposing_factors.append("RSI偏弱")
         except (TypeError, ValueError):
             pass
@@ -926,12 +914,8 @@ class StockAnalyzer:
                 upper = float(upper) if upper is not None else None
                 lower = float(lower) if lower is not None else None
                 if upper is not None and current_price >= upper:
-                    weighted_bearish += 0.05
-                    active_weight_total += 0.05
                     opposing_factors.append("价格接近布林上轨")
                 elif lower is not None and current_price <= lower:
-                    weighted_bullish += 0.05
-                    active_weight_total += 0.05
                     supporting_factors.append("价格接近布林下轨")
             except (TypeError, ValueError):
                 pass
@@ -944,22 +928,14 @@ class StockAnalyzer:
             if key == "macd":
                 persistence_info["macd_persistence"] = info
                 if direction == "bullish" and days >= 3:
-                    weighted_bullish += 0.05
-                    active_weight_total += 0.05
                     supporting_factors.append(f"MACD多头持续{days}日")
                 elif direction == "bearish" and days >= 3:
-                    weighted_bearish += 0.05
-                    active_weight_total += 0.05
                     opposing_factors.append(f"MACD空头持续{days}日")
             elif key == "rsi":
                 persistence_info["rsi_persistence"] = info
                 if direction == "overbought" and days >= 3:
-                    weighted_bearish += 0.05
-                    active_weight_total += 0.05
                     opposing_factors.append(f"RSI超买持续{days}日")
                 elif direction == "oversold" and days >= 3:
-                    weighted_bullish += 0.05
-                    active_weight_total += 0.05
                     supporting_factors.append(f"RSI超卖持续{days}日")
 
         if technical_score >= tech_bullish and (fund_score <= fund_bearish or fund_flow.get("trend") == "outflow"):
@@ -1387,25 +1363,25 @@ class StockAnalyzer:
 
         if trend == TREND_STRONG_UP:
             if ma_target and deviation > 0.1:
-                base_target_high = min(current_price + price_range * atr_mult * 1.3, ma_target * 1.02) * mean_reversion_factor + current_price * (1 - mean_reversion_factor)
+                base_target_high = min(current_price + price_range * atr_mult * 1.3, ma_target * 1.02) * mean_reversion_factor + ma_target * (1 - mean_reversion_factor)
             else:
                 base_target_high = current_price + price_range * atr_mult * 1.3
             base_target_low = current_price + price_range * 0.4
         elif trend == TREND_UP:
             if ma_target and deviation > 0.1:
-                base_target_high = min(current_price + price_range * atr_mult, ma_target * 1.02) * mean_reversion_factor + current_price * (1 - mean_reversion_factor)
+                base_target_high = min(current_price + price_range * atr_mult, ma_target * 1.02) * mean_reversion_factor + ma_target * (1 - mean_reversion_factor)
             else:
                 base_target_high = current_price + price_range * atr_mult
             base_target_low = current_price + price_range * 0.3
         elif trend == TREND_DOWN:
             if ma_target and deviation < -0.1:
-                base_target_low = max(current_price - price_range * atr_mult, ma_target * 0.98) * mean_reversion_factor + current_price * (1 - mean_reversion_factor)
+                base_target_low = max(current_price - price_range * atr_mult, ma_target * 0.98) * mean_reversion_factor + ma_target * (1 - mean_reversion_factor)
             else:
                 base_target_low = current_price - price_range * atr_mult
             base_target_high = current_price - price_range * 0.3
         elif trend == TREND_STRONG_DOWN:
             if ma_target and deviation < -0.1:
-                base_target_low = max(current_price - price_range * atr_mult * 1.3, ma_target * 0.98) * mean_reversion_factor + current_price * (1 - mean_reversion_factor)
+                base_target_low = max(current_price - price_range * atr_mult * 1.3, ma_target * 0.98) * mean_reversion_factor + ma_target * (1 - mean_reversion_factor)
             else:
                 base_target_low = current_price - price_range * atr_mult * 1.3
             base_target_high = current_price - price_range * 0.4
@@ -1997,7 +1973,7 @@ class StockAnalyzer:
         # 下跌趋势中仓位减半
         is_downtrend = macd_signal in ("空头", "死叉") or kdj_signal in ("死叉", "超买")
         if is_downtrend:
-            position_size = max(10, position_size // 2)
+            position_size = max(10, position_size / 2)
 
         distribution = indicators.get("Distribution", {})
         dist_w20 = distribution.get("W20", {})

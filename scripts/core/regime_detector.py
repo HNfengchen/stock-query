@@ -30,6 +30,8 @@ DEFAULT_REGIMES = {
     "趋势牛市": {"technical": 0.6, "fund_flow": 0.2, "sentiment": 0.2},
     "极端恐慌": {"technical": 0.2, "fund_flow": 0.2, "sentiment": 0.6},
     "机构行情": {"technical": 0.3, "fund_flow": 0.5, "sentiment": 0.2},
+    "温和上涨": {"technical": 0.5, "fund_flow": 0.3, "sentiment": 0.2},
+    "温和下跌": {"technical": 0.5, "fund_flow": 0.2, "sentiment": 0.3},
     "缩量震荡": {"technical": 0.4, "fund_flow": 0.3, "sentiment": 0.3},
 }
 
@@ -301,7 +303,22 @@ class RegimeDetector:
         elif volume_ratio > 2.0 and abs(market_change_pct) < 1:
             regime = "机构行情"
         else:
-            regime = "缩量震荡"
+            # 增加中间状态判断，避免大部分正常市场都被归类为"缩量震荡"
+            return_20d = market_data.get("return_20d", None)
+            try:
+                return_20d = float(return_20d) if return_20d is not None else None
+            except (TypeError, ValueError):
+                return_20d = None
+            if return_20d is None:
+                return_20d = market_change_pct
+
+            moderate_vol = volatility_signal in ("正常", "低波动")
+            if return_20d > 0 and moderate_vol:
+                regime = "温和上涨"
+            elif return_20d < 0 and moderate_vol:
+                regime = "温和下跌"
+            else:
+                regime = "缩量震荡"
 
         regime_logger.info(f"市场状态检测: {regime} (volatility_signal={volatility_signal}, volume_ratio={volume_ratio}, market_change_pct={market_change_pct})")
         return regime

@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useStockStore } from '@/stores/stockStore'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import type { WatchlistItem } from '@/types'
 
 const props = defineProps<{ collapsed: boolean }>()
@@ -33,8 +34,8 @@ async function removeStock(stockCode: string, event: Event) {
   event.stopPropagation()
   try {
     await store.removeStock(stockCode)
-  } catch (e) {
-    console.error(e)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
   }
 }
 </script>

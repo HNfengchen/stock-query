@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import type { AnalysisRequest } from '@/types'
 
 const props = defineProps<{
@@ -39,6 +39,13 @@ function onCancel() {
   debouncePending.value = false
   emit('cancel')
 }
+
+onUnmounted(() => {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
+})
 </script>
 
 <template>

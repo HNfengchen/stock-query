@@ -338,13 +338,15 @@ const wfAccuracyOption = computed(() => {
 })
 
 async function runValidation() {
-  if (!stockCode.value.trim()) return
+  if (!stockCode.value.trim() || backtestState.isLoading.value) return
   const data: BacktestRequest = { stock_code: stockCode.value.trim() }
   backtestState.toLoading()
   try {
     await store.executeBacktest(data)
     if (store.result) {
       backtestState.toSuccess(null)
+    } else {
+      backtestState.toError('验证未返回结果')
     }
   } catch (e: any) {
     backtestState.toError(e.response?.data?.detail || e.message || '预测验证执行失败')
@@ -352,7 +354,7 @@ async function runValidation() {
 }
 
 async function runWalkForward() {
-  if (!stockCode.value.trim()) return
+  if (!stockCode.value.trim() || wfState.isLoading.value) return
   const data: WalkForwardRequest = {
     stock_code: stockCode.value.trim(),
     train_window: wfTrainWindow.value,
@@ -364,6 +366,8 @@ async function runWalkForward() {
     await store.executeWalkForward(data)
     if (store.wfResult) {
       wfState.toSuccess(null)
+    } else {
+      wfState.toError('Walk-Forward验证未返回结果')
     }
   } catch (e: any) {
     wfState.toError(e.response?.data?.detail || e.message || 'Walk-Forward验证执行失败')
@@ -392,10 +396,12 @@ function exportCSV() {
   ])
   const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
-  link.href = URL.createObjectURL(blob)
+  link.href = url
   link.download = `prediction_validation_${store.result.stock_code}.csv`
   link.click()
+  URL.revokeObjectURL(url)
 }
 </script>
 

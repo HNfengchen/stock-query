@@ -34,9 +34,22 @@ def _map_signal(signal: str) -> float:
     return 0.0
 
 
-def extract_feature_vector(indicators: dict) -> tuple:
+def extract_feature_vector(indicators: dict, current_price: float = None) -> tuple:
     feature_names: list = []
     feature_values: list = []
+
+    # 如果未提供 current_price，尝试从 MA5 的 latest 值推断
+    if current_price is None:
+        ma_data = indicators.get("MA", {})
+        if isinstance(ma_data, dict):
+            ma5 = ma_data.get("MA5", {})
+            if isinstance(ma5, dict):
+                ma5_latest = ma5.get("latest")
+                if ma5_latest is not None:
+                    try:
+                        current_price = float(ma5_latest)
+                    except (TypeError, ValueError):
+                        pass
 
     if "MACD" in indicators and isinstance(indicators["MACD"], dict):
         macd = indicators["MACD"]
@@ -140,7 +153,10 @@ def extract_feature_vector(indicators: dict) -> tuple:
                 if latest_val is not None:
                     try:
                         feature_names.append(f"{ma_key}_value")
-                        feature_values.append(float(latest_val))
+                        if current_price and current_price > 0:
+                            feature_values.append(float(latest_val) / current_price)
+                        else:
+                            feature_values.append(float(latest_val))
                     except (TypeError, ValueError):
                         pass
 
@@ -154,7 +170,10 @@ def extract_feature_vector(indicators: dict) -> tuple:
         if latest_val is not None:
             try:
                 feature_names.append("ATR_value")
-                feature_values.append(float(latest_val))
+                if current_price and current_price > 0:
+                    feature_values.append(float(latest_val) / current_price)
+                else:
+                    feature_values.append(float(latest_val))
             except (TypeError, ValueError):
                 pass
 
