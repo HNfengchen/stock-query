@@ -102,34 +102,43 @@ class StockAnalyzer:
         score = 0
         signals = []
 
-        # MACD 分析
+        # --- MACD 分析 ---
         macd_signal = macd.get("signal", "")
         if macd_signal == "金叉确认":
-            score += 30
+            score += 25
             signals.append("MACD 金叉确认")
         elif macd_signal == "金叉":
-            score += 25
+            score += 20
             signals.append("MACD 金叉")
         elif macd_signal == "死叉确认":
-            score -= 30
+            score -= 25
             signals.append("MACD 死叉确认")
         elif macd_signal == "死叉":
-            score -= 25
+            score -= 20
             signals.append("MACD 死叉")
         elif macd_signal == "多头":
-            score += 15
+            score += 10
             signals.append("MACD 多头")
         elif macd_signal == "空头":
-            score -= 15
+            score -= 10
             signals.append("MACD 空头")
 
+        # --- RSI 分析 ---
         rsi_12 = rsi.get("RSI(12)", {})
         rsi_signal = rsi_12.get("signal", "") if isinstance(rsi_12, dict) else ""
+        rsi_12_val = None
+        if isinstance(rsi_12, dict):
+            try:
+                v = rsi_12.get("latest")
+                rsi_12_val = float(v) if not hasattr(v, 'iloc') else float(v.iloc[-1])
+            except (TypeError, ValueError):
+                pass
+
         if rsi_signal == "超卖":
-            score += 10
+            score += 20
             signals.append("RSI(12)超卖")
         elif rsi_signal == "超买":
-            score -= 10
+            score -= 20
             signals.append("RSI(12)超买")
         elif rsi_signal == "偏强":
             score += 5
@@ -138,21 +147,39 @@ class StockAnalyzer:
             score -= 5
             signals.append("RSI(12)偏弱")
 
+        # RSI极端区域额外惩罚
+        if rsi_12_val is not None:
+            if rsi_12_val >= 80:
+                score -= 5
+                signals.append("RSI(12)极端超买")
+            elif rsi_12_val <= 20:
+                score += 5
+                signals.append("RSI(12)极端超卖")
+
+        # RSI交叉：超买区金叉为多头陷阱，超卖区死叉为空头陷阱
         rsi_cross = rsi_12.get("cross", "") if isinstance(rsi_12, dict) else ""
         if "金叉" in rsi_cross:
-            score += 5
-            signals.append("RSI金叉")
+            if rsi_12_val is not None and rsi_12_val >= 70:
+                score -= 5
+                signals.append("RSI超买区金叉(多头陷阱)")
+            else:
+                score += 5
+                signals.append("RSI金叉")
         elif "死叉" in rsi_cross:
-            score -= 5
-            signals.append("RSI死叉")
+            if rsi_12_val is not None and rsi_12_val <= 30:
+                score += 5
+                signals.append("RSI超卖区死叉(空头陷阱)")
+            else:
+                score -= 5
+                signals.append("RSI死叉")
 
         rsi_6 = rsi.get("RSI(6)", {})
         rsi_6_signal = rsi_6.get("signal", "") if isinstance(rsi_6, dict) else ""
         if rsi_6_signal == "超卖":
-            score += 5
+            score += 10
             signals.append("RSI(6)超卖")
         elif rsi_6_signal == "超买":
-            score -= 5
+            score -= 10
             signals.append("RSI(6)超买")
 
         rsi_6_val = rsi_6.get("latest") if isinstance(rsi_6, dict) else None
@@ -163,15 +190,15 @@ class StockAnalyzer:
                 r6 = float(rsi_6_val) if not hasattr(rsi_6_val, 'iloc') else float(rsi_6_val.iloc[-1])
                 r24 = float(rsi_24_val) if not hasattr(rsi_24_val, 'iloc') else float(rsi_24_val.iloc[-1])
                 if r6 > 70 and r24 < 40:
-                    score -= 10
+                    score -= 15
                     signals.append("RSI周期矛盾（偏空）")
                 elif r6 < 30 and r24 > 60:
-                    score += 10
+                    score += 15
                     signals.append("RSI周期矛盾（偏多）")
             except (TypeError, ValueError):
                 pass
 
-        # KDJ 分析（适配新返回结构）
+        # --- KDJ 分析 ---
         kdj_signal = kdj.get("signal", "") if isinstance(kdj, dict) else ""
         if kdj_signal == "金叉":
             score += 15
@@ -180,13 +207,13 @@ class StockAnalyzer:
             score -= 15
             signals.append("KDJ 死叉")
         elif kdj_signal == "超卖":
-            score += 10
+            score += 15
             signals.append("KDJ 超卖")
         elif kdj_signal == "超买":
-            score -= 10
+            score -= 15
             signals.append("KDJ 超买")
 
-        # BOLL 分析（任务T-12）
+        # --- BOLL 分析 ---
         if current_price > 0 and isinstance(boll, dict):
             boll_latest = boll.get("latest", {})
             if isinstance(boll_latest, dict):
@@ -208,12 +235,11 @@ class StockAnalyzer:
                 boll_middle = float(boll_middle) if boll_middle is not None else None
                 boll_lower = float(boll_lower) if boll_lower is not None else None
 
-                # M-02: 使用 is not None 判断，避免边界值 0.0 误判
                 if boll_upper is not None and current_price > boll_upper:
-                    score -= 10
+                    score -= 15
                     signals.append("BOLL超买")
                 elif boll_lower is not None and current_price < boll_lower:
-                    score += 10
+                    score += 15
                     signals.append("BOLL超卖")
                 elif boll_middle is not None and current_price > boll_middle:
                     score += 5
@@ -232,35 +258,34 @@ class StockAnalyzer:
             except (TypeError, ValueError):
                 pass
 
-        # 均线排列判断（任务T-13）
+        # --- 均线排列判断 ---
         if isinstance(ma, dict):
             ma5_val = ma.get("MA5", {}).get("latest") if isinstance(ma.get("MA5"), dict) else None
             ma10_val = ma.get("MA10", {}).get("latest") if isinstance(ma.get("MA10"), dict) else None
             ma20_val = ma.get("MA20", {}).get("latest") if isinstance(ma.get("MA20"), dict) else None
-            ma60_val = ma.get("MA60", {}).get("latest") if isinstance(ma.get("MA60"), dict) else None
 
             try:
                 ma5_val = float(ma5_val) if ma5_val is not None else None
                 ma10_val = float(ma10_val) if ma10_val is not None else None
                 ma20_val = float(ma20_val) if ma20_val is not None else None
 
-                # M-02: 使用 is not None 判断
                 if ma5_val is not None and ma10_val is not None and ma20_val is not None:
                     if ma5_val > ma10_val > ma20_val:
-                        score += 10
+                        score += 15
                         signals.append("多头排列")
                     elif ma5_val < ma10_val < ma20_val:
-                        score -= 10
+                        score -= 15
                         signals.append("空头排列")
             except (TypeError, ValueError):
                 pass
 
-        MIN_SCORE = -75
-        MAX_SCORE = 75
+        # --- 归一化与冲突检测 ---
+        MIN_SCORE = -55
+        MAX_SCORE = 55
 
-        upward_signals = sum(1 for s in signals if any(x in s for x in ["金叉", "多头", "偏强"]))
-        downward_signals = sum(1 for s in signals if any(x in s for x in ["死叉", "空头", "偏弱", "空头排列"]))
-        # 超卖/超买为反转信号，不参与方向冲突计算
+        # 超买视为看空方向，超卖视为看多方向
+        upward_signals = sum(1 for s in signals if any(x in s for x in ["金叉", "多头", "偏强", "超卖"]))
+        downward_signals = sum(1 for s in signals if any(x in s for x in ["死叉", "空头", "偏弱", "空头排列", "超买"]))
 
         conflict_penalty = 0
         if upward_signals > 0 and downward_signals > 0:
