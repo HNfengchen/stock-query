@@ -297,44 +297,56 @@ class StockAnalyzer:
                     self._feature_history.append(feature_values.copy())
 
                     if len(self._feature_history) >= 5:
-                        feature_matrix = np.array(list(self._feature_history))
-                        corr_result = compute_feature_correlation(feature_dict)
-                        result["feature_correlation"] = {
-                            "high_correlation_pairs": corr_result["high_correlation_pairs"],
-                            "feature_names": corr_result["feature_names"],
-                        }
+                        # 确保所有历史特征向量长度一致（固定模板后应一致，做防御性检查）
+                        expected_len = len(feature_values)
+                        valid_history = [h for h in self._feature_history if len(h) == expected_len]
+                        if len(valid_history) >= 5:
+                            feature_matrix = np.array(valid_history)
+                        else:
+                            feature_matrix = np.array(list(self._feature_history)[-min(len(self._feature_history), expected_len):])
+                            # 如果仍然不规则，跳过正交化
+                            if feature_matrix.ndim != 2:
+                                analyzer_logger.info(f"特征历史长度不一致，跳过正交化")
+                                feature_matrix = None
 
-                        corr_threshold = fe_config.get("correlation_threshold", 0.7)
-                        if corr_result["high_correlation_pairs"]:
-                            variance_threshold = fe_config.get("variance_threshold", 0.95)
-                            orth_result = orthogonalize_features(
-                                feature_matrix, feature_names, variance_threshold
-                            )
-                            if orth_result["n_components"] > 0:
-                                orth_features = orth_result["orthogonal_features"][-1]
-                                orth_score = np.sum(orth_features)
-                                max_possible = np.sum(np.abs(orth_features)) if np.sum(np.abs(orth_features)) > 0 else 1.0
-                                if max_possible > 0:
-                                    orth_normalized = (orth_score / max_possible + 1) / 2
-                                else:
-                                    orth_normalized = 0.5
-                                orth_normalized = max(0, min(1, orth_normalized))
+                        if feature_matrix is not None:
+                            corr_result = compute_feature_correlation(feature_dict)
+                            result["feature_correlation"] = {
+                                "high_correlation_pairs": corr_result["high_correlation_pairs"],
+                                "feature_names": corr_result["feature_names"],
+                            }
 
-                                blend = 0.3
-                                result["score"] = normalized_score * (1 - blend) + orth_normalized * blend
-                                result["feature_correlation"]["orthogonalized"] = True
-                                result["feature_correlation"]["n_components"] = orth_result["n_components"]
-                                result["feature_correlation"]["explained_variance_ratio"] = orth_result["explained_variance_ratio"].tolist()
-                                analyzer_logger.info(
-                                    f"特征正交化: {orth_result['n_components']}个主成分, "
-                                    f"原始评分={normalized_score:.3f}, 正交评分={orth_normalized:.3f}, "
-                                    f"混合评分={result['score']:.3f}"
+                            corr_threshold = fe_config.get("correlation_threshold", 0.7)
+                            if corr_result["high_correlation_pairs"]:
+                                variance_threshold = fe_config.get("variance_threshold", 0.95)
+                                orth_result = orthogonalize_features(
+                                    feature_matrix, feature_names, variance_threshold
                                 )
+                                if orth_result["n_components"] > 0:
+                                    orth_features = orth_result["orthogonal_features"][-1]
+                                    orth_score = np.sum(orth_features)
+                                    max_possible = np.sum(np.abs(orth_features)) if np.sum(np.abs(orth_features)) > 0 else 1.0
+                                    if max_possible > 0:
+                                        orth_normalized = (orth_score / max_possible + 1) / 2
+                                    else:
+                                        orth_normalized = 0.5
+                                    orth_normalized = max(0, min(1, orth_normalized))
+
+                                    blend = 0.3
+                                    result["score"] = normalized_score * (1 - blend) + orth_normalized * blend
+                                    result["feature_correlation"]["orthogonalized"] = True
+                                    result["feature_correlation"]["n_components"] = orth_result["n_components"]
+                                    result["feature_correlation"]["explained_variance_ratio"] = orth_result["explained_variance_ratio"].tolist()
+                                    analyzer_logger.info(
+                                        f"特征正交化: {orth_result['n_components']}个主成分, "
+                                        f"原始评分={normalized_score:.3f}, 正交评分={orth_normalized:.3f}, "
+                                        f"混合评分={result['score']:.3f}"
+                                    )
+                                else:
+                                    result["feature_correlation"]["orthogonalized"] = False
                             else:
                                 result["feature_correlation"]["orthogonalized"] = False
-                        else:
-                            result["feature_correlation"]["orthogonalized"] = False
-                            analyzer_logger.info("特征相关性低，无需正交化")
+                                analyzer_logger.info("特征相关性低，无需正交化")
                     else:
                         analyzer_logger.info(f"特征历史不足5期(当前{len(self._feature_history)}期)，跳过正交化")
             except Exception as e:

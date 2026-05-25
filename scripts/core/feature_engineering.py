@@ -34,10 +34,66 @@ def _map_signal(signal: str) -> float:
     return 0.0
 
 
-def extract_feature_vector(indicators: dict, current_price: float = None) -> tuple:
-    feature_names: list = []
-    feature_values: list = []
+# 固定特征模板：确保每次提取的特征数量和顺序一致，缺失值填0
+# 格式: (特征名, 指标键, 子键路径, 转换函数或None)
+_FEATURE_TEMPLATE = None  # 延迟初始化
 
+def _get_feature_template():
+    """返回固定特征模板，确保特征向量长度一致"""
+    global _FEATURE_TEMPLATE
+    if _FEATURE_TEMPLATE is not None:
+        return _FEATURE_TEMPLATE
+
+    template = []
+
+    # MACD: signal, DIF, DEA, hist
+    template.append(("MACD_signal", "MACD", "signal", lambda v: _map_signal(v) if isinstance(v, str) else 0.0))
+    template.append(("MACD_DIF", "MACD", "latest.DIF", float))
+    template.append(("MACD_DEA", "MACD", "latest.DEA", float))
+    template.append(("MACD_hist", "MACD", "latest.MACD", float))
+
+    # RSI(6), RSI(12), RSI(24): signal, value, cross
+    for period in ["RSI(6)", "RSI(12)", "RSI(24)"]:
+        template.append((f"{period}_signal", f"RSI.{period}", "signal", lambda v: _map_signal(v) if isinstance(v, str) else 0.0))
+        template.append((f"{period}_value", f"RSI.{period}", "latest", lambda v: float(v) / 100.0 if v is not None else 0.0))
+        template.append((f"{period}_cross", f"RSI.{period}", "cross", lambda v: _map_signal(v) if isinstance(v, str) and v else 0.0))
+
+    # KDJ: signal, K, D, J
+    template.append(("KDJ_signal", "KDJ", "signal", lambda v: _map_signal(v) if isinstance(v, str) else 0.0))
+    template.append(("KDJ_K", "KDJ", "latest.K", lambda v: float(v) / 100.0 if v is not None else 0.0))
+    template.append(("KDJ_D", "KDJ", "latest.D", lambda v: float(v) / 100.0 if v is not None else 0.0))
+    template.append(("KDJ_J", "KDJ", "latest.J", lambda v: float(v) / 100.0 if v is not None else 0.0))
+
+    # BOLL: signal, bandwidth, pct_b
+    template.append(("BOLL_signal", "BOLL", "signal", lambda v: _map_signal(v) if isinstance(v, str) else 0.0))
+    template.append(("BOLL_bandwidth", "BOLL", "latest.bandwidth", lambda v: float(v) / 100.0 if v is not None else 0.0))
+    template.append(("BOLL_pct_b", "BOLL", "latest.pct_b", lambda v: float(v) / 100.0 if v is not None else 0.0))
+
+    # MA5, MA10, MA20, MA60: value (归一化)
+    for ma_key in ["MA5", "MA10", "MA20", "MA60"]:
+        template.append((f"{ma_key}_value", f"MA.{ma_key}", "latest", "MA_NORMALIZE"))
+
+    # ATR: signal, value (归一化)
+    template.append(("ATR_signal", "ATR", "signal", lambda v: _map_signal(v) if isinstance(v, str) else 0.0))
+    template.append(("ATR_value", "ATR", "latest", "ATR_NORMALIZE"))
+
+    _FEATURE_TEMPLATE = template
+    return _FEATURE_TEMPLATE
+
+
+def _resolve_path(data: dict, path: str):
+    """按点分隔路径从嵌套dict中取值，如 'latest.DIF' → data['latest']['DIF']"""
+    keys = path.split(".")
+    current = data
+    for key in keys:
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        else:
+            return None
+    return current
+
+
+def extract_feature_vector(indicators: dict, current_price: float = None) -> tuple:
     # 如果未提供 current_price，尝试从 MA5 的 latest 值推断
     if current_price is None:
         ma_data = indicators.get("MA", {})
@@ -51,131 +107,53 @@ def extract_feature_vector(indicators: dict, current_price: float = None) -> tup
                     except (TypeError, ValueError):
                         pass
 
-    if "MACD" in indicators and isinstance(indicators["MACD"], dict):
-        macd = indicators["MACD"]
-        macd_signal = macd.get("signal", "")
-        feature_names.append("MACD_signal")
-        feature_values.append(_map_signal(macd_signal))
+    template = _get_feature_template()
+    feature_names = []
+    feature_values = []
 
-        latest = macd.get("latest", {})
-        if isinstance(latest, dict):
-            dif = latest.get("DIF")
-            dea = latest.get("DEA")
-            hist = latest.get("MACD")
-            if dif is not None:
-                try:
-                    feature_names.append("MACD_DIF")
-                    feature_values.append(float(dif))
-                except (TypeError, ValueError):
-                    pass
-            if dea is not None:
-                try:
-                    feature_names.append("MACD_DEA")
-                    feature_values.append(float(dea))
-                except (TypeError, ValueError):
-                    pass
-            if hist is not None:
-                try:
-                    feature_names.append("MACD_hist")
-                    feature_values.append(float(hist))
-                except (TypeError, ValueError):
-                    pass
+    for name, indicator_key, sub_path, transform in template:
+        feature_names.append(name)
+        # 解析 indicator_key (如 "RSI.RSI(6)" → indicators["RSI"]["RSI(6)"])
+        ind_parts = indicator_key.split(".", 1)
+        if len(ind_parts) == 2:
+            ind_data = indicators.get(ind_parts[0], {})
+            if isinstance(ind_data, dict):
+                ind_data = ind_data.get(ind_parts[1], {})
+            else:
+                ind_data = {}
+        else:
+            ind_data = indicators.get(indicator_key, {})
 
-    if "RSI" in indicators and isinstance(indicators["RSI"], dict):
-        rsi = indicators["RSI"]
-        for period_key in ["RSI(6)", "RSI(12)", "RSI(24)"]:
-            rsi_data = rsi.get(period_key, {})
-            if isinstance(rsi_data, dict):
-                signal = rsi_data.get("signal", "")
-                latest_val = rsi_data.get("latest")
+        if not isinstance(ind_data, dict):
+            ind_data = {}
 
-                feature_names.append(f"{period_key}_signal")
-                feature_values.append(_map_signal(signal))
+        raw_val = _resolve_path(ind_data, sub_path)
 
-                if latest_val is not None:
-                    try:
-                        feature_names.append(f"{period_key}_value")
-                        feature_values.append(float(latest_val) / 100.0)
-                    except (TypeError, ValueError):
-                        pass
-
-                cross = rsi_data.get("cross", "")
-                if cross:
-                    feature_names.append(f"{period_key}_cross")
-                    feature_values.append(_map_signal(cross))
-
-    if "KDJ" in indicators and isinstance(indicators["KDJ"], dict):
-        kdj = indicators["KDJ"]
-        kdj_signal = kdj.get("signal", "")
-        feature_names.append("KDJ_signal")
-        feature_values.append(_map_signal(kdj_signal))
-
-        latest = kdj.get("latest", {})
-        if isinstance(latest, dict):
-            for key in ["K", "D", "J"]:
-                val = latest.get(key)
-                if val is not None:
-                    try:
-                        feature_names.append(f"KDJ_{key}")
-                        feature_values.append(float(val) / 100.0)
-                    except (TypeError, ValueError):
-                        pass
-
-    if "BOLL" in indicators and isinstance(indicators["BOLL"], dict):
-        boll = indicators["BOLL"]
-        boll_signal = boll.get("signal", "")
-        feature_names.append("BOLL_signal")
-        feature_values.append(_map_signal(boll_signal))
-
-        latest = boll.get("latest", {})
-        if isinstance(latest, dict):
-            bandwidth = latest.get("bandwidth")
-            pct_b = latest.get("pct_b")
-            if bandwidth is not None:
-                try:
-                    feature_names.append("BOLL_bandwidth")
-                    feature_values.append(float(bandwidth) / 100.0)
-                except (TypeError, ValueError):
-                    pass
-            if pct_b is not None:
-                try:
-                    feature_names.append("BOLL_pct_b")
-                    feature_values.append(float(pct_b) / 100.0)
-                except (TypeError, ValueError):
-                    pass
-
-    if "MA" in indicators and isinstance(indicators["MA"], dict):
-        ma = indicators["MA"]
-        for ma_key in ["MA5", "MA10", "MA20", "MA60"]:
-            ma_data = ma.get(ma_key, {})
-            if isinstance(ma_data, dict):
-                latest_val = ma_data.get("latest")
-                if latest_val is not None:
-                    try:
-                        feature_names.append(f"{ma_key}_value")
-                        if current_price and current_price > 0:
-                            feature_values.append(float(latest_val) / current_price)
-                        else:
-                            feature_values.append(float(latest_val))
-                    except (TypeError, ValueError):
-                        pass
-
-    if "ATR" in indicators and isinstance(indicators["ATR"], dict):
-        atr = indicators["ATR"]
-        atr_signal = atr.get("signal", "")
-        feature_names.append("ATR_signal")
-        feature_values.append(_map_signal(atr_signal))
-
-        latest_val = atr.get("latest")
-        if latest_val is not None:
-            try:
-                feature_names.append("ATR_value")
-                if current_price and current_price > 0:
-                    feature_values.append(float(latest_val) / current_price)
+        # 转换值
+        try:
+            if transform == "MA_NORMALIZE":
+                if raw_val is not None and current_price and current_price > 0:
+                    feature_values.append(float(raw_val) / current_price)
+                elif raw_val is not None:
+                    feature_values.append(float(raw_val))
                 else:
-                    feature_values.append(float(latest_val))
-            except (TypeError, ValueError):
-                pass
+                    feature_values.append(0.0)
+            elif transform == "ATR_NORMALIZE":
+                if raw_val is not None and current_price and current_price > 0:
+                    feature_values.append(float(raw_val) / current_price)
+                elif raw_val is not None:
+                    feature_values.append(float(raw_val))
+                else:
+                    feature_values.append(0.0)
+            elif callable(transform):
+                if raw_val is not None:
+                    feature_values.append(transform(raw_val))
+                else:
+                    feature_values.append(0.0)
+            else:
+                feature_values.append(0.0)
+        except (TypeError, ValueError):
+            feature_values.append(0.0)
 
     if not feature_values:
         return ([], np.array([]))

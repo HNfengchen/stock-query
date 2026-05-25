@@ -20,11 +20,14 @@ from scripts.logger import db_logger
 
 
 def to_python_type(val):
-    """将numpy类型转换为Python原生类型"""
+    """将numpy类型转换为Python原生类型，'-'等非数值字符串转为None"""
     if val is None:
         return None
     if isinstance(val, np.ndarray):
         return val.tolist()
+    # efinance对缺失数值返回'-'字符串，PostgreSQL NUMERIC列不接受
+    if isinstance(val, str) and val.strip() in ('-', ''):
+        return None
     try:
         if pd.isna(val):
             return None

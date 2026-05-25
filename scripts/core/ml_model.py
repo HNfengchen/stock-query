@@ -160,9 +160,31 @@ class LightGBMPredictor:
             ml_logger.warning("predict调用但模型未就绪")
             return {}
 
-        # 如果提供了特征名，构造 DataFrame 以消除 sklearn 特征名警告
-        if feature_names and len(feature_names) == X.shape[-1]:
-            import pandas as pd
+        import pandas as pd
+
+        # 特征对齐：预测时特征数可能与训练时不一致，需要对齐
+        if feature_names and self._feature_names:
+            n_model_features = len(self._feature_names)
+            if len(feature_names) != n_model_features or feature_names != self._feature_names:
+                # 构造与训练时特征顺序一致的DataFrame，缺失特征填0
+                if X.ndim == 1:
+                    X_flat = X
+                else:
+                    X_flat = X[-1] if len(X) > 0 else X.flatten()
+                pred_dict = dict(zip(feature_names, X_flat))
+                aligned_values = [pred_dict.get(fn, 0.0) for fn in self._feature_names]
+                X_input = pd.DataFrame([aligned_values], columns=self._feature_names)
+                ml_logger.info(
+                    f"特征对齐: 输入{len(feature_names)}个→模型{ n_model_features}个, "
+                    f"缺失{set(self._feature_names) - set(feature_names)}, "
+                    f"多余{set(feature_names) - set(self._feature_names)}"
+                )
+            else:
+                if X.ndim == 1:
+                    X_input = pd.DataFrame([X], columns=feature_names)
+                else:
+                    X_input = pd.DataFrame(X, columns=feature_names)
+        elif feature_names and len(feature_names) == X.shape[-1]:
             if X.ndim == 1:
                 X_input = pd.DataFrame([X], columns=feature_names)
             else:
