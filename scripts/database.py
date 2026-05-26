@@ -11,7 +11,7 @@ import threading
 import yaml
 from psycopg2 import pool, sql
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, date as date_type
+from datetime import datetime, date as date_type, timedelta
 from typing import Dict, List, Optional, Any
 import pandas as pd
 import numpy as np
@@ -817,6 +817,10 @@ class StockDataManager:
         df = df.rename(columns=column_mapping)
         df.index = df["日期"]
         df.index.name = "日期"
+        df = df.drop(columns=["日期"])
+
+        # 确保按日期升序排列（技术指标计算依赖时间序列顺序）
+        df = df.sort_index(ascending=True)
 
         return df
 
@@ -1125,6 +1129,30 @@ def get_or_fetch_stock_data(
                     row = cur.fetchone()
                     if row and row[0]:
                         age_seconds = (datetime.now() - row[0]).total_seconds()
+
+                        # 判断DB数据是否已是最新（最新日期为今天或昨天）
+                        today = datetime.now().date()
+                        yesterday = today - timedelta(days=1)
+                        latest_date_only = (
+                            latest_date.date()
+                            if hasattr(latest_date, "date") and not isinstance(latest_date, date_type)
+                            else latest_date
+                        )
+                        is_data_up_to_date = latest_date_only >= yesterday
+
+                        if is_data_up_to_date:
+                            df = manager.get_historical_data()
+                            if df is not None and not df.empty and len(df) >= 5:
+                                db_logger.info(
+                                    f"[{stock_code}] 数据已是最新 (最新日期={latest_date_only}, {len(df)} 条, 缓存年龄{age_seconds:.0f}秒)"
+                                )
+                                return {
+                                    "source": "database",
+                                    "stock_info": {},
+                                    "fund_flow": {},
+                                    "history_df": df,
+                                }
+
                         if age_seconds < 300:
                             df = manager.get_historical_data()
                             if df is not None and not df.empty and len(df) >= 5:
@@ -1240,9 +1268,16 @@ def get_or_fetch_stock_data(
         try:
             df = manager.get_historical_data()
             if df is not None and not df.empty:
-                return {"source": "database", "history_df": df}
-        except Exception:
-            pass
+                db_logger.info(f"[{stock_code}] API失败，回退使用数据库数据 ({len(df)} 条)")
+                return {
+                    "source": "database_fallback",
+                    "data_quality": "low",
+                    "history_df": df,
+                    "stock_info": {},
+                    "fund_flow": {},
+                }
+        except Exception as fallback_err:
+            db_logger.error(f"[{stock_code}] 数据库回退也失败: {fallback_err}")
 
         return {"source": "error", "error": str(e)}
 

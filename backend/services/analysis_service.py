@@ -201,12 +201,14 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     fund_flow = None
     history_df = None
     indicators = None
+    data_source = None
     fetch_start = time.time()
 
     try:
         from scripts.database import get_or_fetch_stock_data
         db_data = get_or_fetch_stock_data(stock_code, force_refresh=False, days=120)
         if db_data:
+            data_source = db_data.get("source", "unknown")
             if db_data.get("history_df") is not None and not db_data["history_df"].empty:
                 history_df = db_data["history_df"]
             if db_data.get("stock_info"):
@@ -215,15 +217,27 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
                 fund_flow = db_data["fund_flow"]
             if db_data.get("indicators"):
                 indicators = db_data["indicators"]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warn(f"数据库获取数据异常: {e}")
 
-    if info is None:
-        info = fetcher.fetch_stock_info(stock_code)
-    if fund_flow is None:
-        fund_flow = fetcher.fetch_fund_flow(stock_code)
+    # 仅在DB回退模式下跳过API重试（避免API超时导致二次阻塞）
+    is_fallback = data_source == "database_fallback"
+
+    if info is None and not is_fallback:
+        try:
+            info = fetcher.fetch_stock_info(stock_code)
+        except Exception:
+            logger.warn("stock_info获取失败")
+    if fund_flow is None and not is_fallback:
+        try:
+            fund_flow = fetcher.fetch_fund_flow(stock_code)
+        except Exception:
+            logger.warn("fund_flow获取失败")
     if history_df is None:
-        history_df = fetcher.fetch_history_data(stock_code, days=120)
+        try:
+            history_df = fetcher.fetch_history_data(stock_code, days=120)
+        except Exception:
+            logger.warn("历史数据获取失败")
 
     info = info or {}
     fund_flow = fund_flow or {}
@@ -244,6 +258,7 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         "stock_info": info,
         "fund_flow": fund_flow,
         "history_data": history_df,
+        "data_quality": db_data.get("data_quality", "normal") if db_data else "normal",
     }
 
     # 获取大盘数据，避免后续 analyze_market_sentiment 重复调用 efinance

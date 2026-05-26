@@ -473,6 +473,18 @@ class StockAnalyzer:
         }
         result["trend"] = trend
 
+        # ETF/基金类：资金流数据含义与个股不同（申赎行为而非主力控盘），降权
+        if stock_info and isinstance(stock_info, dict):
+            stock_code = stock_info.get("代码", "")
+        else:
+            stock_code = ""
+        if not stock_code and fund_flow:
+            stock_code = fund_flow.get("代码", "")
+        if stock_code and str(stock_code).startswith(("51", "15", "16", "18", "50", "52", "56", "58")):
+            score = 0.5 + (score - 0.5) * 0.5  # 向0.5收缩
+            result["score"] = score
+            result["is_etf"] = True
+
         return result
 
     def analyze_market_sentiment(self, data: Dict, market_data: Dict = None) -> Dict:
@@ -859,33 +871,59 @@ class StockAnalyzer:
         weighted_bearish = 0.0
         active_weight_total = 0.0
 
+        # 改动1+2：评分幅度参与共识计算，中性维度不占座
         if not tech_missing:
-            active_weight_total += w_tech
-            if technical_score >= tech_bullish:
-                weighted_bullish += w_tech
-                supporting_factors.append("技术评分偏强")
-            elif technical_score <= tech_bearish:
-                weighted_bearish += w_tech
-                opposing_factors.append("技术评分偏弱")
+            if technical_score > 0.5:
+                strength = (technical_score - 0.5) / 0.5  # 0~1
+                weighted_bullish += w_tech * strength
+                active_weight_total += w_tech * strength
+                if technical_score >= tech_bullish:
+                    supporting_factors.append("技术评分偏强")
+            elif technical_score < 0.5:
+                strength = (0.5 - technical_score) / 0.5  # 0~1
+                weighted_bearish += w_tech * strength
+                active_weight_total += w_tech * strength
+                if technical_score <= tech_bearish:
+                    opposing_factors.append("技术评分偏弱")
 
         if not fund_missing:
-            active_weight_total += w_fund
+            if fund_score > 0.5:
+                strength = (fund_score - 0.5) / 0.5
+                weighted_bullish += w_fund * strength
+                active_weight_total += w_fund * strength
+                if fund_score >= fund_bullish:
+                    supporting_factors.append("资金流入支持")
+            elif fund_score < 0.5:
+                strength = (0.5 - fund_score) / 0.5
+                weighted_bearish += w_fund * strength
+                active_weight_total += w_fund * strength
+                if fund_score <= fund_bearish:
+                    opposing_factors.append("资金流出压制")
+            # 资金趋势辅助判断
             fund_trend = fund_flow.get("trend", "neutral")
-            if fund_score >= fund_bullish or fund_trend == "inflow":
-                weighted_bullish += w_fund
-                supporting_factors.append("资金流入支持")
-            elif fund_score <= fund_bearish or fund_trend == "outflow":
-                weighted_bearish += w_fund
-                opposing_factors.append("资金流出压制")
+            if fund_trend == "inflow" and fund_score <= fund_bullish:
+                # 评分未达偏强但趋势为流入，小幅加成
+                weighted_bullish += w_fund * 0.2
+                active_weight_total += w_fund * 0.2
+                supporting_factors.append("资金流入支持(趋势)")
+            elif fund_trend == "outflow" and fund_score >= fund_bearish:
+                weighted_bearish += w_fund * 0.2
+                active_weight_total += w_fund * 0.2
+                opposing_factors.append("资金流出压制(趋势)")
 
         if not sent_missing:
-            active_weight_total += w_sent
-            if sentiment_score >= sentiment_bullish:
-                weighted_bullish += w_sent
-                supporting_factors.append("市场情绪偏暖")
-            elif sentiment_score <= sentiment_bearish:
-                weighted_bearish += w_sent
-                opposing_factors.append("市场情绪偏弱")
+            if sentiment_score > 0.5:
+                strength = (sentiment_score - 0.5) / 0.5
+                weighted_bullish += w_sent * strength
+                active_weight_total += w_sent * strength
+                if sentiment_score >= sentiment_bullish:
+                    supporting_factors.append("市场情绪偏暖")
+            elif sentiment_score < 0.5:
+                strength = (0.5 - sentiment_score) / 0.5
+                weighted_bearish += w_sent * strength
+                active_weight_total += w_sent * strength
+                if sentiment_score <= sentiment_bearish:
+                    opposing_factors.append("市场情绪偏弱")
 
         prediction_trends = [
             price_prediction.get("day1", {}).get("trend"),
@@ -996,6 +1034,12 @@ class StockAnalyzer:
             bear_ratio = 0.5
 
         missing_penalty = len(missing_dimensions) * 0.05
+
+        # 数据质量低时加重惩罚
+        data_quality = analysis.get("data_quality", "normal")
+        if data_quality == "low":
+            missing_penalty += 0.1
+            analyzer_logger.info("数据质量低(DB回退)，加重missing_penalty")
 
         if bull_ratio >= 0.6:
             direction_consensus = "bullish"
@@ -1639,6 +1683,7 @@ class StockAnalyzer:
             "technical": technical_analysis,
             "fund_flow": fund_flow_analysis,
             "sentiment": sentiment_analysis,
+            "data_quality": all_data.get("data_quality", "normal"),
         }
 
         trading_signal = self.generate_trading_signal(analysis, position_status, market_data)
