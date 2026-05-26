@@ -13,7 +13,7 @@ from starlette.responses import Response
 from contextlib import asynccontextmanager
 
 from backend.exceptions import StockQueryException, AnalysisFailedError
-from backend.routers import analysis, backtest, history, websocket, logs
+from backend.routers import analysis, backtest, history, websocket, logs, training
 from backend.logging import (
     setup_logging,
     get_module_levels_from_env,
@@ -111,6 +111,7 @@ app.include_router(backtest.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(websocket.router)
 app.include_router(logs.router, prefix="/api")
+app.include_router(training.router, prefix="/api")
 
 
 @app.get("/health")

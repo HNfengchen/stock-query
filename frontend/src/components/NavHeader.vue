@@ -8,6 +8,7 @@ const navItems = [
   { path: '/', name: 'analysis', label: '分析报告', icon: 'TrendCharts' },
   { path: '/backtest', name: 'backtest', label: '回测中心', icon: 'DataAnalysis' },
   { path: '/history', name: 'history', label: '历史股票', icon: 'Collection' },
+  { path: '/training', name: 'training', label: '模型训练', icon: 'SetUp' },
 ]
 
 function navigate(path: string) {
