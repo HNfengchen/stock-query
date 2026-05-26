@@ -41,9 +41,15 @@ def load_stock_codes_from_watchlist(watchlist_path: str) -> list:
         return []
 
 
-def train_stock(stock_code: str, config: dict, model_dir: str, dry_run: bool = False) -> dict:
+def train_stock(stock_code: str, config: dict, model_dir: str, dry_run: bool = False, skip_existing: bool = False) -> dict:
     from scripts.core.ml_model import LightGBMPredictor, build_feature_matrix
     from scripts.database import StockDataManager
+
+    # 跳过已存在的模型
+    stock_model_dir = os.path.join(model_dir, stock_code)
+    if skip_existing and os.path.exists(os.path.join(stock_model_dir, "model.txt")):
+        train_logger.info(f"[{stock_code}] 模型已存在，跳过训练")
+        return {"stock_code": stock_code, "status": "skipped", "reason": "model exists"}
 
     db_manager = StockDataManager(stock_code)
 
@@ -82,7 +88,6 @@ def train_stock(stock_code: str, config: dict, model_dir: str, dry_run: bool = F
         train_logger.warning(f"[{stock_code}] 训练失败: {metrics['error']}")
         return {"stock_code": stock_code, "status": "failed", "reason": metrics["error"]}
 
-    stock_model_dir = os.path.join(model_dir, stock_code)
     predictor.save(stock_model_dir)
 
     try:
@@ -109,6 +114,8 @@ def main():
                         help="混合预测alpha值")
     parser.add_argument("--dry-run", action="store_true",
                         help="仅显示数据统计，不训练")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="跳过已存在模型的股票")
     parser.add_argument("--config", type=str, default="config/config.yaml",
                         help="配置文件路径")
 
@@ -136,7 +143,7 @@ def main():
     results = []
     for stock_code in stock_codes:
         try:
-            result = train_stock(stock_code, config, model_dir, dry_run=args.dry_run)
+            result = train_stock(stock_code, config, model_dir, dry_run=args.dry_run, skip_existing=args.skip_existing)
             results.append(result)
         except Exception as e:
             train_logger.error(f"[{stock_code}] 训练异常: {e}")
