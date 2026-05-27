@@ -73,6 +73,7 @@ async function removeStock(stockCode: string, event: Event) {
           </div>
           <div class="item-bottom">
             <span class="stock-name">{{ item.stock_name }}</span>
+            <span v-if="item.market_tag" class="market-tag">{{ item.market_tag }}</span>
             <span v-if="item.position_status === '已持有' && item.cost_price" class="cost-price">
               成本 {{ item.cost_price.toFixed(2) }}
             </span>
@@ -246,6 +247,18 @@ async function removeStock(stockCode: string, event: Event) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.market-tag {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 0 3px;
+  border-radius: 2px;
+  margin-left: 3px;
+  flex-shrink: 0;
+  background: rgba(64, 158, 255, 0.15);
+  color: #409eff;
+  border: 1px solid rgba(64, 158, 255, 0.3);
 }
 
 .cost-price {

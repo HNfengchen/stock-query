@@ -229,6 +229,7 @@ function stageLabel(stage: string): string {
           <div class="stock-info">
             <div class="stock-main">
               <span class="stock-name">{{ store.currentResult.stock_name }}</span>
+              <span v-if="store.currentResult.market_tag" class="market-tag">{{ store.currentResult.market_tag }}</span>
               <span class="stock-code">{{ store.currentResult.stock_code }}</span>
             </div>
             <div v-if="store.currentResult.price_prediction?.current != null" class="stock-price-row">
@@ -532,6 +533,18 @@ function stageLabel(stage: string): string {
   font-size: 20px;
   font-weight: 700;
   color: var(--text-primary, rgba(255, 255, 255, 0.92));
+}
+
+.market-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+  background: rgba(64, 158, 255, 0.15);
+  color: #409eff;
+  border: 1px solid rgba(64, 158, 255, 0.3);
 }
 
 .stock-code {

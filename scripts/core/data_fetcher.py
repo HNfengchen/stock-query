@@ -29,6 +29,7 @@ from scripts.stock_query import (
     get_history_data,
     get_minute_data,
 )
+import efinance as ef
 
 _db_module = None
 _get_or_fetch_stock_data = None
@@ -173,9 +174,59 @@ class DataFetcher:
             raise InvalidStockCodeError(f"无法识别股票 '{user_input}'，请检查输入")
 
         info = self._retry_wrapper(get_stock_info, stock_code)
-        stock_name = info.get("名称", user_input)
+        raw_name = info.get("名称", user_input)
 
-        return stock_code, stock_name, market
+        # 从带前缀的名称中提取市场标识（XD=除息, XR=除权, DR=除权除息, N=新股）
+        market_tag = ""
+        for prefix in ("XD", "XR", "DR", "N"):
+            if raw_name.startswith(prefix) and len(raw_name) > len(prefix):
+                market_tag = prefix
+                break
+
+        # 获取不带前缀的原始名称
+        # efinance在除权除息日会在名称前加XD/XR/DR，且可能截断原名称字符
+        # 优先级：watchlist缓存 > get_base_info > 剥离前缀
+        clean_name = raw_name
+        if market_tag:
+            # 优先从watchlist获取缓存名称（添加自选股时名称是正确的）
+            try:
+                import json
+                from pathlib import Path
+                wl_path = Path(os.path.dirname(os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__)))), "data", "watchlist.json")
+                if wl_path.exists():
+                    with open(wl_path, "r", encoding="utf-8") as f:
+                        wl = json.load(f)
+                    for item in wl:
+                        if item.get("stock_code") == stock_code:
+                            cached_name = item.get("stock_name", "")
+                            if cached_name:
+                                clean_name = cached_name
+                                break
+            except Exception:
+                pass
+
+            # 回退：尝试get_base_info
+            if clean_name == raw_name:
+                try:
+                    base_info = self._retry_wrapper(ef.stock.get_base_info, stock_code)
+                    if base_info is not None:
+                        if isinstance(base_info, pd.DataFrame) and not base_info.empty:
+                            base_name = base_info.iloc[0].get("股票名称", "")
+                        elif isinstance(base_info, pd.Series):
+                            base_name = base_info.get("股票名称", "")
+                        else:
+                            base_name = ""
+                        if base_name and not pd.isna(base_name):
+                            clean_name = str(base_name)
+                except Exception:
+                    pass
+
+            # 最终回退：剥离前缀（可能少字符，但总比带前缀好）
+            if clean_name == raw_name:
+                clean_name = raw_name[len(market_tag):]
+
+        return stock_code, clean_name, market, market_tag
 
     def fetch_stock_info(self, stock_code: str) -> Dict:
         """获取股票基本信息"""
@@ -199,9 +250,9 @@ class DataFetcher:
         """获取资金流向数据"""
         return self._retry_wrapper(get_fund_flow, stock_code)
 
-    def fetch_history_data(self, stock_code: str, days: int = 60) -> pd.DataFrame:
+    def fetch_history_data(self, stock_code: str, days: int = 60, klt: int = None) -> pd.DataFrame:
         """获取历史 K 线数据"""
-        return self._retry_wrapper(get_history_data, stock_code, days)
+        return self._retry_wrapper(get_history_data, stock_code, days, klt=klt)
 
     def fetch_minute_data(self, stock_code: str) -> Dict:
         """获取分钟级行情数据"""

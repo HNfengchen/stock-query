@@ -189,13 +189,14 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     analyzer = get_analyzer()
 
     try:
-        stock_code, stock_name, market = fetcher.resolve_stock_code(stock_input)
-        logger.info(f"股票代码解析: {stock_code} ({stock_name})")
+        stock_code, stock_name, market, market_tag = fetcher.resolve_stock_code(stock_input)
+        logger.info(f"股票代码解析: {stock_code} ({stock_name})" + (f" [{market_tag}]" if market_tag else ""))
     except Exception as e:
         logger.warn(f"股票代码解析失败，使用原始输入: {e}")
         stock_code = stock_input
         stock_name = stock_input
         market = None
+        market_tag = ""
 
     info = None
     fund_flow = None
@@ -211,9 +212,9 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
             data_source = db_data.get("source", "unknown")
             if db_data.get("history_df") is not None and not db_data["history_df"].empty:
                 history_df = db_data["history_df"]
-            if db_data.get("stock_info"):
+            if db_data.get("stock_info") and len(db_data["stock_info"]) > 0:
                 info = db_data["stock_info"]
-            if db_data.get("fund_flow"):
+            if db_data.get("fund_flow") and len(db_data["fund_flow"]) > 0:
                 fund_flow = db_data["fund_flow"]
             if db_data.get("indicators"):
                 indicators = db_data["indicators"]
@@ -239,6 +240,18 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         except Exception:
             logger.warn("历史数据获取失败")
 
+    # 获取周线/月线数据用于多时间框架分析
+    weekly_df = None
+    monthly_df = None
+    try:
+        weekly_df = fetcher.fetch_history_data(stock_code, days=240, klt=101)
+    except Exception as e:
+        logger.warn(f"周线数据获取失败: {e}")
+    try:
+        monthly_df = fetcher.fetch_history_data(stock_code, days=120, klt=102)
+    except Exception as e:
+        logger.warn(f"月线数据获取失败: {e}")
+
     info = info or {}
     fund_flow = fund_flow or {}
 
@@ -251,9 +264,20 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     if history_df is None or history_df.empty:
         return None
 
+    # 清理 stock_info 中名称的市场标识前缀
+    # efinance在除权除息日会在名称前加XD/XR/DR且可能截断原名称字符
+    # 因此优先使用resolve_stock_code已清理的名称
+    raw_info_name = info.get("名称", stock_code) if info else stock_code
+    if not market_tag:
+        for prefix in ("XD", "XR", "DR", "N"):
+            if raw_info_name.startswith(prefix) and len(raw_info_name) > len(prefix):
+                market_tag = prefix
+                break
+
     all_data = {
         "stock_code": stock_code,
-        "stock_name": stock_name or info.get("名称", stock_code),
+        "stock_name": stock_name or stock_code,
+        "market_tag": market_tag,
         "market": market,
         "stock_info": info,
         "fund_flow": fund_flow,
@@ -307,7 +331,29 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     tech_score = technical_analysis.get('score', 0.5) if technical_analysis else 0.5
     logger.info(f"技术分析完成: 评分={tech_score:.2f}")
 
-    fund_flow_analysis = analyzer.analyze_fund_flow(fund_flow, info)
+    # 计算周线/月线技术指标和评分
+    weekly_indicators = None
+    weekly_tech = None
+    monthly_indicators = None
+    monthly_tech = None
+
+    if weekly_df is not None and not weekly_df.empty and len(weekly_df) >= 10:
+        try:
+            weekly_indicators = calculate_all_indicators(weekly_df)
+            weekly_current_price = float(weekly_df["收盘"].iloc[-1])
+            weekly_tech = analyzer.analyze_technical(weekly_indicators, weekly_current_price)
+        except Exception as e:
+            logger.warn(f"周线技术分析失败: {e}")
+
+    if monthly_df is not None and not monthly_df.empty and len(monthly_df) >= 5:
+        try:
+            monthly_indicators = calculate_all_indicators(monthly_df)
+            monthly_current_price = float(monthly_df["收盘"].iloc[-1])
+            monthly_tech = analyzer.analyze_technical(monthly_indicators, monthly_current_price)
+        except Exception as e:
+            logger.warn(f"月线技术分析失败: {e}")
+
+    fund_flow_analysis = analyzer.analyze_fund_flow(fund_flow, info, history_df=history_df)
     fund_score = fund_flow_analysis.get('score', 0.5) if fund_flow_analysis else 0.5
     logger.info(f"资金流向分析完成: 评分={fund_score:.2f}")
 
@@ -329,10 +375,19 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
 
     price_prediction = analyzer.predict_price_range(all_data, indicators, stock_code, trading_signal)
 
+    # 多时间框架趋势一致性检测
+    multi_timeframe = None
+    if weekly_tech or monthly_tech:
+        multi_timeframe = analyzer.analyze_multi_timeframe(
+            technical_analysis, weekly_tech, monthly_tech
+        )
+        logger.info(f"多时间框架: {multi_timeframe.get('description', 'N/A')}")
+
     validation = analyzer.cross_validate_analysis(
         analysis, price_prediction, indicators,
         trading_signal, position_type, current_price,
         history_df=history_df,
+        multi_timeframe=multi_timeframe
     )
 
     trading_signal["reason"] = validation.get("validation_note", "")
@@ -446,7 +501,8 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
 
     result = {
         "stock_code": stock_code,
-        "stock_name": stock_name or info.get('名称', stock_code),
+        "stock_name": stock_name or stock_code,
+        "market_tag": market_tag,
         "analysis": {
             "technical_score": clean_float(tech_score),
             "fund_flow_score": clean_float(fund_score),

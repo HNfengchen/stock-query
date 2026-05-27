@@ -561,7 +561,7 @@ def get_minute_data(stock_code: str) -> Dict:
     return minute_data
 
 
-def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) -> pd.DataFrame:
+def get_history_data(stock_code: str, days: int = 60, stock_name: str = None, klt: int = None) -> pd.DataFrame:
     """
     获取历史K线数据
 
@@ -569,6 +569,7 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
         stock_code: 股票代码
         days: 获取天数
         stock_name: 股票名称，用于ST股检测
+        klt: K线类型，1=日线, 101=周线, 102=月线，None默认日线
 
     返回:
         DataFrame: 历史K线数据
@@ -627,7 +628,7 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
             print(f"xtquant 获取历史数据失败: {e}")
 
     try:
-        df = _call_with_timeout(ef.stock.get_quote_history, stock_code, klt=101, fqt=1)
+        df = _call_with_timeout(ef.stock.get_quote_history, stock_code, klt=klt if klt else 1, fqt=1)
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             df = clean_data(df, stock_code, stock_name)
             result = df.tail(days)
@@ -681,12 +682,14 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None) ->
 
         bs.login()
         try:
+            _freq_map = {None: 'd', 1: 'd', 101: 'w', 102: 'm'}
+            _frequency = _freq_map.get(klt, 'd')
             rs = bs.query_history_k_data_plus(
                 f"{'sh' if market == 'sh' else 'sz'}.{stock_code}",
                 "date,open,high,low,close,volume,amount,turn,peTTM,pbMRQ",
                 start_date=start_date,
                 end_date=end_date,
-                frequency="d",
+                frequency=_frequency,
                 adjustflag="2",
             )
 

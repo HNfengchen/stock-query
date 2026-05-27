@@ -23,6 +23,7 @@ export interface StockInput {
 export interface WatchlistItem {
   stock_code: string
   stock_name: string
+  market_tag?: string
   position_status: '已持有' | '未持有'
   cost_price?: number | null
   added_at?: string
@@ -225,6 +226,7 @@ export interface AnalysisDetails {
 export interface AnalysisResult {
   stock_code: string
   stock_name: string
+  market_tag?: string
   analysis: {
     technical_score: number
     fund_flow_score: number

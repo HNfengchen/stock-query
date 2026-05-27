@@ -380,7 +380,162 @@ class StockAnalyzer:
 
         return result
 
-    def analyze_fund_flow(self, fund_flow: Dict, stock_info: Dict = None) -> Dict:
+    def analyze_multi_timeframe(self, daily_tech: Dict, weekly_tech: Dict = None, monthly_tech: Dict = None) -> Dict:
+        """多时间框架趋势一致性检测
+
+        基于日线/周线/月线技术评分判断趋势一致性，
+        当小级别与大级别趋势矛盾时返回较低的confidence_factor。
+
+        Args:
+            daily_tech: 日线技术分析结果（含score字段）
+            weekly_tech: 周线技术分析结果（可选）
+            monthly_tech: 月线技术分析结果（可选）
+
+        Returns:
+            {
+                "consistency": str,  # 一致性判定结果
+                "confidence_factor": float,  # confidence调整因子
+                "daily_score": float,
+                "weekly_score": float or None,
+                "monthly_score": float or None,
+                "description": str  # 人类可读描述
+            }
+        """
+        daily_score = daily_tech.get("score", 0.5) if daily_tech else 0.5
+        weekly_score = weekly_tech.get("score", 0.5) if weekly_tech else None
+        monthly_score = monthly_tech.get("score", 0.5) if monthly_tech else None
+
+        # 周线/月线数据不可用时，不干预
+        if weekly_score is None and monthly_score is None:
+            return {
+                "consistency": "no_data",
+                "confidence_factor": 1.0,
+                "daily_score": daily_score,
+                "weekly_score": None,
+                "monthly_score": None,
+                "description": "周线/月线数据不可用，不进行多时间框架判定"
+            }
+
+        # 定义看多/看空阈值
+        bull_threshold = 0.6
+        bear_threshold = 0.4
+
+        daily_bull = daily_score > bull_threshold
+        daily_bear = daily_score < bear_threshold
+        weekly_bull = weekly_score is not None and weekly_score > bull_threshold
+        weekly_bear = weekly_score is not None and weekly_score < bear_threshold
+        monthly_bull = monthly_score is not None and monthly_score > bull_threshold
+        monthly_bear = monthly_score is not None and monthly_score < bear_threshold
+
+        # 三周期一致看多
+        if daily_bull and weekly_bull and monthly_bull:
+            return {
+                "consistency": "aligned_bull",
+                "confidence_factor": 1.2,
+                "daily_score": daily_score,
+                "weekly_score": weekly_score,
+                "monthly_score": monthly_score,
+                "description": "日线/周线/月线趋势一致看多"
+            }
+
+        # 三周期一致看空
+        if daily_bear and weekly_bear and monthly_bear:
+            return {
+                "consistency": "aligned_bear",
+                "confidence_factor": 1.2,
+                "daily_score": daily_score,
+                "weekly_score": weekly_score,
+                "monthly_score": monthly_score,
+                "description": "日线/周线/月线趋势一致看空"
+            }
+
+        # 日线看多但周线看空（最强矛盾信号）
+        if daily_bull and weekly_bear:
+            return {
+                "consistency": "counter_trend",
+                "confidence_factor": 0.6,
+                "daily_score": daily_score,
+                "weekly_score": weekly_score,
+                "monthly_score": monthly_score,
+                "description": "日线看多但周线看空，逆势信号"
+            }
+
+        # 日线看空但周线看多（可能只是回调）
+        if daily_bear and weekly_bull:
+            # 月线也看多 → 回调买入机会
+            if monthly_bull:
+                return {
+                    "consistency": "pullback_opportunity",
+                    "confidence_factor": 0.9,
+                    "daily_score": daily_score,
+                    "weekly_score": weekly_score,
+                    "monthly_score": monthly_score,
+                    "description": "大周期上涨中的回调"
+                }
+            else:
+                return {
+                    "consistency": "counter_trend",
+                    "confidence_factor": 0.7,
+                    "daily_score": daily_score,
+                    "weekly_score": weekly_score,
+                    "monthly_score": monthly_score,
+                    "description": "日线看空周线看多但月线不确认"
+                }
+
+        # 日线看多但月线看空（周线不矛盾时）
+        if daily_bull and monthly_bear and not weekly_bear:
+            return {
+                "consistency": "monthly_conflict",
+                "confidence_factor": 0.8,
+                "daily_score": daily_score,
+                "weekly_score": weekly_score,
+                "monthly_score": monthly_score,
+                "description": "日线看多但月线看空，中长期趋势矛盾"
+            }
+
+        # 日线看空但月线看空（周线不矛盾时）
+        if daily_bear and monthly_bear and not weekly_bull:
+            return {
+                "consistency": "aligned_bear",
+                "confidence_factor": 1.1,
+                "daily_score": daily_score,
+                "weekly_score": weekly_score,
+                "monthly_score": monthly_score,
+                "description": "日线/月线趋势一致看空"
+            }
+
+        # 仅周线可用的情况
+        if weekly_score is not None and monthly_score is None:
+            if daily_bull and weekly_bull:
+                return {
+                    "consistency": "aligned_bull",
+                    "confidence_factor": 1.1,
+                    "daily_score": daily_score,
+                    "weekly_score": weekly_score,
+                    "monthly_score": None,
+                    "description": "日线/周线趋势一致看多"
+                }
+            if daily_bear and weekly_bear:
+                return {
+                    "consistency": "aligned_bear",
+                    "confidence_factor": 1.1,
+                    "daily_score": daily_score,
+                    "weekly_score": weekly_score,
+                    "monthly_score": None,
+                    "description": "日线/周线趋势一致看空"
+                }
+
+        # 其他混合情况
+        return {
+            "consistency": "mixed",
+            "confidence_factor": 1.0,
+            "daily_score": daily_score,
+            "weekly_score": weekly_score,
+            "monthly_score": monthly_score,
+            "description": "多时间框架信号混合，不干预"
+        }
+
+    def analyze_fund_flow(self, fund_flow: Dict, stock_info: Dict = None, history_df=None) -> Dict:
         """分析资金流向（使用相对指标）"""
         result = {"score": 0, "details": {}, "trend": "neutral"}
 
@@ -480,10 +635,56 @@ class StockAnalyzer:
             stock_code = ""
         if not stock_code and fund_flow:
             stock_code = fund_flow.get("代码", "")
-        if stock_code and str(stock_code).startswith(("51", "15", "16", "18", "50", "52", "56", "58")):
+
+        etf_prefixes = ("51", "15", "16", "18", "50", "52", "56", "58")
+        etf_keywords = ("ETF", "LOF", "基金", "联接")
+
+        is_etf = False
+        if stock_code and str(stock_code).startswith(etf_prefixes):
+            is_etf = True
+        else:
+            stock_name = ""
+            if stock_info and isinstance(stock_info, dict):
+                stock_name = stock_info.get("股票名称", "") or stock_info.get("名称", "")
+            if stock_name and any(kw in str(stock_name) for kw in etf_keywords):
+                is_etf = True
+
+        if is_etf:
             score = 0.5 + (score - 0.5) * 0.5  # 向0.5收缩
             result["score"] = score
             result["is_etf"] = True
+
+        # 量价背离校验
+        result["price_volume_divergence"] = False
+        if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+            try:
+                close_prices = history_df["收盘"].tail(3).astype(float).values
+                if len(close_prices) >= 3:
+                    # 线性回归斜率
+                    x = np.arange(len(close_prices))
+                    slope = np.polyfit(x, close_prices, 1)[0]
+                    mean_price = np.mean(close_prices)
+                    normalized_slope = slope / mean_price if mean_price > 0 else 0
+
+                    slope_threshold = 0.005  # 判定为趋势的最小斜率
+                    if normalized_slope < -slope_threshold and score >= 0.7:
+                        # 价格下跌但资金评分偏高 → 背离
+                        divergence_strength = min(1.0, abs(normalized_slope) / 0.02)
+                        shrink_factor = 0.3 + 0.4 * (1 - divergence_strength)
+                        score = 0.5 + (score - 0.5) * shrink_factor
+                        result["score"] = score
+                        result["price_volume_divergence"] = True
+                        analyzer_logger.info(f"量价背离: 价格下跌但资金评分偏高, 收缩后={score:.3f}, 斜率={normalized_slope:.4f}")
+                    elif normalized_slope > slope_threshold and score <= 0.3:
+                        # 价格上涨但资金评分偏低 → 背离
+                        divergence_strength = min(1.0, abs(normalized_slope) / 0.02)
+                        shrink_factor = 0.3 + 0.4 * (1 - divergence_strength)
+                        score = 0.5 + (score - 0.5) * shrink_factor
+                        result["score"] = score
+                        result["price_volume_divergence"] = True
+                        analyzer_logger.info(f"量价背离: 价格上涨但资金评分偏低, 收缩后={score:.3f}, 斜率={normalized_slope:.4f}")
+            except Exception as e:
+                analyzer_logger.debug(f"量价背离检测异常: {e}")
 
         return result
 
@@ -790,6 +991,7 @@ class StockAnalyzer:
         position_status: str = "未持有",
         current_price: float = 0,
         history_df: "pd.DataFrame" = None,
+        multi_timeframe: Dict = None,
     ) -> Dict:
         """
         对分析结论进行交叉验证，返回可解释的一致性、风控与行动门控结果。
@@ -1026,6 +1228,43 @@ class StockAnalyzer:
         if rsi_value is not None and rsi_value <= 30 and weighted_bearish > weighted_bullish:
             conflicts.append("RSI超卖与看空方向背离")
 
+        # P3: 量价背离冲突检测
+        fund_flow_result = analysis.get("fund_flow", {})
+        if fund_flow_result.get("price_volume_divergence"):
+            conflicts.append("量价背离：资金流向与价格趋势不一致")
+            conflict_penalty_extra = 0.1
+        else:
+            conflict_penalty_extra = 0.0
+
+        # 多时间框架冲突检测
+        mtf_consistency = None
+        mtf_factor = 1.0
+        if multi_timeframe and multi_timeframe.get("consistency", "no_data") != "no_data":
+            mtf_consistency = multi_timeframe["consistency"]
+            mtf_factor = multi_timeframe.get("confidence_factor", 1.0)
+
+            if mtf_consistency == "counter_trend":
+                conflicts.append("日线与周线趋势矛盾")
+            elif mtf_consistency == "monthly_conflict":
+                conflicts.append("日线与月线趋势矛盾")
+            elif mtf_consistency in ("aligned_bull", "aligned_bear"):
+                supporting_factors.append("多周期趋势一致")
+            elif mtf_consistency == "pullback_opportunity":
+                supporting_factors.append("大周期上涨中的回调")
+
+        # 独立检测：近3日价格变化率与资金评分背离
+        if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+            try:
+                recent_closes = history_df["收盘"].tail(4).astype(float).values
+                if len(recent_closes) >= 2:
+                    price_change_3d = (recent_closes[-1] - recent_closes[0]) / recent_closes[0] * 100
+                    if price_change_3d < -3 and fund_score >= 0.7:
+                        conflicts.append("近期下跌但资金评分偏高")
+                    elif price_change_3d > 3 and fund_score <= 0.3:
+                        conflicts.append("近期上涨但资金评分偏低")
+            except Exception:
+                pass
+
         if active_weight_total > 0:
             bull_ratio = weighted_bullish / active_weight_total
             bear_ratio = weighted_bearish / active_weight_total
@@ -1048,10 +1287,37 @@ class StockAnalyzer:
         else:
             direction_consensus = "mixed"
 
-        conflict_penalty = min(max_conflict_penalty, len(conflicts) * per_conflict_penalty)
+        conflict_penalty = min(max_conflict_penalty, len(conflicts) * per_conflict_penalty) + conflict_penalty_extra
         agreement_ratio = max(bull_ratio, bear_ratio)
         confidence = (signal_score * signal_weight) + (agreement_ratio * agreement_weight) - conflict_penalty - missing_penalty
         confidence = round(max(0.0, min(1.0, confidence)), 3)
+
+        # 多时间框架confidence调整
+        if mtf_factor != 1.0:
+            confidence_before_mtf = confidence
+            confidence = round(max(0.0, min(1.0, confidence * mtf_factor)), 3)
+
+        # P2: HMM状态信号约束
+        hmm_state = None
+        hmm_decay = 1.0
+        if self._dynamic_weight_manager and self._dynamic_weight_manager.enabled:
+            hmm_state = self._dynamic_weight_manager.get_regime()
+
+        decay_map = vcfg.get("hmm_confidence_decay", {
+            "高波动": 0.75, "趋势下跌": 0.85, "低波动震荡": 0.9, "趋势上涨": 1.0
+        })
+        if hmm_state and hmm_state in decay_map:
+            hmm_decay = decay_map[hmm_state]
+            confidence_before_decay = confidence
+            confidence = round(max(0.0, min(1.0, confidence * hmm_decay)), 3)
+
+        # P2: 高波动状态下action_gate门槛提升
+        gate_boost = vcfg.get("hmm_gate_threshold_boost", {})
+        allow_buy_threshold = 0.7
+        cautious_buy_threshold = 0.5
+        if hmm_state == "高波动" and "高波动" in gate_boost:
+            allow_buy_threshold = gate_boost["高波动"].get("allow_buy", 0.8)
+            cautious_buy_threshold = gate_boost["高波动"].get("cautious_buy", 0.6)
 
         if conflicts or direction_consensus == "mixed":
             risk_level = "medium"
@@ -1064,9 +1330,9 @@ class StockAnalyzer:
 
         signal = trading_signal.get("signal", "hold")
         if position_status == "未持有":
-            if signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= 0.7:
+            if signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= allow_buy_threshold:
                 action_gate = "allow_buy"
-            elif signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= 0.5:
+            elif signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= cautious_buy_threshold:
                 action_gate = "cautious_buy"
             elif direction_consensus == "bearish" and confidence >= 0.6:
                 action_gate = "avoid_buy"
@@ -1079,6 +1345,41 @@ class StockAnalyzer:
                 action_gate = "cautious_hold"
             else:
                 action_gate = "hold_position"
+
+        # P5: 交叉验证关键日志
+        analyzer_logger.info(
+            f"交叉验证评分: 技术={technical_score:.3f}, 资金={fund_score:.3f}, "
+            f"情绪={sentiment_score:.3f}, 信号={signal_score:.3f}"
+        )
+        analyzer_logger.info(
+            f"方向共识: {direction_consensus}, bull_ratio={bull_ratio:.3f}, "
+            f"bear_ratio={bear_ratio:.3f}, active_weight={active_weight_total:.3f}"
+        )
+        if supporting_factors:
+            analyzer_logger.info(f"支持因素: {', '.join(supporting_factors)}")
+        if opposing_factors:
+            analyzer_logger.info(f"反对因素: {', '.join(opposing_factors)}")
+        if conflicts:
+            analyzer_logger.info(f"冲突检测: {', '.join(conflicts)}")
+        analyzer_logger.info(
+            f"置信度: signal={signal_score:.3f}*{signal_weight} + "
+            f"agreement={agreement_ratio:.3f}*{agreement_weight} - "
+            f"conflict={conflict_penalty:.3f} - missing={missing_penalty:.3f} = {confidence:.3f}"
+        )
+        if hmm_decay < 1.0:
+            analyzer_logger.info(
+                f"HMM衰减: 状态={hmm_state}, 衰减因子={hmm_decay}, "
+                f"confidence {confidence_before_decay:.3f}→{confidence:.3f}"
+            )
+        if mtf_factor != 1.0:
+            analyzer_logger.info(
+                f"多时间框架: consistency={mtf_consistency}, factor={mtf_factor}, "
+                f"confidence {confidence_before_mtf:.3f}→{confidence:.3f}"
+            )
+        analyzer_logger.info(
+            f"行动门控: action_gate={action_gate}, risk_level={risk_level}, "
+            f"position={position_status}, original_signal={signal}"
+        )
 
         missing_note = f"缺失维度：{'、'.join(missing_dimensions)}。" if missing_dimensions else ""
 

@@ -287,6 +287,7 @@ async function removeStock(stockCode: string) {
           <div class="stock-info">
             <span class="stock-code font-mono">{{ item.stock_code }}</span>
             <span class="stock-name">{{ item.stock_name }}</span>
+            <span v-if="item.market_tag" class="market-tag">{{ item.market_tag }}</span>
           </div>
           <el-tag
             :type="item.position_status === '已持有' ? 'success' : 'info'"
@@ -598,6 +599,17 @@ async function removeStock(stockCode: string) {
 .stock-name {
   font-size: 13px;
   color: var(--text-muted, rgba(255, 255, 255, 0.38));
+}
+
+.market-tag {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 0 3px;
+  border-radius: 2px;
+  margin-left: 3px;
+  background: rgba(64, 158, 255, 0.15);
+  color: #409eff;
+  border: 1px solid rgba(64, 158, 255, 0.3);
 }
 
 .status-tag {

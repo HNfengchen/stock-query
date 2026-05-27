@@ -144,16 +144,16 @@ class MonteCarloStressTest:
             _rl.setLevel(max(_orig_rl_level, 30))
 
             tech_result = analyzer.analyze_technical(indicators, current_price)
-            fund_result = analyzer.analyze_fund_flow({})
-            # 压力测试中传入空 market_data 避免触发 efinance API 调用
-            sentiment_result = analyzer.analyze_market_sentiment({"stock_info": {}}, market_data={})
+            fund_result = {"score": 0.5, "trend": "neutral"}
+            # 压力测试中使用中性情绪评分，避免触发外部API调用
+            sentiment_result = {"score": 0.5, "details": {}, "market_status": "未知"}
 
             analysis = {
                 "technical": tech_result,
                 "fund_flow": fund_result,
                 "sentiment": sentiment_result,
             }
-            signal_result = analyzer.generate_trading_signal(analysis, market_data={})
+            signal_result = analyzer.generate_trading_signal(analysis, market_data=None)
 
             _al.setLevel(_orig_al_level)
             _rl.setLevel(_orig_rl_level)
@@ -167,10 +167,13 @@ class MonteCarloStressTest:
     def _signal_flipped(self, original: str, new: str) -> bool:
         buy_signals = {"strong_buy", "buy"}
         sell_signals = {"sell", "watch"}
+        neutral_signals = {"hold"}
 
-        if original in buy_signals and new in sell_signals:
+        if original in buy_signals and new in (sell_signals | neutral_signals):
             return True
-        if original in sell_signals and new in buy_signals:
+        if original in sell_signals and new in (buy_signals | neutral_signals):
+            return True
+        if original in neutral_signals and new in (buy_signals | sell_signals):
             return True
         return False
 
