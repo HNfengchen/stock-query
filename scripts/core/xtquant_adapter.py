@@ -230,14 +230,14 @@ class XtQuantAdapter:
         """解析用户输入，返回完整股票代码和市场"""
         stock_code, market = self.parse_stock_code(user_input)
         if not stock_code:
-            return None, None, None
+            return None, None, None, ""
 
         full_code = f"{stock_code}.{'SH' if market == 'sh' else 'SZ'}"
 
         info = self.get_stock_info(full_code)
         stock_name = info.get("名称", user_input)
 
-        return full_code, stock_name, market
+        return full_code, stock_name, market, ""
 
 
 class DataValidator:

@@ -41,7 +41,7 @@ async def create_watchlist_item(req: WatchlistRequest):
     try:
         fetcher = get_fetcher()
         loop = asyncio.get_running_loop()
-        stock_code, stock_name, _ = await loop.run_in_executor(
+        stock_code, stock_name, market, market_tag = await loop.run_in_executor(
             None, fetcher.resolve_stock_code, req.stock_input
         )
         item = add_to_watchlist(stock_code, stock_name, req.position_status, req.cost_price)

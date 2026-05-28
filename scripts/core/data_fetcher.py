@@ -473,9 +473,10 @@ class DataFetcher:
         fetcher_logger.info("=" * 50)
         fetcher_logger.info(f"[DataFetcher] 开始获取股票数据: {stock_input}")
 
-        stock_code, stock_name, market = self.resolve_stock_code(stock_input)
+        stock_code, stock_name, market, market_tag = self.resolve_stock_code(stock_input)
         fetcher_logger.info(
             f"[DataFetcher] 解析股票代码: {stock_code}, 名称: {stock_name}, 市场: {market}"
+            + (f", 标识: {market_tag}" if market_tag else "")
         )
 
         db_result = None
