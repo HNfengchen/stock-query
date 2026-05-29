@@ -627,6 +627,7 @@ class StockAnalyzer:
             "history": history,
         }
         result["trend"] = trend
+        analyzer_logger.info(f"资金评分(原始): {score:.3f}, trend={trend}, inflow_ratio={inflow_ratio:.4f}")
 
         # ETF/基金类：资金流数据含义与个股不同（申赎行为而非主力控盘），降权
         if stock_info and isinstance(stock_info, dict):
@@ -650,9 +651,11 @@ class StockAnalyzer:
                 is_etf = True
 
         if is_etf:
+            score_before_shrink = score
             score = 0.5 + (score - 0.5) * 0.5  # 向0.5收缩
             result["score"] = score
             result["is_etf"] = True
+            analyzer_logger.info(f"ETF降权: score {score_before_shrink:.3f}→{score:.3f}")
 
         # 量价背离校验
         result["price_volume_divergence"] = False
@@ -686,6 +689,7 @@ class StockAnalyzer:
             except Exception as e:
                 analyzer_logger.debug(f"量价背离检测异常: {e}")
 
+        analyzer_logger.info(f"资金评分(最终): {result.get('score', 0):.3f}, divergence={result.get('price_volume_divergence', False)}")
         return result
 
     def analyze_market_sentiment(self, data: Dict, market_data: Dict = None) -> Dict:
@@ -1253,6 +1257,7 @@ class StockAnalyzer:
                 supporting_factors.append("大周期上涨中的回调")
 
         # 独立检测：近3日价格变化率与资金评分背离
+        surge_risk = False
         if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
             try:
                 recent_closes = history_df["收盘"].tail(4).astype(float).values
@@ -1262,6 +1267,14 @@ class StockAnalyzer:
                         conflicts.append("近期下跌但资金评分偏高")
                     elif price_change_3d > 3 and fund_score <= 0.3:
                         conflicts.append("近期上涨但资金评分偏低")
+
+                # 大涨后回调风险检测
+                if len(recent_closes) >= 2:
+                    last_change = (recent_closes[-1] - recent_closes[-2]) / recent_closes[-2] * 100
+                    if last_change >= 5 and direction_consensus == "bullish":
+                        surge_risk = True
+                        conflicts.append(f"单日大涨{last_change:.1f}%后追高风险")
+                        opposing_factors.append(f"追高风险(单日+{last_change:.1f}%)")
             except Exception:
                 pass
 
@@ -1331,9 +1344,15 @@ class StockAnalyzer:
         signal = trading_signal.get("signal", "hold")
         if position_status == "未持有":
             if signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= allow_buy_threshold:
-                action_gate = "allow_buy"
+                if surge_risk:
+                    action_gate = "cautious_buy"
+                else:
+                    action_gate = "allow_buy"
             elif signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= cautious_buy_threshold:
-                action_gate = "cautious_buy"
+                if surge_risk:
+                    action_gate = "watch"
+                else:
+                    action_gate = "cautious_buy"
             elif direction_consensus == "bearish" and confidence >= 0.6:
                 action_gate = "avoid_buy"
             else:
@@ -1379,6 +1398,7 @@ class StockAnalyzer:
         analyzer_logger.info(
             f"行动门控: action_gate={action_gate}, risk_level={risk_level}, "
             f"position={position_status}, original_signal={signal}"
+            + (f", 追高风险降级" if surge_risk else "")
         )
 
         missing_note = f"缺失维度：{'、'.join(missing_dimensions)}。" if missing_dimensions else ""

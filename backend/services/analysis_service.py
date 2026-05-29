@@ -210,12 +210,15 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         db_data = get_or_fetch_stock_data(stock_code, force_refresh=False, days=120)
         if db_data:
             data_source = db_data.get("source", "unknown")
+            logger.info(f"数据来源: {data_source}")
             if db_data.get("history_df") is not None and not db_data["history_df"].empty:
                 history_df = db_data["history_df"]
             if db_data.get("stock_info") and len(db_data["stock_info"]) > 0:
                 info = db_data["stock_info"]
+                logger.info(f"stock_info从DB获取({len(info)}字段)")
             if db_data.get("fund_flow") and len(db_data["fund_flow"]) > 0:
                 fund_flow = db_data["fund_flow"]
+                logger.info(f"fund_flow从DB获取({len(fund_flow)}字段)")
             if db_data.get("indicators"):
                 indicators = db_data["indicators"]
     except Exception as e:
@@ -227,13 +230,25 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     if info is None and not is_fallback:
         try:
             info = fetcher.fetch_stock_info(stock_code)
+            logger.info("stock_info通过API补充获取")
         except Exception:
             logger.warn("stock_info获取失败")
+    else:
+        if info is not None:
+            logger.info(f"stock_info来源: DB缓存({len(info)}字段)")
+        else:
+            logger.info("stock_info: 无数据(API补充已跳过)")
     if fund_flow is None and not is_fallback:
         try:
             fund_flow = fetcher.fetch_fund_flow(stock_code)
+            logger.info("fund_flow通过API补充获取")
         except Exception:
             logger.warn("fund_flow获取失败")
+    else:
+        if fund_flow is not None:
+            logger.info(f"fund_flow来源: DB缓存({len(fund_flow)}字段)")
+        else:
+            logger.info("fund_flow: 无数据(API补充已跳过)")
     if history_df is None:
         try:
             history_df = fetcher.fetch_history_data(stock_code, days=120)
