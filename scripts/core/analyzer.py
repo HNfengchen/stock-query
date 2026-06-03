@@ -1240,6 +1240,58 @@ class StockAnalyzer:
         else:
             conflict_penalty_extra = 0.0
 
+        # 资金-ML方向背离检测
+        fund_ml_diverged = False
+        fund_ml_divergence_penalty = 0.0
+        ml_prediction = price_prediction.get("ml_prediction")
+        ml_direction = ml_prediction.get("direction") if ml_prediction else None
+        if ml_direction is not None:
+            if fund_score >= 0.7 and ml_direction == 0:
+                fund_ml_diverged = True
+                conflicts.append("资金强流入但ML预测看跌")
+                opposing_factors.append("资金-ML方向背离")
+                fund_ml_divergence_penalty = 0.1 + 0.1 * (fund_score - 0.7) / 0.3
+                analyzer_logger.info(
+                    f"资金-ML背离: 资金评分={fund_score:.3f}(强流入), ML direction=0(看跌), "
+                    f"惩罚={fund_ml_divergence_penalty:.3f}"
+                )
+            elif fund_score <= 0.3 and ml_direction == 1:
+                fund_ml_diverged = True
+                conflicts.append("资金强流出但ML预测看涨")
+                supporting_factors.append("资金-ML方向背离(反向)")
+                fund_ml_divergence_penalty = 0.1 + 0.1 * (0.3 - fund_score) / 0.3
+                analyzer_logger.info(
+                    f"资金-ML背离: 资金评分={fund_score:.3f}(强流出), ML direction=1(看涨), "
+                    f"惩罚={fund_ml_divergence_penalty:.3f}"
+                )
+
+        # 布林带极窄检测
+        boll_narrow = False
+        boll = indicators.get("BOLL", {})
+        if isinstance(boll, dict) and current_price > 0:
+            boll_latest = boll.get("latest", {})
+            if isinstance(boll_latest, dict):
+                boll_upper = boll_latest.get("upper")
+                boll_lower = boll_latest.get("lower")
+                try:
+                    if hasattr(boll_upper, "iloc"):
+                        boll_upper = float(boll_upper.iloc[-1])
+                        boll_lower = float(boll_lower.iloc[-1])
+                    elif boll_upper is not None and boll_lower is not None:
+                        boll_upper = float(boll_upper)
+                        boll_lower = float(boll_lower)
+                    if boll_upper is not None and boll_lower is not None and boll_lower > 0:
+                        boll_width_ratio = (boll_upper - boll_lower) / current_price
+                        if boll_width_ratio < 0.005:
+                            boll_narrow = True
+                            conflicts.append(f"布林带极度收敛(宽度{boll_width_ratio*100:.2f}%)，方向不确定")
+                            analyzer_logger.info(
+                                f"布林带极窄: upper={boll_upper:.2f}, lower={boll_lower:.2f}, "
+                                f"宽度比={boll_width_ratio*100:.2f}%"
+                            )
+                except (TypeError, ValueError, IndexError):
+                    pass
+
         # 多时间框架冲突检测
         mtf_consistency = None
         mtf_factor = 1.0
@@ -1302,7 +1354,7 @@ class StockAnalyzer:
 
         conflict_penalty = min(max_conflict_penalty, len(conflicts) * per_conflict_penalty) + conflict_penalty_extra
         agreement_ratio = max(bull_ratio, bear_ratio)
-        confidence = (signal_score * signal_weight) + (agreement_ratio * agreement_weight) - conflict_penalty - missing_penalty
+        confidence = (signal_score * signal_weight) + (agreement_ratio * agreement_weight) - conflict_penalty - missing_penalty - fund_ml_divergence_penalty
         confidence = round(max(0.0, min(1.0, confidence)), 3)
 
         # 多时间框架confidence调整
@@ -1346,10 +1398,14 @@ class StockAnalyzer:
             if signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= allow_buy_threshold:
                 if surge_risk:
                     action_gate = "cautious_buy"
+                elif fund_ml_diverged or boll_narrow:
+                    action_gate = "cautious_buy"
                 else:
                     action_gate = "allow_buy"
             elif signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= cautious_buy_threshold:
                 if surge_risk:
+                    action_gate = "watch"
+                elif fund_ml_diverged or boll_narrow:
                     action_gate = "watch"
                 else:
                     action_gate = "cautious_buy"
@@ -1383,7 +1439,9 @@ class StockAnalyzer:
         analyzer_logger.info(
             f"置信度: signal={signal_score:.3f}*{signal_weight} + "
             f"agreement={agreement_ratio:.3f}*{agreement_weight} - "
-            f"conflict={conflict_penalty:.3f} - missing={missing_penalty:.3f} = {confidence:.3f}"
+            f"conflict={conflict_penalty:.3f} - missing={missing_penalty:.3f}"
+            + (f" - fund_ml_div={fund_ml_divergence_penalty:.3f}" if fund_ml_divergence_penalty > 0 else "")
+            + f" = {confidence:.3f}"
         )
         if hmm_decay < 1.0:
             analyzer_logger.info(
@@ -1395,10 +1453,17 @@ class StockAnalyzer:
                 f"多时间框架: consistency={mtf_consistency}, factor={mtf_factor}, "
                 f"confidence {confidence_before_mtf:.3f}→{confidence:.3f}"
             )
+        downgrade_reasons = []
+        if surge_risk:
+            downgrade_reasons.append("追高风险降级")
+        if fund_ml_diverged:
+            downgrade_reasons.append("资金-ML背离降级")
+        if boll_narrow:
+            downgrade_reasons.append("布林带极窄降级")
         analyzer_logger.info(
             f"行动门控: action_gate={action_gate}, risk_level={risk_level}, "
             f"position={position_status}, original_signal={signal}"
-            + (f", 追高风险降级" if surge_risk else "")
+            + (f", {','.join(downgrade_reasons)}" if downgrade_reasons else "")
         )
 
         missing_note = f"缺失维度：{'、'.join(missing_dimensions)}。" if missing_dimensions else ""
