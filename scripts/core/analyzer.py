@@ -986,6 +986,107 @@ class StockAnalyzer:
 
         return persistence
 
+    @staticmethod
+    def calc_chip_distribution(history_df, current_price, decay=0.97, price_bins=200):
+        """
+        筹码分布算法：基于历史成交量分布估算各价位持仓成本。
+
+        参数:
+            history_df: DataFrame，需包含 最高/最低/收盘/成交量 列
+            current_price: 当前价格
+            decay: 每日衰减系数，越久远的交易筹码越可能已换手
+            price_bins: 价格分桶数
+
+        返回:
+            dict: profit_ratio(获利盘), trapped_ratio(套牢盘),
+                  concentration(集中度), resistance_price(压力位),
+                  support_price(支撑位), peak_price(峰值价位)
+        """
+        if history_df is None or history_df.empty or current_price <= 0:
+            return None
+        try:
+            highs = history_df["最高"].astype(float).values
+            lows = history_df["最低"].astype(float).values
+            volumes = history_df["成交量"].astype(float).values
+        except (KeyError, ValueError):
+            return None
+
+        n = len(highs)
+        if n < 10:
+            return None
+
+        # 确定价格范围
+        price_min = lows.min() * 0.98
+        price_max = highs.max() * 1.02
+        if price_max <= price_min:
+            return None
+
+        # 创建价格桶
+        bin_edges = np.linspace(price_min, price_max, price_bins + 1)
+        chip_dist = np.zeros(price_bins)
+
+        # 从最新到最旧，逐日分配筹码
+        for i in range(n - 1, -1, -1):
+            days_ago = n - 1 - i
+            h, l, vol = highs[i], lows[i], volumes[i]
+            if vol <= 0 or h <= l:
+                continue
+
+            weight = vol * (decay ** days_ago)
+
+            low_bin = max(0, np.searchsorted(bin_edges, l, side="left") - 1)
+            high_bin = min(price_bins - 1, np.searchsorted(bin_edges, h, side="right") - 1)
+
+            if high_bin >= low_bin:
+                per_bin = weight / (high_bin - low_bin + 1)
+                chip_dist[low_bin:high_bin + 1] += per_bin
+
+        # 归一化
+        total = chip_dist.sum()
+        if total == 0:
+            return None
+        chip_dist = chip_dist / total
+
+        # 获利盘比例：当前价以下的筹码占比
+        current_bin = min(np.searchsorted(bin_edges, current_price, side="right") - 1, price_bins - 1)
+        profit_ratio = chip_dist[:current_bin + 1].sum()
+
+        # 筹码集中度：90%筹码分布的价格宽度 / 当前价
+        cumsum = np.cumsum(chip_dist)
+        low_5_idx = max(0, np.searchsorted(cumsum, 0.05))
+        high_95_idx = min(price_bins - 1, np.searchsorted(cumsum, 0.95))
+        concentration = (bin_edges[high_95_idx] - bin_edges[low_5_idx]) / current_price
+
+        # 套牢盘压力位：当前价以上筹码最密集的价位
+        above_current = chip_dist[current_bin + 1:]
+        resistance_price = None
+        if above_current.sum() > 0.01:
+            resistance_idx = np.argmax(above_current) + current_bin + 1
+            resistance_price = round((bin_edges[resistance_idx] + bin_edges[resistance_idx + 1]) / 2, 2)
+
+        # 支撑位：当前价以下筹码最密集的价位
+        below_current = chip_dist[:current_bin + 1]
+        support_price = None
+        if below_current.sum() > 0.01:
+            support_idx = np.argmax(below_current)
+            support_price = round((bin_edges[support_idx] + bin_edges[support_idx + 1]) / 2, 2)
+
+        # 套牢盘占比
+        trapped_ratio = chip_dist[current_bin + 1:].sum()
+
+        # 筹码峰值价位
+        peak_idx = np.argmax(chip_dist)
+        peak_price = round((bin_edges[peak_idx] + bin_edges[peak_idx + 1]) / 2, 2)
+
+        return {
+            "profit_ratio": round(float(profit_ratio), 4),
+            "trapped_ratio": round(float(trapped_ratio), 4),
+            "concentration": round(float(concentration), 4),
+            "resistance_price": resistance_price,
+            "support_price": support_price,
+            "peak_price": peak_price,
+        }
+
     def cross_validate_analysis(
         self,
         analysis: Dict,
@@ -996,6 +1097,7 @@ class StockAnalyzer:
         current_price: float = 0,
         history_df: "pd.DataFrame" = None,
         multi_timeframe: Dict = None,
+        hmm_state_override: str = None,
     ) -> Dict:
         """
         对分析结论进行交叉验证，返回可解释的一致性、风控与行动门控结果。
@@ -1155,14 +1257,23 @@ class StockAnalyzer:
 
         # MACD/RSI/KDJ/BOLL信号已通过technical_score计入，不再独立计权
         macd_signal = indicators.get("MACD", {}).get("signal", "")
+        macd_bearish = macd_signal in ("死叉", "死叉确认", "空头")
         if macd_signal in ("金叉", "金叉确认", "多头"):
             supporting_factors.append(f"MACD{macd_signal}")
-        elif macd_signal in ("死叉", "死叉确认", "空头"):
+        elif macd_bearish:
             opposing_factors.append(f"MACD{macd_signal}")
 
         kdj_signal = indicators.get("KDJ", {}).get("signal", "")
-        if kdj_signal in ("金叉", "超卖"):
+        if kdj_signal == "金叉":
             supporting_factors.append(f"KDJ{kdj_signal}")
+        elif kdj_signal == "超卖":
+            # MACD空头+KDJ超卖 = 下跌中继，不应作为支持因素
+            if macd_bearish:
+                conflicts.append("MACD空头+KDJ超卖，下跌中继反弹空间有限")
+                opposing_factors.append("KDJ超卖(下跌趋势中)")
+                analyzer_logger.info("MACD空头+KDJ超卖: 标记为下跌中继，不作为支持因素")
+            else:
+                supporting_factors.append(f"KDJ{kdj_signal}")
         elif kdj_signal in ("死叉", "超买"):
             opposing_factors.append(f"KDJ{kdj_signal}")
 
@@ -1179,7 +1290,13 @@ class StockAnalyzer:
             if rsi_value is not None and rsi_value >= 70:
                 opposing_factors.append("RSI接近超买")
             elif rsi_value is not None and rsi_value <= 30:
-                supporting_factors.append("RSI接近超卖反弹区")
+                # MACD空头+RSI超卖 = 下跌趋势中的超卖，反弹空间有限
+                if macd_bearish:
+                    conflicts.append(f"MACD空头+RSI超卖({rsi_value:.0f})，下跌趋势中反弹空间有限")
+                    opposing_factors.append(f"RSI超卖({rsi_value:.0f},下跌趋势中)")
+                    analyzer_logger.info(f"MACD空头+RSI超卖({rsi_value:.0f}): 标记为下跌趋势中超卖，不作为支持因素")
+                else:
+                    supporting_factors.append("RSI接近超卖反弹区")
             elif rsi_signal == "偏强":
                 supporting_factors.append("RSI偏强")
             elif rsi_signal == "偏弱":
@@ -1263,6 +1380,56 @@ class StockAnalyzer:
                 analyzer_logger.info(
                     f"资金-ML背离: 资金评分={fund_score:.3f}(强流出), ML direction=1(看涨), "
                     f"惩罚={fund_ml_divergence_penalty:.3f}"
+                )
+
+        # 筹码分布修正资金-ML背离
+        chip_result = None
+        chip_relieve = 0.0  # 筹码修正量（减少惩罚）
+        if fund_ml_diverged and history_df is not None and not history_df.empty and current_price > 0:
+            chip_result = self.calc_chip_distribution(history_df, current_price)
+            if chip_result is not None:
+                profit_ratio = chip_result["profit_ratio"]
+                trapped_ratio = chip_result["trapped_ratio"]
+                resistance = chip_result["resistance_price"]
+
+                # 场景1：资金流入+ML看跌 + 获利盘>85%且无压力位 → 趋势延续，削弱ML否决权
+                if fund_score >= 0.7 and ml_direction == 0:
+                    if profit_ratio > 0.85 and (resistance is None or resistance > current_price * 1.05):
+                        chip_relieve = fund_ml_divergence_penalty * 0.6  # 减免60%惩罚
+                        supporting_factors.append(f"筹码获利盘{profit_ratio:.0%}+无压力位，趋势延续")
+                        analyzer_logger.info(
+                            f"筹码修正: 获利盘={profit_ratio:.1%}, 无压力位, "
+                            f"趋势延续信号→惩罚减免{chip_relieve:.3f}({chip_relieve/fund_ml_divergence_penalty:.0%})"
+                        )
+                    elif profit_ratio > 0.85 and resistance is not None and resistance <= current_price * 1.05:
+                        # 获利盘重但压力位近 → 获利回吐风险，维持惩罚
+                        conflicts.append(f"获利盘{profit_ratio:.0%}+压力位{resistance}近，回吐风险")
+                        analyzer_logger.info(
+                            f"筹码确认: 获利盘={profit_ratio:.1%}, 压力位={resistance}(近), 回吐风险高"
+                        )
+
+                # 场景2：资金流出+ML看涨 + 套牢盘>70% → 反弹遇抛压，加强ML看跌判断
+                elif fund_score <= 0.3 and ml_direction == 1:
+                    if trapped_ratio > 0.70:
+                        chip_relieve = -fund_ml_divergence_penalty * 0.3  # 额外增加30%惩罚
+                        opposing_factors.append(f"筹码套牢盘{trapped_ratio:.0%}，反弹遇抛压")
+                        analyzer_logger.info(
+                            f"筹码修正: 套牢盘={trapped_ratio:.1%}, 反弹遇抛压→惩罚增加{abs(chip_relieve):.3f}"
+                        )
+
+                # 计算最终惩罚
+                fund_ml_divergence_penalty = max(0.0, fund_ml_divergence_penalty - chip_relieve)
+                if chip_relieve > 0:
+                    # 惩罚减免后力度较弱，不再构成背离降级条件
+                    if fund_ml_divergence_penalty < 0.10:
+                        fund_ml_diverged = False
+                        analyzer_logger.info("筹码修正后惩罚<0.10，取消资金-ML背离降级")
+
+                analyzer_logger.info(
+                    f"筹码分布: 获利盘={profit_ratio:.1%}, 套牢盘={trapped_ratio:.1%}, "
+                    f"集中度={chip_result['concentration']:.1%}, "
+                    f"压力位={resistance}, 支撑位={chip_result['support_price']}, "
+                    f"峰值={chip_result['peak_price']}"
                 )
 
         # 布林带极窄检测
@@ -1363,9 +1530,28 @@ class StockAnalyzer:
             confidence = round(max(0.0, min(1.0, confidence * mtf_factor)), 3)
 
         # P2: HMM状态信号约束
-        hmm_state = None
+        # 优先使用直接传入的HMM状态，其次从HMM检测器实时获取（避免并发共享状态问题）
+        hmm_state = hmm_state_override
         hmm_decay = 1.0
-        if self._dynamic_weight_manager and self._dynamic_weight_manager.enabled:
+        if not hmm_state and self._hmm_detector is not None and self._hmm_detector.is_ready():
+            # 直接从HMM检测器获取当前股票的市场状态，而非依赖共享的DynamicWeightManager
+            try:
+                if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+                    closes = history_df["收盘"].values.astype(np.float64)
+                    if len(closes) > 20:
+                        returns = np.diff(closes) / closes[:-1]
+                        vols = np.zeros_like(returns)
+                        window = 20
+                        for i in range(len(returns)):
+                            start = max(0, i - window + 1)
+                            vols[i] = np.std(returns[start:i + 1]) if i > 0 else 0.0
+                        volumes = history_df["成交量"].values.astype(np.float64) if "成交量" in history_df.columns else np.ones(len(closes))
+                        volume_changes = np.diff(volumes) / (volumes[:-1] + 1e-10)
+                        hmm_result = self._hmm_detector.predict(returns, vols, volume_changes)
+                        hmm_state = hmm_result.get("current_state", "")
+            except Exception:
+                pass
+        if not hmm_state and self._dynamic_weight_manager and self._dynamic_weight_manager.enabled:
             hmm_state = self._dynamic_weight_manager.get_regime()
 
         decay_map = vcfg.get("hmm_confidence_decay", {
@@ -1375,6 +1561,10 @@ class StockAnalyzer:
             hmm_decay = decay_map[hmm_state]
             confidence_before_decay = confidence
             confidence = round(max(0.0, min(1.0, confidence * hmm_decay)), 3)
+            analyzer_logger.info(
+                f"HMM衰减: state={hmm_state}, decay={hmm_decay}, "
+                f"confidence {confidence_before_decay:.3f}→{confidence:.3f}"
+            )
 
         # P2: 高波动状态下action_gate门槛提升
         gate_boost = vcfg.get("hmm_gate_threshold_boost", {})

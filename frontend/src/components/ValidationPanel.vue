@@ -547,6 +547,13 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
   flex-wrap: wrap;
 }
 
+.factor-list .el-tag {
+  white-space: normal;
+  word-break: break-all;
+  height: auto;
+  line-height: 1.4;
+}
+
 .v-note {
   margin-top: 12px;
   padding-top: 12px;
