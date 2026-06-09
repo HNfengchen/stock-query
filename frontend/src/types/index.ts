@@ -80,6 +80,24 @@ export interface AnalysisValidation {
   missing_dimensions?: string[]
   signal_persistence?: Record<string, { direction: string; days: number }>
   stress_test?: StressTestResult
+  systemic_shock?: SystemicShock
+  var_stop_loss?: VarStopLoss
+}
+
+export interface SystemicShock {
+  is_shock: boolean
+  z_score: number
+  shock_probability: number
+  bounce_probability: number
+  confidence_adj: number
+  daily_return: number
+}
+
+export interface VarStopLoss {
+  var_95: number
+  var_stop_price: number
+  should_stop: boolean
+  stop_reason: string
 }
 
 export interface StressTestResult {
@@ -315,6 +333,14 @@ export interface BatchQuickSummary {
   action_gate: string
   recommendation: string
   index: number
+  validation?: AnalysisValidation
+  market_data?: any
+  stock_info?: any
+  indicators?: any
+  price_prediction?: any
+  position_strategy?: any
+  analysis?: any
+  hmm_state?: any
 }
 
 export interface ProgressMessage {

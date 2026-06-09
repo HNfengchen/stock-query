@@ -151,7 +151,11 @@ export async function batchQuickAnalyzeStream(
         } else if (line.startsWith('data: ')) {
           const dataStr = line.slice(6)
           try {
-            const data = JSON.parse(dataStr)
+            const sanitizedStr = dataStr
+              .replace(/:\s*NaN\s*([,}])/g, ': null$1')
+              .replace(/:\s*Infinity\s*([,}])/g, ': null$1')
+              .replace(/:\s*-Infinity\s*([,}])/g, ': null$1')
+            const data = JSON.parse(sanitizedStr)
             if (currentEvent === 'progress') {
               onProgress(data)
             } else if (currentEvent === 'complete') {

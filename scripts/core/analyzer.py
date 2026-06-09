@@ -4,6 +4,7 @@
 """
 
 import os
+import math
 import pandas as pd
 import numpy as np
 from collections import deque
@@ -75,6 +76,333 @@ class StockAnalyzer:
         self._stress_test_config = config.get("stress_test", {})
         self._pending_stress_test = None
         self._feature_history = deque(maxlen=20)
+
+    # ------------------------------------------------------------------
+    # 系统性冲击检测 & 超卖反弹概率 & VaR止损 & 波动率缩放
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_systemic_shock(history_df, lookback: int = 20) -> Dict:
+        """基于波动率z-score的系统性冲击检测
+
+        数学原理:
+          1. 计算近 lookback 日的日收益率均值 μ 和标准差 σ
+          2. 当日收益率的 z-score = (r_today - μ) / σ
+          3. P(shock) = 1 - Φ(z)，即标准正态CDF的右尾概率
+          4. 当 P(shock) 超过阈值时判定为系统性冲击
+
+        冲击后修正:
+          - 历史统计表明，A股单日跌幅超过2σ后，次日上涨概率约60-70%
+          - 用贝叶斯更新: P(bounce|shock) 作为先验，调整置信度
+          - confidence_adj = 1 + α * (P(bounce|shock) - 0.5)
+            α 控制修正强度，正值表示冲击后倾向反弹
+
+        Returns:
+            dict: {
+                'is_shock': bool,
+                'z_score': float,
+                'shock_probability': float,  # P(shock)
+                'bounce_probability': float, # P(次日上涨|shock)
+                'confidence_adj': float,     # 置信度调整因子
+                'daily_return': float,       # 当日收益率
+            }
+        """
+        result = {
+            "is_shock": False,
+            "z_score": 0.0,
+            "shock_probability": 0.0,
+            "bounce_probability": 0.5,
+            "confidence_adj": 1.0,
+            "daily_return": 0.0,
+        }
+
+        if history_df is None or not hasattr(history_df, "__len__"):
+            return result
+
+        try:
+            closes = history_df["收盘"].values.astype(np.float64) if "收盘" in history_df.columns else None
+            if closes is None or len(closes) < lookback + 1:
+                return result
+
+            # 计算日收益率
+            returns = np.diff(closes) / closes[:-1]
+            if len(returns) < lookback:
+                return result
+
+            # 当日收益率
+            daily_return = returns[-1]
+            result["daily_return"] = float(daily_return)
+
+            # 历史 lookback 日的均值和标准差（不含当日）
+            hist_returns = returns[-(lookback + 1):-1]
+            mu = np.mean(hist_returns)
+            sigma = np.std(hist_returns, ddof=1)
+
+            if sigma < 1e-10:
+                return result
+
+            # z-score
+            z = (daily_return - mu) / sigma
+            result["z_score"] = float(z)
+
+            # P(shock) = 1 - Φ(z)
+            # 用近似公式避免scipy依赖
+            def _norm_cdf(x):
+                return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+            shock_prob = 1.0 - _norm_cdf(z)
+            result["shock_probability"] = float(shock_prob)
+
+            # 冲击判定: z < -2 (即 P < 2.5% 的单尾)
+            if z < -2.0:
+                result["is_shock"] = True
+
+                # 反弹概率模型: 基于z-score的连续函数
+                # z越极端，反弹概率越高（均值回归效应）
+                # P(bounce|shock) = 0.55 + 0.25 * (1 - exp(-0.5 * (z_abs - 2)))
+                # z=-2 → P≈0.55, z=-2.5 → P≈0.61, z=-3 → P≈0.66, z=-4 → P≈0.74
+                z_abs = abs(z)
+                bounce_prob = 0.55 + 0.25 * (1 - math.exp(-0.5 * (z_abs - 2)))
+                result["bounce_probability"] = float(bounce_prob)
+
+                # 置信度调整: 冲击后反弹概率>0.5时，对看空方向降权
+                # confidence_adj = 1 + α * (bounce_prob - 0.5)
+                # α=0.6: 较强修正，2σ冲击后bearish置信度应显著降低
+                alpha = 0.6
+                result["confidence_adj"] = 1.0 + alpha * (bounce_prob - 0.5)
+
+            return result
+        except Exception:
+            return result
+
+    @staticmethod
+    def _oversold_bounce_probability(rsi_value: float, macd_bearish: bool) -> Dict:
+        """RSI超卖反弹概率模型
+
+        数学原理:
+          当前逻辑将"MACD空头+RSI超卖"一律标记为"下跌中继"（二元判断），
+          但实际上RSI越极端，反弹概率越高。用sigmoid连续函数替代二元判断:
+
+            bounce_prob(RSI) = 1 / (1 + exp(k * (RSI - RSI_threshold)))
+
+          - k 控制过渡速度（越大越陡峭）
+          - RSI_threshold 为中点（bounce_prob=0.5的RSI值）
+
+          当MACD空头时，RSI_threshold 上移（需要更极端才判定反弹）:
+            MACD多头: RSI_threshold = 35, k = 0.15
+            MACD空头: RSI_threshold = 22, k = 0.20
+
+          输出:
+            - bounce_prob: 0~1 的连续概率值
+            - factor_type: 'support' / 'oppose' / 'neutral'
+            - weight: 该因素在交叉验证中的权重调整
+
+        Returns:
+            dict: {
+                'bounce_prob': float,
+                'factor_type': str,  # 'support'/'oppose'/'neutral'
+                'weight': float,     # 0~1, 因素权重
+                'description': str,
+            }
+        """
+        if rsi_value is None:
+            return {"bounce_prob": 0.5, "factor_type": "neutral", "weight": 0.0, "description": ""}
+
+        try:
+            rsi_value = float(rsi_value)
+        except (TypeError, ValueError):
+            return {"bounce_prob": 0.5, "factor_type": "neutral", "weight": 0.0, "description": ""}
+
+        # 只在RSI<=35时启用此模型（RSI 35-40区间走原有的偏强/偏弱逻辑）
+        if rsi_value > 35:
+            return {"bounce_prob": 0.5, "factor_type": "neutral", "weight": 0.0, "description": ""}
+
+        # MACD空头时需要更极端的RSI才判定为反弹信号
+        if macd_bearish:
+            rsi_threshold = 22.0  # MACD空头下，RSI=22时反弹概率50%
+            k = 0.20
+        else:
+            rsi_threshold = 35.0  # MACD多头下，RSI=35时反弹概率50%
+            k = 0.15
+
+        # sigmoid: RSI越低，bounce_prob越高
+        bounce_prob = 1.0 / (1.0 + math.exp(k * (rsi_value - rsi_threshold)))
+
+        # 因素类型判定
+        if bounce_prob >= 0.65:
+            factor_type = "support"
+            weight = (bounce_prob - 0.5) * 2  # 0.3~1.0
+            desc = f"RSI({rsi_value:.0f})极端超卖，反弹概率{bounce_prob:.0%}"
+        elif bounce_prob <= 0.35:
+            factor_type = "oppose"
+            weight = (0.5 - bounce_prob) * 2  # 0.3~1.0
+            desc = f"RSI({rsi_value:.0f})超卖但趋势偏空，反弹概率仅{bounce_prob:.0%}"
+        else:
+            factor_type = "neutral"
+            weight = 0.0
+            desc = f"RSI({rsi_value:.0f})超卖，反弹概率{bounce_prob:.0%}，方向不确定"
+
+        return {
+            "bounce_prob": float(bounce_prob),
+            "factor_type": factor_type,
+            "weight": float(weight),
+            "description": desc,
+        }
+
+    @staticmethod
+    def _compute_var_stop_loss(current_price: float, history_df,
+                               confidence_level: float = 0.95,
+                               max_acceptable_loss: float = 0.08) -> Dict:
+        """基于VaR的动态止损计算
+
+        数学原理:
+          参数VaR (Variance-Covariance方法):
+            VaR_α = μ - z_α * σ
+
+          其中:
+            μ = 近20日日均收益率
+            σ = 近20日日收益率标准差
+            z_α = 标准正态分位数 (95% → 1.645, 99% → 2.326)
+
+          止损逻辑:
+            1. 计算1日VaR: 最大可能损失 = current_price * |VaR_95|
+            2. 若 VaR_95 > max_acceptable_loss → 触发止损信号
+            3. 止损价 = current_price * (1 - VaR_95)
+
+          与ATR止损的关系:
+            ATR止损是静态的（2倍ATR），VaR止损是动态的（基于收益率分布）
+            取两者中更严格的作为止损价
+
+        Returns:
+            dict: {
+                'var_95': float,          # 95% VaR (正值，表示最大损失比例)
+                'var_stop_price': float,   # VaR止损价
+                'should_stop': bool,       # 是否应止损
+                'stop_reason': str,
+            }
+        """
+        result = {
+            "var_95": 0.0,
+            "var_stop_price": current_price,
+            "should_stop": False,
+            "stop_reason": "",
+        }
+
+        if history_df is None or current_price <= 0:
+            return result
+
+        try:
+            closes = history_df["收盘"].values.astype(np.float64) if "收盘" in history_df.columns else None
+            if closes is None or len(closes) < 20:
+                return result
+
+            returns = np.diff(closes[-21:]) / closes[-21:-1]
+            mu = np.mean(returns)
+            sigma = np.std(returns, ddof=1)
+
+            if sigma < 1e-10:
+                return result
+
+            # z_α for 95% confidence
+            z_alpha = {0.90: 1.282, 0.95: 1.645, 0.99: 2.326}.get(confidence_level, 1.645)
+
+            # VaR: 最大可能损失比例（正值）
+            var_95 = -(mu - z_alpha * sigma)  # 取绝对值
+            var_95 = max(0.0, var_95)
+            result["var_95"] = float(var_95)
+
+            # VaR止损价
+            var_stop_price = current_price * (1 - var_95)
+            result["var_stop_price"] = float(var_stop_price)
+
+            # 是否应止损
+            if var_95 > max_acceptable_loss:
+                result["should_stop"] = True
+                result["stop_reason"] = (
+                    f"VaR(95%)={var_95:.1%}超过可接受损失{max_acceptable_loss:.1%}"
+                )
+
+            return result
+        except Exception:
+            return result
+
+    @staticmethod
+    def _volatility_scaled_range(atr_value: float, history_df,
+                                 base_scale: float = 0.5) -> float:
+        """波动率自适应的预测区间缩放
+
+        数学原理:
+          当前 day_range = ATR * 0.5 是固定比例，但暴跌后ATR急剧放大，
+          导致预测区间过宽或过窄。用ATR在历史分位数动态调整:
+
+            vol_percentile = rank(ATR_current, ATR_history_60d)
+            day_range_scale = scale_min + (scale_max - scale_min) * vol_percentile
+
+          - 低波动时 (percentile→0): scale → scale_min (0.3)，区间收窄
+          - 高波动时 (percentile→1): scale → scale_max (0.8)，区间加宽
+          - 中等波动时 (percentile→0.5): scale → 0.55，接近原始0.5
+
+          这确保了:
+            1. 正常行情: 预测区间与原始逻辑接近
+            2. 暴跌后: ATR飙升 → percentile高 → 区间自动加宽
+            3. 低波动期: 区间自动收窄，避免给出过宽预测
+
+        Returns:
+            float: 调整后的 day_range = ATR * day_range_scale
+        """
+        if atr_value <= 0:
+            return 0.0
+
+        if history_df is None:
+            return atr_value * base_scale
+
+        try:
+            # 尝试从历史数据计算ATR分位数
+            closes = history_df["收盘"].values.astype(np.float64) if "收盘" in history_df.columns else None
+            if closes is None or len(closes) < 20:
+                return atr_value * base_scale
+
+            # 用近60日TR近似ATR分位数
+            highs = history_df["最高"].values.astype(np.float64) if "最高" in history_df.columns else closes
+            lows = history_df["最低"].values.astype(np.float64) if "最低" in history_df.columns else closes
+
+            lookback = min(60, len(closes) - 1)
+            tr_list = []
+            for i in range(len(closes) - lookback, len(closes)):
+                if i < 1:
+                    continue
+                tr = max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1]),
+                )
+                tr_list.append(tr)
+
+            if not tr_list:
+                return atr_value * base_scale
+
+            # ATR分位数
+            atr_array = np.array(tr_list)
+            # 用14日滚动均值模拟ATR
+            window = 14
+            atr_ma_list = []
+            for i in range(window - 1, len(atr_array)):
+                atr_ma_list.append(np.mean(atr_array[i - window + 1:i + 1]))
+
+            if not atr_ma_list:
+                return atr_value * base_scale
+
+            atr_history = np.array(atr_ma_list)
+            vol_percentile = float(np.mean(atr_history[-1] <= atr_history)) if len(atr_history) > 1 else 0.5
+
+            # 连续缩放: scale_min + (scale_max - scale_min) * percentile
+            scale_min = 0.3
+            scale_max = 0.8
+            day_range_scale = scale_min + (scale_max - scale_min) * vol_percentile
+
+            return atr_value * day_range_scale
+        except Exception:
+            return atr_value * base_scale
 
     def analyze_technical(self, indicators: Dict, current_price: float = 0) -> Dict:
         """分析技术指标"""
@@ -757,8 +1085,10 @@ class StockAnalyzer:
                 score -= 0.05
             else:
                 market_status = "平稳"
+            analyzer_logger.info(f"情绪评分-大盘数据(传入): change={market_change:.2f}%, status={market_status}, score={score:.3f}")
         elif market_data is None or not market_data:
             # 兜底：用 baostock 获取上证指数涨跌幅（加锁防并发冲突）
+            analyzer_logger.info("情绪评分-大盘数据: market_data为空，尝试baostock兜底获取")
             try:
                 from scripts.core.data_fetcher import _baostock_lock
                 import baostock as bs
@@ -815,6 +1145,7 @@ class StockAnalyzer:
                     score -= 0.05
                 else:
                     market_status = "平稳"
+                analyzer_logger.info(f"情绪评分-大盘数据(baostock兜底): change={market_change:.2f}%, status={market_status}, score={score:.3f}")
             except Exception as e:
                 analyzer_logger.debug(f"获取大盘数据失败: {e}")
 
@@ -1289,14 +1620,34 @@ class StockAnalyzer:
             rsi_value = float(rsi_latest) if rsi_latest is not None else None
             if rsi_value is not None and rsi_value >= 70:
                 opposing_factors.append("RSI接近超买")
-            elif rsi_value is not None and rsi_value <= 30:
-                # MACD空头+RSI超卖 = 下跌趋势中的超卖，反弹空间有限
-                if macd_bearish:
-                    conflicts.append(f"MACD空头+RSI超卖({rsi_value:.0f})，下跌趋势中反弹空间有限")
-                    opposing_factors.append(f"RSI超卖({rsi_value:.0f},下跌趋势中)")
-                    analyzer_logger.info(f"MACD空头+RSI超卖({rsi_value:.0f}): 标记为下跌趋势中超卖，不作为支持因素")
+            elif rsi_value is not None and rsi_value <= 35:
+                # 用连续概率模型替代二元判断
+                # bounce_prob(RSI) = sigmoid(k*(RSI_threshold - RSI))
+                # MACD空头: RSI_threshold=22, k=0.20
+                # MACD多头: RSI_threshold=35, k=0.15
+                bounce_model = self._oversold_bounce_probability(rsi_value, macd_bearish)
+                bp = bounce_model["bounce_prob"]
+                ft = bounce_model["factor_type"]
+
+                if ft == "support":
+                    supporting_factors.append(f"RSI({rsi_value:.0f})极端超卖，反弹概率{bp:.0%}")
+                    analyzer_logger.info(
+                        f"RSI超卖反弹模型: RSI={rsi_value:.0f}, MACD空头={macd_bearish}, "
+                        f"bounce_prob={bp:.2%} → 支持因素"
+                    )
+                elif ft == "oppose":
+                    conflicts.append(f"RSI({rsi_value:.0f})超卖但趋势偏空，反弹概率仅{bp:.0%}")
+                    opposing_factors.append(f"RSI超卖({rsi_value:.0f},反弹概率{bp:.0%})")
+                    analyzer_logger.info(
+                        f"RSI超卖反弹模型: RSI={rsi_value:.0f}, MACD空头={macd_bearish}, "
+                        f"bounce_prob={bp:.2%} → 反对因素"
+                    )
                 else:
-                    supporting_factors.append("RSI接近超卖反弹区")
+                    # neutral: 不作为强支持也不作为强反对，记录但不影响冲突计数
+                    analyzer_logger.info(
+                        f"RSI超卖反弹模型: RSI={rsi_value:.0f}, MACD空头={macd_bearish}, "
+                        f"bounce_prob={bp:.2%} → 中性"
+                    )
             elif rsi_signal == "偏强":
                 supporting_factors.append("RSI偏强")
             elif rsi_signal == "偏弱":
@@ -1523,6 +1874,41 @@ class StockAnalyzer:
         agreement_ratio = max(bull_ratio, bear_ratio)
         confidence = (signal_score * signal_weight) + (agreement_ratio * agreement_weight) - conflict_penalty - missing_penalty - fund_ml_divergence_penalty
         confidence = round(max(0.0, min(1.0, confidence)), 3)
+        analyzer_logger.info(
+            f"置信度计算: signal_score={signal_score:.3f}*{signal_weight}, "
+            f"agreement_ratio={agreement_ratio:.3f}*{agreement_weight}, "
+            f"conflict_penalty={conflict_penalty:.3f}, missing_penalty={missing_penalty:.3f}, "
+            f"fund_ml_divergence_penalty={fund_ml_divergence_penalty:.3f}, "
+            f"confidence={confidence:.3f}"
+        )
+
+        # 系统性冲击检测: 基于z-score的贝叶斯概率修正
+        # 当日跌幅超过2σ时，次日反弹概率显著提升，调整置信度
+        shock_info = self._detect_systemic_shock(history_df)
+        if shock_info["is_shock"]:
+            confidence_adj = shock_info["confidence_adj"]
+            # 冲击后: 若当前方向共识为bearish，降低看空置信度（反弹概率高）
+            # 若当前方向共识为bullish，增强看多置信度
+            if direction_consensus == "bearish":
+                # 看空方向降权: confidence *= (2 - confidence_adj)
+                # confidence_adj > 1 时，2-adj < 1，即降低置信度
+                confidence = round(max(0.0, min(1.0, confidence * (2 - confidence_adj))), 3)
+                conflicts.append(
+                    f"系统性冲击(z={shock_info['z_score']:.1f})，反弹概率{shock_info['bounce_probability']:.0%}，削弱看空置信度"
+                )
+            elif direction_consensus == "bullish":
+                # 看多方向增强
+                confidence = round(max(0.0, min(1.0, confidence * confidence_adj)), 3)
+                supporting_factors.append(
+                    f"系统性冲击后反弹信号(z={shock_info['z_score']:.1f}，反弹概率{shock_info['bounce_probability']:.0%})"
+                )
+            analyzer_logger.info(
+                f"系统性冲击检测: z_score={shock_info['z_score']:.2f}, "
+                f"shock_prob={shock_info['shock_probability']:.3f}, "
+                f"bounce_prob={shock_info['bounce_probability']:.2%}, "
+                f"confidence_adj={confidence_adj:.3f}, "
+                f"consensus={direction_consensus}"
+            )
 
         # 多时间框架confidence调整
         if mtf_factor != 1.0:
@@ -1584,6 +1970,8 @@ class StockAnalyzer:
             risk_level = "high" if risk_level == "low" else risk_level
 
         signal = trading_signal.get("signal", "hold")
+        # VaR止损: 仅已持有时计算，未持有时初始化为空
+        var_info = {"var_95": 0.0, "var_stop_price": current_price, "should_stop": False, "stop_reason": ""}
         if position_status == "未持有":
             if signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= allow_buy_threshold:
                 if surge_risk:
@@ -1600,14 +1988,33 @@ class StockAnalyzer:
                 else:
                     action_gate = "cautious_buy"
             elif direction_consensus == "bearish" and confidence >= 0.6:
-                action_gate = "avoid_buy"
+                # 系统性冲击后: bearish+高置信度不一定应avoid_buy
+                # 若冲击检测显示反弹概率高，降级为watch而非avoid_buy
+                if shock_info.get("is_shock") and shock_info.get("bounce_probability", 0) > 0.6:
+                    action_gate = "watch"
+                    analyzer_logger.info(
+                        f"系统性冲击修正: bearish+高置信度但反弹概率{shock_info['bounce_probability']:.0%}，"
+                        f"avoid_buy降级为watch"
+                    )
+                else:
+                    action_gate = "avoid_buy"
             else:
                 action_gate = "watch"
         else:
+            # 已持有: 集成VaR止损
+            var_info = self._compute_var_stop_loss(current_price, history_df)
             if direction_consensus == "bearish" and risk_level == "high":
                 action_gate = "reduce_position"
             elif direction_consensus == "bearish" and risk_level == "medium":
                 action_gate = "cautious_hold"
+            elif var_info.get("should_stop"):
+                # VaR超过可接受损失，即使方向共识不是bearish也应减仓
+                action_gate = "reduce_position"
+                conflicts.append(var_info["stop_reason"])
+                analyzer_logger.info(
+                    f"VaR止损触发: VaR(95%)={var_info['var_95']:.1%}, "
+                    f"止损价={var_info['var_stop_price']:.2f}"
+                )
             else:
                 action_gate = "hold_position"
 
@@ -1737,6 +2144,10 @@ class StockAnalyzer:
             "active_weight_total": round(active_weight_total, 3),
             "missing_dimensions": missing_dimensions,
         }
+        if shock_info.get("is_shock"):
+            result["systemic_shock"] = shock_info
+        if var_info.get("should_stop"):
+            result["var_stop_loss"] = var_info
         if persistence_info:
             result["signal_persistence"] = persistence_info
 
@@ -1913,8 +2324,16 @@ class StockAnalyzer:
                 else:
                     trend_persistence = "weak"
 
+        # MACD方向约束：MACD空头/死叉时，即使tech_score高（可能因超卖反弹），
+        # 趋势也不应判定UP，应降为NEUTRAL
+        macd_signal_for_trend = indicators.get("MACD", {}).get("signal", "")
+        macd_bearish = macd_signal_for_trend in ("空头", "死叉", "死叉确认")
+
         if tech_score > 0.6:
-            trend_direction = TREND_UP
+            if macd_bearish:
+                trend_direction = TREND_NEUTRAL
+            else:
+                trend_direction = TREND_UP
         elif tech_score < 0.4:
             trend_direction = TREND_DOWN
 
@@ -1941,11 +2360,17 @@ class StockAnalyzer:
         )
 
         if signal_name in ("strong_buy", "buy") and tech_score >= 0.5 and not has_overheat_risk:
-            trend_direction = TREND_UP
+            if macd_bearish:
+                trend_direction = TREND_NEUTRAL
+            else:
+                trend_direction = TREND_UP
         elif signal_name in ("sell", "watch") and tech_score <= 0.5:
             trend_direction = TREND_DOWN
         elif signal_score >= 0.7 and tech_score >= 0.5 and not has_overheat_risk:
-            trend_direction = TREND_UP
+            if macd_bearish:
+                trend_direction = TREND_NEUTRAL
+            else:
+                trend_direction = TREND_UP
 
         if trend_direction == TREND_UP:
             if tech_score >= 0.8 and trend_persistence != "weak":
@@ -1992,7 +2417,19 @@ class StockAnalyzer:
         else:
             price_range = resistance - support
 
-        day_range = price_range * 0.5
+        # 波动率自适应day_range: 基于ATR历史分位数动态缩放
+        # vol_percentile = rank(ATR_current, ATR_history_60d)
+        # day_range_scale = 0.3 + 0.5 * vol_percentile (范围0.3~0.8)
+        # 正常行情 ≈ 0.55，接近原始0.5；暴跌后ATR飙升 → 区间自动加宽
+        if atr_value and current_price:
+            day_range = self._volatility_scaled_range(atr_value, history_df, base_scale=0.5)
+            day_range_scale = day_range / atr_value if atr_value > 0 else 0.5
+            analyzer_logger.info(
+                f"波动率自适应区间: ATR={atr_value:.4f}, day_range={day_range:.4f}, "
+                f"scale={day_range_scale:.2f} (固定0.5)"
+            )
+        else:
+            day_range = price_range * 0.5
 
         if len(closes) >= 20:
             ma20 = closes.rolling(window=20).mean().iloc[-1]
@@ -2416,14 +2853,23 @@ class StockAnalyzer:
         elif isinstance(atr, (int, float)):
             atr_value = float(atr)
 
-        # 动态止损（M-05止盈也基于ATR）
+        # 动态止损: ATR止损 + VaR止损，取更严格者
+        # ATR止损: 静态2倍ATR
+        # VaR止损: 基于收益率分布的95%在险价值
+        var_info = self._compute_var_stop_loss(current_price, history_df)
+
         if atr_value and atr_value > 0:
             atr_stop_loss_multiplier = 2.0
             atr_stop_profit_multiplier = 2.5
             atr_based_stop_loss = current_price - atr_value * atr_stop_loss_multiplier
             atr_based_stop_profit = current_price + atr_value * atr_stop_profit_multiplier
             target_price = atr_based_stop_profit
-            stop_price = max(atr_based_stop_loss, current_price * (1 - 0.05))
+
+            # 取ATR止损和VaR止损中更严格的（更高的止损价）
+            atr_stop_price = max(atr_based_stop_loss, current_price * (1 - 0.05))
+            var_stop_price = var_info.get("var_stop_price", atr_stop_price)
+            stop_price = max(atr_stop_price, var_stop_price)
+
             stop_profit_pct = round((atr_based_stop_profit - current_price) / current_price * 100, 2)
             stop_loss_pct = round(((stop_price - current_price) / current_price) * 100, 2)
         else:

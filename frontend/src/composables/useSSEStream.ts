@@ -78,7 +78,12 @@ export function connectSSEStream(options: SSEStreamOptions): Promise<void> {
                 const dataStr = line.slice(6)
                 hasActivity = true
                 try {
-                  const eventData = JSON.parse(dataStr)
+                  // 防御NaN/Infinity: Python的float('nan')/float('inf')在JSON中非法
+                  const sanitizedStr = dataStr
+                    .replace(/:\s*NaN\s*([,}])/g, ': null$1')
+                    .replace(/:\s*Infinity\s*([,}])/g, ': null$1')
+                    .replace(/:\s*-Infinity\s*([,}])/g, ': null$1')
+                  const eventData = JSON.parse(sanitizedStr)
                   onEvent({ event: currentEvent, data: eventData })
                 } catch (e) {
                   console.debug('[SSE] parse error:', e)

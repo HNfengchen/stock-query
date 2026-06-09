@@ -184,7 +184,7 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
     }
 
 
-def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_callback=None):
+def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_callback=None, shared_market_data=None):
     fetcher = get_fetcher()
     analyzer = get_analyzer()
 
@@ -301,11 +301,19 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     }
 
     # 获取大盘数据，避免后续 analyze_market_sentiment 重复调用 efinance
-    market_data = None
-    try:
-        market_data = fetcher.fetch_market_data()
-    except Exception as e:
-        logger.debug(f"获取大盘数据失败: {e}")
+    # 优先使用批量分析共享的大盘数据，避免并发时重复调用 baostock
+    market_data = shared_market_data
+    if market_data is not None:
+        logger.info(f"使用共享大盘数据: change={market_data.get('涨跌幅', 'N/A')}")
+    else:
+        try:
+            market_data = fetcher.fetch_market_data()
+            if market_data:
+                logger.info(f"独立获取大盘数据成功: change={market_data.get('涨跌幅', 'N/A')}")
+            else:
+                logger.warning("独立获取大盘数据返回空")
+        except Exception as e:
+            logger.warning(f"获取大盘数据失败: {e}")
     # 即使获取失败也传入空 dict，避免 analyze_market_sentiment 再次调用 efinance
     if not market_data:
         market_data = {}
@@ -569,7 +577,7 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     return result
 
 
-def run_analysis(stock_input: str, position_status: str, cost_price: Optional[float] = None, skip_signal_cache: bool = False) -> Dict:
+def run_analysis(stock_input: str, position_status: str, cost_price: Optional[float] = None, skip_signal_cache: bool = False, shared_market_data: dict = None) -> Dict:
     cache_key = (stock_input, position_status, cost_price)
     now = datetime.now()
     with _cache_lock:
@@ -589,7 +597,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     start_time = time.time()
     logger.info(f"开始分析: {stock_input}")
 
-    result = _run_analysis_core(stock_input, position_status, cost_price, logger)
+    result = _run_analysis_core(stock_input, position_status, cost_price, logger, shared_market_data=shared_market_data)
 
     if result is None:
         raise ValueError(f"无法完成 {stock_input} 的分析")

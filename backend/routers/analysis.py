@@ -108,6 +108,15 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
     all_summaries: List[dict] = []
     lock = asyncio.Lock()
 
+    # 批量分析前获取一次大盘数据，避免并发重复调用 baostock
+    shared_market_data = None
+    try:
+        from backend.services.analysis_service import get_fetcher
+        shared_market_data = get_fetcher().fetch_market_data()
+        logger.info(f"BatchQuick: 大盘数据获取成功, change={shared_market_data.get('涨跌幅', 'N/A') if shared_market_data else 'N/A'}")
+    except Exception as e:
+        logger.warning(f"BatchQuick: 大盘数据获取失败: {e}")
+
     async def run_single(i: int, stock_req: AnalysisRequest):
         nonlocal completed_count
         loop = asyncio.get_running_loop()
@@ -121,8 +130,8 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "index": i,
             })
 
-            def _run(sr=stock_req):
-                return run_analysis(sr.stock_input, sr.position_status, sr.cost_price, skip_signal_cache=True)
+            def _run(sr=stock_req, smd=shared_market_data):
+                return run_analysis(sr.stock_input, sr.position_status, sr.cost_price, skip_signal_cache=True, shared_market_data=smd)
 
             try:
                 result = await asyncio.wait_for(
@@ -144,6 +153,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 return
             signal = result.get("trading_signal", {})
             signal_text = signal.get("signal_text", "")
+            validation = result.get("validation", {})
             summary = {
                 "stock_code": result.get("stock_code", stock_req.stock_input),
                 "stock_name": result.get("stock_name", ""),
@@ -152,6 +162,15 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "action_gate": signal.get("action_gate", ""),
                 "recommendation": result.get("analysis", {}).get("recommendation", ""),
                 "index": i,
+                # 关键分析数据，供前端面板展示
+                "validation": validation,
+                "market_data": result.get("market_data"),
+                "stock_info": result.get("stock_info"),
+                "indicators": result.get("indicators"),
+                "price_prediction": result.get("price_prediction"),
+                "position_strategy": result.get("position_strategy"),
+                "analysis": result.get("analysis"),
+                "hmm_state": result.get("hmm_state"),
             }
             async with lock:
                 completed_count += 1

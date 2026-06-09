@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Component } from 'vue'
-import type { AnalysisValidation, StressTestResult } from '@/types'
+import type { AnalysisValidation, StressTestResult, SystemicShock, VarStopLoss } from '@/types'
 import {
   TrendCharts,
   Bottom,
@@ -81,6 +81,8 @@ const confidenceDesc = computed(() => {
 })
 
 const stressTest = computed(() => props.validation.stress_test)
+const systemicShock = computed(() => props.validation.systemic_shock)
+const varStopLoss = computed(() => props.validation.var_stop_loss)
 
 const flipRatePct = computed(() => {
   if (!stressTest.value || stressTest.value.signal_flip_rate == null) return null
@@ -201,8 +203,8 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
         </div>
         <div class="stress-cell">
           <span class="stress-cell-label">鲁棒性</span>
-          <span class="stress-cell-val" :class="stressTest.is_robust ? 'up' : 'down'">
-            {{ stressTest.is_robust ? '鲁棒' : '不鲁棒' }}
+          <span class="stress-cell-val" :class="stressTest.is_robust === true ? 'up' : stressTest.is_robust === false ? 'down' : ''">
+            {{ stressTest.is_robust === true ? '鲁棒' : stressTest.is_robust === false ? '不鲁棒' : '-' }}
           </span>
         </div>
         <div class="stress-cell">
@@ -230,6 +232,56 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
         <div v-if="stressTest.risk_metrics" class="stress-cell">
           <span class="stress-cell-label">Calmar</span>
           <span class="stress-cell-val">{{ formatMetric(stressTest.risk_metrics.calmar) }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="systemicShock" class="v-risk-alert">
+      <div class="risk-alert-header">
+        <el-icon><Lightning /></el-icon>
+        <span class="risk-alert-title">系统性冲击检测</span>
+      </div>
+      <div class="stress-grid">
+        <div class="stress-cell">
+          <span class="stress-cell-label">z-score</span>
+          <span class="stress-cell-val down">{{ systemicShock.z_score.toFixed(2) }}</span>
+        </div>
+        <div class="stress-cell">
+          <span class="stress-cell-label">冲击概率</span>
+          <span class="stress-cell-val down">{{ (systemicShock.shock_probability * 100).toFixed(1) }}%</span>
+        </div>
+        <div class="stress-cell">
+          <span class="stress-cell-label">反弹概率</span>
+          <span class="stress-cell-val" :class="systemicShock.bounce_probability > 0.55 ? 'up' : ''">{{ (systemicShock.bounce_probability * 100).toFixed(0) }}%</span>
+        </div>
+        <div class="stress-cell">
+          <span class="stress-cell-label">当日跌幅</span>
+          <span class="stress-cell-val down">{{ (systemicShock.daily_return * 100).toFixed(2) }}%</span>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="varStopLoss" class="v-risk-alert">
+      <div class="risk-alert-header">
+        <el-icon><Warning /></el-icon>
+        <span class="risk-alert-title">VaR动态止损</span>
+      </div>
+      <div class="stress-grid">
+        <div class="stress-cell">
+          <span class="stress-cell-label">VaR(95%)</span>
+          <span class="stress-cell-val down">{{ (varStopLoss.var_95 * 100).toFixed(1) }}%</span>
+        </div>
+        <div class="stress-cell">
+          <span class="stress-cell-label">止损价</span>
+          <span class="stress-cell-val">{{ varStopLoss.var_stop_price.toFixed(2) }}</span>
+        </div>
+        <div class="stress-cell">
+          <span class="stress-cell-label">触发止损</span>
+          <span class="stress-cell-val" :class="varStopLoss.should_stop ? 'down' : 'up'">{{ varStopLoss.should_stop ? '是' : '否' }}</span>
+        </div>
+        <div v-if="varStopLoss.stop_reason" class="stress-cell">
+          <span class="stress-cell-label">原因</span>
+          <span class="stress-cell-val">{{ varStopLoss.stop_reason }}</span>
         </div>
       </div>
     </div>
@@ -427,6 +479,29 @@ function formatMetric(value: number | null | undefined, fallback: string = 'N/A'
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
   border-radius: var(--radius-sm, 6px);
+}
+
+.v-risk-alert {
+  margin-top: 12px;
+  padding: 12px;
+  background: rgba(239, 83, 80, 0.04);
+  border: 1px solid rgba(239, 83, 80, 0.15);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.risk-alert-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-down, #ef5350);
+  letter-spacing: 0.04em;
+}
+
+.risk-alert-title {
+  color: var(--color-down, #ef5350);
 }
 
 .stress-header {
