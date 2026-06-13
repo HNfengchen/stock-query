@@ -175,6 +175,13 @@ class DataFetcher:
 
         info = self._retry_wrapper(get_stock_info, stock_code)
         raw_name = info.get("名称", user_input)
+        # 防御：efinance/pandas可能返回float(NaN)作为名称
+        if not isinstance(raw_name, str):
+            import pandas as pd
+            if raw_name is None or (isinstance(raw_name, float) and pd.isna(raw_name)):
+                raw_name = user_input
+            else:
+                raw_name = str(raw_name)
 
         # 从带前缀的名称中提取市场标识（XD=除息, XR=除权, DR=除权除息, N=新股）
         market_tag = ""
@@ -267,6 +274,154 @@ class DataFetcher:
             except Exception as e:
                 print(f"获取财务数据失败: {e}")
         return {}
+
+    def fetch_sector_momentum(self, stock_code: str, shared_sector_quotes: pd.DataFrame = None) -> Optional[Dict]:
+        """获取个股所属板块的动量信息（板块涨幅、排名、资金方向）
+
+        数据源: efinance get_belong_board (返回个股所属板块+板块涨幅)
+        批量分析时传入 shared_sector_quotes 避免重复获取行业板块行情
+
+        Returns:
+            dict: {
+                'best_sector_name': str,     # 最强行业板块名称
+                'best_sector_change': float,  # 最强行业板块涨幅(%)
+                'sector_rank': int,           # 最强行业板块在所有行业中的涨幅排名(1-based)
+                'total_sectors': int,         # 行业板块总数
+                'sector_net_inflow_positive': bool,  # 板块资金净流入方向(涨幅>0视为净流入)
+            } 或 None(获取失败时)
+        """
+        try:
+            import efinance as ef
+
+            # 获取个股所属板块
+            try:
+                belong_df = ef.stock.get_belong_board(stock_code)
+            except TypeError:
+                # ETF/基金等非股票代码，efinance不支持获取板块信息
+                fetcher_logger.info(f"板块动量[{stock_code}]: ETF/基金不支持板块查询，跳过板块修正")
+                return None
+            except Exception as e:
+                fetcher_logger.warning(f"获取{stock_code}所属板块失败: {e}")
+                return None
+
+            if belong_df is None or belong_df.empty:
+                fetcher_logger.warning(f"获取{stock_code}所属板块返回空")
+                return None
+
+            # 从所属板块中筛选行业板块（排除地域、指数、风格等非行业板块）
+            # 行业板块特征: 板块名称较短且不含"板块"/"概念"/"风格"等关键词
+            non_industry_keywords = ["板块", "概念", "风格", "股", "重仓", "持股", "融资", "热股",
+                                     "高振幅", "预增", "预减", "预盈", "预亏", "昨"]
+            industry_sectors = []
+            for _, row in belong_df.iterrows():
+                name = str(row.get("板块名称", ""))
+                change = row.get("板块涨幅", 0)
+                try:
+                    change = float(change)
+                except (TypeError, ValueError):
+                    change = 0.0
+                # 排除非行业板块
+                skip = False
+                for kw in non_industry_keywords:
+                    if kw in name:
+                        skip = True
+                        break
+                if not skip and len(name) <= 6:  # 行业名称通常较短
+                    industry_sectors.append({"name": name, "change": change})
+
+            if not industry_sectors:
+                # 回退: 使用涨幅最高的前3个板块
+                for _, row in belong_df.head(3).iterrows():
+                    name = str(row.get("板块名称", ""))
+                    change = row.get("板块涨幅", 0)
+                    try:
+                        change = float(change)
+                    except (TypeError, ValueError):
+                        change = 0.0
+                    industry_sectors.append({"name": name, "change": change})
+
+            if not industry_sectors:
+                return None
+
+            # 取涨幅最高的行业板块
+            best = max(industry_sectors, key=lambda x: x["change"])
+
+            # 获取行业板块行情来计算排名
+            total_sectors = 31  # 申万一级行业约31个
+            sector_rank = total_sectors  # 默认排名靠后
+
+            if shared_sector_quotes is not None and not shared_sector_quotes.empty:
+                # 从共享的行业板块行情中计算排名
+                try:
+                    sector_changes = shared_sector_quotes["涨跌幅"].dropna().astype(float)
+                    total_sectors = len(sector_changes)
+                    # 涨幅从高到低排名
+                    sector_rank = int((sector_changes > best["change"]).sum()) + 1
+                except Exception:
+                    pass
+            else:
+                # 尝试获取行业板块行情来计算排名
+                # 优先efinance，回退新浪财经
+                sector_rank_found = False
+                try:
+                    sector_df = ef.stock.get_realtime_quotes(fs='行业板块')
+                    if sector_df is not None and not sector_df.empty:
+                        sector_changes = sector_df["涨跌幅"].dropna().astype(float)
+                        total_sectors = len(sector_changes)
+                        sector_rank = int((sector_changes > best["change"]).sum()) + 1
+                        sector_rank_found = True
+                except Exception:
+                    pass
+
+                if not sector_rank_found:
+                    # 回退: 新浪财经行业板块行情
+                    try:
+                        import requests as _req
+                        _r = _req.get('https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php', timeout=5)
+                        if _r.status_code == 200 and _r.text:
+                            import json as _json
+                            _raw = _r.text
+                            _start = _raw.index('{')
+                            _end = _raw.rindex('}') + 1
+                            _data = _json.loads(_raw[_start:_end])
+                            _industry_changes = []
+                            for _key, _val in _data.items():
+                                _fields = _val.split(',')
+                                if len(_fields) >= 6:
+                                    try:
+                                        _ch = float(_fields[5])  # [5]=涨跌幅(%), [4]=涨跌额
+                                        _industry_changes.append(_ch)
+                                    except (ValueError, IndexError):
+                                        pass
+                            if _industry_changes:
+                                total_sectors = len(_industry_changes)
+                                sector_rank = int(sum(1 for c in _industry_changes if c > best["change"])) + 1
+                                sector_rank_found = True
+                    except Exception:
+                        pass
+
+                if not sector_rank_found:
+                    # efinance和新浪均不可用时，不返回排名数据
+                    # 宁可不触发板块修正，也不给出不准确的估算排名
+                    fetcher_logger.info(f"板块动量[{stock_code}]: 行业排名数据源均不可用，跳过板块修正")
+                    return None
+
+            result = {
+                "best_sector_name": best["name"],
+                "best_sector_change": best["change"],
+                "sector_rank": sector_rank,
+                "total_sectors": total_sectors,
+                "sector_net_inflow_positive": best["change"] > 0,
+            }
+            fetcher_logger.info(
+                f"板块动量[{stock_code}]: 最强行业={best['name']}({best['change']:.2f}%), "
+                f"排名={sector_rank}/{total_sectors}, 净流入方向={'正' if best['change'] > 0 else '负'}"
+            )
+            return result
+
+        except Exception as e:
+            fetcher_logger.warning(f"获取板块动量数据失败[{stock_code}]: {e}")
+            return None
 
     def fetch_sector_info(self, stock_code: str) -> Dict:
         """获取板块信息"""

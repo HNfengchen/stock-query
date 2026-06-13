@@ -341,6 +341,13 @@ export interface BatchQuickSummary {
   position_strategy?: any
   analysis?: any
   hmm_state?: any
+  sector_momentum?: {
+    best_sector_name: string
+    best_sector_change: number
+    sector_rank: number
+    total_sectors: number
+    sector_net_inflow_positive: boolean
+  }
 }
 
 export interface ProgressMessage {

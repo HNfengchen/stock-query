@@ -117,6 +117,43 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
     except Exception as e:
         logger.warning(f"BatchQuick: 大盘数据获取失败: {e}")
 
+    # 批量分析前获取一次行业板块行情快照，供个股板块排名计算使用
+    shared_sector_quotes = None
+    try:
+        import efinance as ef
+        shared_sector_quotes = ef.stock.get_realtime_quotes(fs='行业板块')
+        if shared_sector_quotes is not None and not shared_sector_quotes.empty:
+            logger.info(f"BatchQuick: 行业板块行情获取成功, 共{len(shared_sector_quotes)}个行业")
+        else:
+            logger.warning("BatchQuick: 行业板块行情返回空")
+    except Exception as e:
+        logger.warning(f"BatchQuick: efinance行业板块行情获取失败: {e}")
+        # 回退: 新浪财经行业板块行情
+        try:
+            import requests as _req
+            _r = _req.get('https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php', timeout=5)
+            if _r.status_code == 200 and _r.text:
+                import json as _json
+                _raw = _r.text
+                _start = _raw.index('{')
+                _end = _raw.rindex('}') + 1
+                _data = _json.loads(_raw[_start:_end])
+                # 转换为与efinance兼容的DataFrame格式
+                _rows = []
+                for _key, _val in _data.items():
+                    _fields = _val.split(',')
+                    if len(_fields) >= 6:
+                        try:
+                            _rows.append({"股票名称": _fields[1], "涨跌幅": float(_fields[5])})  # [5]=涨跌幅(%), [4]=涨跌额
+                        except (ValueError, IndexError):
+                            pass
+                if _rows:
+                    import pandas as _pd
+                    shared_sector_quotes = _pd.DataFrame(_rows)
+                    logger.info(f"BatchQuick: 新浪财经行业板块行情回退成功, 共{len(shared_sector_quotes)}个行业")
+        except Exception as e2:
+            logger.warning(f"BatchQuick: 新浪财经行业板块行情也获取失败: {e2}")
+
     async def run_single(i: int, stock_req: AnalysisRequest):
         nonlocal completed_count
         loop = asyncio.get_running_loop()
@@ -130,8 +167,8 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "index": i,
             })
 
-            def _run(sr=stock_req, smd=shared_market_data):
-                return run_analysis(sr.stock_input, sr.position_status, sr.cost_price, skip_signal_cache=True, shared_market_data=smd)
+            def _run(sr=stock_req, smd=shared_market_data, ssq=shared_sector_quotes):
+                return run_analysis(sr.stock_input, sr.position_status, sr.cost_price, skip_signal_cache=True, shared_market_data=smd, shared_sector_quotes=ssq)
 
             try:
                 result = await asyncio.wait_for(
@@ -171,6 +208,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "position_strategy": result.get("position_strategy"),
                 "analysis": result.get("analysis"),
                 "hmm_state": result.get("hmm_state"),
+                "sector_momentum": result.get("sector_momentum"),
             }
             async with lock:
                 completed_count += 1

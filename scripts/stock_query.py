@@ -127,7 +127,13 @@ def parse_stock_code(user_input: str) -> Tuple[Optional[str], Optional[str]]:
     返回:
         tuple: (stock_code, market) market为'sh'或'sz'
     """
+    # 防御：确保输入为字符串（前端可能传入数字类型）
+    if not isinstance(user_input, str):
+        user_input = str(int(user_input)) if isinstance(user_input, (int, float)) and user_input == int(user_input) else str(user_input)
     user_input = user_input.strip().replace(" ", "")
+    # 防御：去除数字字符串末尾的.0（如"159032.0"→"159032"）
+    if user_input.endswith(".0") and user_input[:-2].isdigit():
+        user_input = user_input[:-2]
 
     if user_input.isdigit():
         code = user_input.zfill(6)

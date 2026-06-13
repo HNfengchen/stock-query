@@ -176,7 +176,9 @@ class StockAnalyzer:
             return result
 
     @staticmethod
-    def _oversold_bounce_probability(rsi_value: float, macd_bearish: bool) -> Dict:
+    def _oversold_bounce_probability(rsi_value: float, macd_bearish: bool,
+                                      sector_change: float = 0.0,
+                                      sector_net_inflow_positive: bool = False) -> Dict:
         """RSI超卖反弹概率模型
 
         数学原理:
@@ -191,6 +193,10 @@ class StockAnalyzer:
           当MACD空头时，RSI_threshold 上移（需要更极端才判定反弹）:
             MACD多头: RSI_threshold = 35, k = 0.15
             MACD空头: RSI_threshold = 22, k = 0.20
+
+          板块修正: 当所属行业板块涨幅>2%且资金净流入时:
+            sector_momentum_factor = 1 + 0.5 * min(1.0, (sector_change - 2) / 5)
+            bounce_prob = min(1.0, bounce_prob * sector_momentum_factor)
 
           输出:
             - bounce_prob: 0~1 的连续概率值
@@ -228,11 +234,21 @@ class StockAnalyzer:
         # sigmoid: RSI越低，bounce_prob越高
         bounce_prob = 1.0 / (1.0 + math.exp(k * (rsi_value - rsi_threshold)))
 
+        # 板块动量修正: 板块强势时，超卖反弹概率上调
+        sector_momentum_factor = 1.0
+        if sector_change > 2.0 and sector_net_inflow_positive:
+            # 修正因子: 1 + 0.5 * min(1.0, (sector_change - 2) / 5)
+            # 2%→1.0, 7%→1.5, 上限1.5
+            sector_momentum_factor = 1.0 + 0.5 * min(1.0, (sector_change - 2.0) / 5.0)
+            bounce_prob = min(1.0, bounce_prob * sector_momentum_factor)
+
         # 因素类型判定
         if bounce_prob >= 0.65:
             factor_type = "support"
             weight = (bounce_prob - 0.5) * 2  # 0.3~1.0
             desc = f"RSI({rsi_value:.0f})极端超卖，反弹概率{bounce_prob:.0%}"
+            if sector_momentum_factor > 1.0:
+                desc += f"(板块修正×{sector_momentum_factor:.2f})"
         elif bounce_prob <= 0.35:
             factor_type = "oppose"
             weight = (0.5 - bounce_prob) * 2  # 0.3~1.0
@@ -241,6 +257,8 @@ class StockAnalyzer:
             factor_type = "neutral"
             weight = 0.0
             desc = f"RSI({rsi_value:.0f})超卖，反弹概率{bounce_prob:.0%}，方向不确定"
+            if sector_momentum_factor > 1.0:
+                desc += f"(板块修正×{sector_momentum_factor:.2f})"
 
         return {
             "bounce_prob": float(bounce_prob),
@@ -1429,6 +1447,7 @@ class StockAnalyzer:
         history_df: "pd.DataFrame" = None,
         multi_timeframe: Dict = None,
         hmm_state_override: str = None,
+        sector_momentum: Dict = None,
     ) -> Dict:
         """
         对分析结论进行交叉验证，返回可解释的一致性、风控与行动门控结果。
@@ -1475,6 +1494,36 @@ class StockAnalyzer:
         w_tech = model_weights.get("technical", 0.5)
         w_fund = model_weights.get("fund_flow", 0.3)
         w_sent = model_weights.get("sentiment", 0.2)
+
+        # 改进1: 行业资金面权重提升 — 板块轮动修正
+        # 当个股所属行业板块涨幅>2%且排名前3时，提升资金评分权重
+        sector_weight_boost = 1.0  # 默认不提升
+        if sector_momentum and sector_momentum.get("best_sector_change", 0) > 2.0 and sector_momentum.get("sector_rank", 99) <= 3:
+            rank = sector_momentum["sector_rank"]
+            sector_change = sector_momentum["best_sector_change"]
+            rank_factor = 1.0 + 0.5 * (4 - rank) / 3  # rank=1→1.50, rank=2→1.33, rank=3→1.17
+            change_factor = min(1.5, 1.0 + (sector_change - 2.0) / 10.0)  # 2%→1.0, 12%→1.5
+            sector_weight_boost = rank_factor * change_factor
+            new_w_fund = min(0.5, w_fund * sector_weight_boost)
+            # 其他权重等比收缩
+            remaining = 1.0 - new_w_fund
+            original_remaining = 1.0 - w_fund
+            scale = remaining / original_remaining if original_remaining > 0 else 1.0
+            w_tech = w_tech * scale
+            w_sent = w_sent * scale
+            w_fund = new_w_fund
+            analyzer_logger.info(
+                f"板块轮动-权重提升: 行业={sector_momentum['best_sector_name']}({sector_change:.2f}%), "
+                f"排名={rank}/{sector_momentum['total_sectors']}, "
+                f"boost={sector_weight_boost:.2f}, "
+                f"权重调整: tech={w_tech:.3f}, fund={w_fund:.3f}, sent={w_sent:.3f}"
+            )
+        elif sector_momentum:
+            analyzer_logger.info(
+                f"板块轮动-权重未调整: 行业={sector_momentum.get('best_sector_name', 'N/A')}({sector_momentum.get('best_sector_change', 0):.2f}%), "
+                f"排名={sector_momentum.get('sector_rank', 'N/A')}/{sector_momentum.get('total_sectors', 'N/A')}, "
+                f"未满足涨幅>2%且排名前3的条件"
+            )
 
         supporting_factors = []
         opposing_factors = []
@@ -1625,7 +1674,11 @@ class StockAnalyzer:
                 # bounce_prob(RSI) = sigmoid(k*(RSI_threshold - RSI))
                 # MACD空头: RSI_threshold=22, k=0.20
                 # MACD多头: RSI_threshold=35, k=0.15
-                bounce_model = self._oversold_bounce_probability(rsi_value, macd_bearish)
+                bounce_model = self._oversold_bounce_probability(
+                    rsi_value, macd_bearish,
+                    sector_change=sector_momentum.get("best_sector_change", 0.0) if sector_momentum else 0.0,
+                    sector_net_inflow_positive=sector_momentum.get("sector_net_inflow_positive", False) if sector_momentum else False
+                )
                 bp = bounce_model["bounce_prob"]
                 ft = bounce_model["factor_type"]
 
@@ -1634,6 +1687,7 @@ class StockAnalyzer:
                     analyzer_logger.info(
                         f"RSI超卖反弹模型: RSI={rsi_value:.0f}, MACD空头={macd_bearish}, "
                         f"bounce_prob={bp:.2%} → 支持因素"
+                        + (f", 板块修正×{bounce_model.get('description', '')}" if '板块修正' in bounce_model.get('description', '') else "")
                     )
                 elif ft == "oppose":
                     conflicts.append(f"RSI({rsi_value:.0f})超卖但趋势偏空，反弹概率仅{bp:.0%}")
@@ -1647,6 +1701,7 @@ class StockAnalyzer:
                     analyzer_logger.info(
                         f"RSI超卖反弹模型: RSI={rsi_value:.0f}, MACD空头={macd_bearish}, "
                         f"bounce_prob={bp:.2%} → 中性"
+                        + (f", 板块修正×{bounce_model.get('description', '')}" if '板块修正' in bounce_model.get('description', '') else "")
                     )
             elif rsi_signal == "偏强":
                 supporting_factors.append("RSI偏强")
@@ -1782,6 +1837,25 @@ class StockAnalyzer:
                     f"压力位={resistance}, 支撑位={chip_result['support_price']}, "
                     f"峰值={chip_result['peak_price']}"
                 )
+
+        # 改进3: 板块上下文修正资金-ML背离
+        # 当行业板块涨幅>2%且资金净流入时，ML模型对板块轮动反应滞后，降低背离惩罚
+        if fund_ml_diverged and sector_momentum and sector_momentum.get("best_sector_change", 0) > 2.0 and sector_momentum.get("sector_net_inflow_positive", False):
+            sector_change = sector_momentum["best_sector_change"]
+            # 惩罚保留比例: max(0.3, 1.0 - 0.7 * min(1.0, (sector_change - 2) / 8))
+            # 2%→1.0(不减免), 6%→0.65, 10%→0.3
+            sector_relief = max(0.3, 1.0 - 0.7 * min(1.0, (sector_change - 2.0) / 8.0))
+            original_penalty = fund_ml_divergence_penalty
+            fund_ml_divergence_penalty = fund_ml_divergence_penalty * sector_relief
+            analyzer_logger.info(
+                f"板块轮动-背离修正: 行业={sector_momentum['best_sector_name']}({sector_change:.2f}%), "
+                f"ML滞后概率高→惩罚从{original_penalty:.3f}降至{fund_ml_divergence_penalty:.3f} "
+                f"(保留{sector_relief:.0%})"
+            )
+            # 惩罚减免后力度较弱，不再构成背离降级条件
+            if fund_ml_divergence_penalty < 0.10:
+                fund_ml_diverged = False
+                analyzer_logger.info("板块修正后惩罚<0.10，取消资金-ML背离降级")
 
         # 布林带极窄检测
         boll_narrow = False
@@ -1970,8 +2044,30 @@ class StockAnalyzer:
             risk_level = "high" if risk_level == "low" else risk_level
 
         signal = trading_signal.get("signal", "hold")
-        # VaR止损: 仅已持有时计算，未持有时初始化为空
+        # VaR止损: 无论持仓状态都计算（日志记录），但仅已持有时影响action_gate
         var_info = {"var_95": 0.0, "var_stop_price": current_price, "should_stop": False, "stop_reason": ""}
+        if current_price > 0 and history_df is not None and not history_df.empty:
+            var_info = self._compute_var_stop_loss(current_price, history_df)
+            analyzer_logger.info(
+                f"VaR止损: var_95={var_info['var_95']:.2%}, "
+                f"止损价={var_info['var_stop_price']:.2f}, "
+                f"should_stop={var_info['should_stop']}, "
+                f"持仓={position_status}"
+            )
+        # 波动率缩放日志
+        atr_value_log = indicators.get("ATR", {}).get("latest")
+        if atr_value_log and current_price > 0 and history_df is not None and not history_df.empty:
+            try:
+                atr_float = float(atr_value_log) if not isinstance(atr_value_log, (list, pd.Series)) else float(atr_value_log[-1]) if hasattr(atr_value_log, '__len__') else float(atr_value_log)
+                vol_range = self._volatility_scaled_range(atr_float, history_df, base_scale=0.5)
+                vol_scale = vol_range / atr_float if atr_float > 0 else 0.5
+                analyzer_logger.info(
+                    f"波动率缩放: ATR={atr_float:.4f}, adjusted_range={vol_range:.4f}, "
+                    f"scale={vol_scale:.3f}"
+                )
+            except Exception as e:
+                analyzer_logger.debug(f"波动率缩放日志计算失败: {e}")
+
         if position_status == "未持有":
             if signal in ("buy", "strong_buy") and direction_consensus == "bullish" and confidence >= allow_buy_threshold:
                 if surge_risk:
@@ -2001,8 +2097,7 @@ class StockAnalyzer:
             else:
                 action_gate = "watch"
         else:
-            # 已持有: 集成VaR止损
-            var_info = self._compute_var_stop_loss(current_price, history_df)
+            # 已持有: 使用前面已计算的VaR止损结果
             if direction_consensus == "bearish" and risk_level == "high":
                 action_gate = "reduce_position"
             elif direction_consensus == "bearish" and risk_level == "medium":
@@ -2614,9 +2709,11 @@ class StockAnalyzer:
                         else:
                             analyzer_logger.warning(f"ML模型加载失败: {stock_model_dir}")
                             self._ml_loaded_stock = None
+                            self._ml_predictor.unload()  # 卸载旧模型，防止跨股票误用
                     else:
                         analyzer_logger.info(f"ML模型目录不存在: {stock_model_dir}, 使用纯规则预测")
                         self._ml_loaded_stock = None
+                        self._ml_predictor.unload()  # 卸载旧模型，防止跨股票误用
 
                 if self._ml_predictor.is_ready():
                     from scripts.core.feature_engineering import extract_feature_vector

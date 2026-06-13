@@ -44,6 +44,7 @@ class LightGBMPredictor:
         self._volatility_model = None
         self._feature_names = []
         self._is_ready = False
+        self._model_dir = None  # 当前加载的模型目录，用于日志追踪
 
     def train(self, X: np.ndarray, y: dict, params: dict = None, feature_names: list = None) -> dict:
         if not _LGB_AVAILABLE:
@@ -219,7 +220,8 @@ class LightGBMPredictor:
             result["confidence"] = 0.0
 
         ml_logger.info(
-            f"ML predict: return={result.get('next_day_return', 'N/A'):.4f}, "
+            f"ML predict: model={self._model_dir}, "
+            f"return={result.get('next_day_return', 'N/A'):.4f}, "
             f"direction={result.get('direction', 'N/A')}, "
             f"volatility={result.get('volatility', 'N/A'):.4f}, "
             f"confidence={result.get('confidence', 'N/A'):.3f}"
@@ -327,6 +329,7 @@ class LightGBMPredictor:
 
             if any([self._return_model, self._direction_model, self._volatility_model]):
                 self._is_ready = True
+                self._model_dir = model_dir
                 ml_logger.info(f"模型加载成功: {model_dir}")
                 return True
             else:
@@ -337,6 +340,15 @@ class LightGBMPredictor:
             ml_logger.error(f"模型加载失败: {e}")
             self._is_ready = False
             return False
+
+    def unload(self):
+        """卸载当前模型，防止跨股票误用"""
+        self._return_model = None
+        self._direction_model = None
+        self._volatility_model = None
+        self._feature_names = []
+        self._is_ready = False
+        self._model_dir = None
 
     def is_ready(self) -> bool:
         if not _LGB_AVAILABLE:

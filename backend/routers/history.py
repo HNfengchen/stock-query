@@ -38,6 +38,7 @@ async def get_watchlist():
 
 @router.post("/watchlist")
 async def create_watchlist_item(req: WatchlistRequest):
+    logger.info(f"Watchlist: 添加股票请求, stock_input={req.stock_input!r}, type={type(req.stock_input).__name__}")
     try:
         fetcher = get_fetcher()
         loop = asyncio.get_running_loop()

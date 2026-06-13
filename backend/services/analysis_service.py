@@ -184,7 +184,7 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
     }
 
 
-def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_callback=None, shared_market_data=None):
+def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_callback=None, shared_market_data=None, shared_sector_quotes=None):
     fetcher = get_fetcher()
     analyzer = get_analyzer()
 
@@ -319,6 +319,18 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         market_data = {}
     all_data["market_data"] = market_data
 
+    # 获取板块动量数据（行业涨幅、排名等，用于板块轮动修正）
+    sector_momentum = None
+    try:
+        sector_momentum = fetcher.fetch_sector_momentum(stock_code, shared_sector_quotes=shared_sector_quotes)
+        if sector_momentum:
+            logger.info(f"板块动量数据: {sector_momentum['best_sector_name']}({sector_momentum['best_sector_change']:.2f}%), 排名={sector_momentum['sector_rank']}/{sector_momentum['total_sectors']}")
+        else:
+            logger.info("板块动量数据获取失败，将跳过板块修正")
+    except Exception as e:
+        logger.warning(f"获取板块动量数据失败: {e}")
+    all_data["sector_momentum"] = sector_momentum
+
     log_data('transfer', 'data_fetcher', 'analyzer', 'success',
              stock_code=stock_code,
              has_history=all_data.get('history_data') is not None,
@@ -410,7 +422,8 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         analysis, price_prediction, indicators,
         trading_signal, position_type, current_price,
         history_df=history_df,
-        multi_timeframe=multi_timeframe
+        multi_timeframe=multi_timeframe,
+        sector_momentum=all_data.get("sector_momentum")
     )
 
     trading_signal["reason"] = validation.get("validation_note", "")
@@ -567,6 +580,7 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         "validation": clean_nested(validation),
         "stock_info": {k: clean_float(v) for k, v in info.items()},
         "market_data": market_data if market_data else {},
+        "sector_momentum": all_data.get("sector_momentum"),
         "charts": charts,
     }
 
@@ -577,7 +591,7 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     return result
 
 
-def run_analysis(stock_input: str, position_status: str, cost_price: Optional[float] = None, skip_signal_cache: bool = False, shared_market_data: dict = None) -> Dict:
+def run_analysis(stock_input: str, position_status: str, cost_price: Optional[float] = None, skip_signal_cache: bool = False, shared_market_data: dict = None, shared_sector_quotes=None) -> Dict:
     cache_key = (stock_input, position_status, cost_price)
     now = datetime.now()
     with _cache_lock:
@@ -597,7 +611,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     start_time = time.time()
     logger.info(f"开始分析: {stock_input}")
 
-    result = _run_analysis_core(stock_input, position_status, cost_price, logger, shared_market_data=shared_market_data)
+    result = _run_analysis_core(stock_input, position_status, cost_price, logger, shared_market_data=shared_market_data, shared_sector_quotes=shared_sector_quotes)
 
     if result is None:
         raise ValueError(f"无法完成 {stock_input} 的分析")
