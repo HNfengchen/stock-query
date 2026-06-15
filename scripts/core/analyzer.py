@@ -5,6 +5,7 @@
 
 import os
 import math
+import threading
 import pandas as pd
 import numpy as np
 from collections import deque
@@ -55,6 +56,7 @@ class StockAnalyzer:
         self._ml_alpha = self._ml_config.get("alpha", 0.5)
         self._ml_predictor = LightGBMPredictor(config)
         self._ml_loaded_stock = None  # 当前加载模型的股票代码
+        self._ml_lock = threading.Lock()  # 保护ML模型加载+预测的原子性
 
         hmm_config = config.get("hmm", {})
         self._hmm_detector = None
@@ -1192,7 +1194,11 @@ class StockAnalyzer:
 
         dwm = self._dynamic_weight_manager
         if dwm.enabled and market_data is not None:
-            dynamic_weights = dwm.detect_and_update(market_data)
+            # 将大盘数据转换为detect_regime期望的格式
+            dwm_market_data = dict(market_data)  # 复制，避免修改原始数据
+            if "涨跌幅" in dwm_market_data and "market_change_pct" not in dwm_market_data:
+                dwm_market_data["market_change_pct"] = dwm_market_data["涨跌幅"]
+            dynamic_weights = dwm.detect_and_update(dwm_market_data)
             self._market_regime = dwm.get_regime()
             w_technical = dynamic_weights.get("technical", 0.5)
             w_fund_flow = dynamic_weights.get("fund_flow", 0.3)
@@ -1764,11 +1770,14 @@ class StockAnalyzer:
             conflict_penalty_extra = 0.0
 
         # 资金-ML方向背离检测
+        # 当ML置信度低于阈值时，ML预测形同随机，不应构成"背离"
+        ML_CONFIDENCE_THRESHOLD = 0.6
         fund_ml_diverged = False
         fund_ml_divergence_penalty = 0.0
         ml_prediction = price_prediction.get("ml_prediction")
         ml_direction = ml_prediction.get("direction") if ml_prediction else None
-        if ml_direction is not None:
+        ml_confidence = ml_prediction.get("confidence", 0.0) if ml_prediction else 0.0
+        if ml_direction is not None and ml_confidence >= ML_CONFIDENCE_THRESHOLD:
             if fund_score >= 0.7 and ml_direction == 0:
                 fund_ml_diverged = True
                 conflicts.append("资金强流入但ML预测看跌")
@@ -1776,7 +1785,7 @@ class StockAnalyzer:
                 fund_ml_divergence_penalty = 0.1 + 0.1 * (fund_score - 0.7) / 0.3
                 analyzer_logger.info(
                     f"资金-ML背离: 资金评分={fund_score:.3f}(强流入), ML direction=0(看跌), "
-                    f"惩罚={fund_ml_divergence_penalty:.3f}"
+                    f"ML confidence={ml_confidence:.3f}, 惩罚={fund_ml_divergence_penalty:.3f}"
                 )
             elif fund_score <= 0.3 and ml_direction == 1:
                 fund_ml_diverged = True
@@ -1785,8 +1794,13 @@ class StockAnalyzer:
                 fund_ml_divergence_penalty = 0.1 + 0.1 * (0.3 - fund_score) / 0.3
                 analyzer_logger.info(
                     f"资金-ML背离: 资金评分={fund_score:.3f}(强流出), ML direction=1(看涨), "
-                    f"惩罚={fund_ml_divergence_penalty:.3f}"
+                    f"ML confidence={ml_confidence:.3f}, 惩罚={fund_ml_divergence_penalty:.3f}"
                 )
+        elif ml_direction is not None and ml_confidence < ML_CONFIDENCE_THRESHOLD:
+            analyzer_logger.info(
+                f"资金-ML背离跳过: ML confidence={ml_confidence:.3f} < {ML_CONFIDENCE_THRESHOLD}, "
+                f"ML预测不可靠，不触发背离惩罚"
+            )
 
         # 筹码分布修正资金-ML背离
         chip_result = None
@@ -2686,53 +2700,58 @@ class StockAnalyzer:
 
         if self._ml_enabled and stock_code:
             try:
-                model_dir = self._ml_config.get("model_dir", "models/")
-                stock_model_dir = os.path.join(model_dir, stock_code)
+                with self._ml_lock:
+                    model_dir = self._ml_config.get("model_dir", "models/")
+                    stock_model_dir = os.path.join(model_dir, stock_code)
 
-                # 每次分析都检查是否需要加载对应股票的模型
-                need_load = False
-                need_load_reason = ""
-                if self._ml_loaded_stock != stock_code:
-                    need_load = True
-                    need_load_reason = f"当前加载={self._ml_loaded_stock}, 目标={stock_code}"
-                elif not self._ml_predictor.is_ready():
-                    need_load = True
-                    need_load_reason = f"模型未就绪(loaded_stock={self._ml_loaded_stock})"
+                    # 每次分析都检查是否需要加载对应股票的模型
+                    need_load = False
+                    need_load_reason = ""
+                    if self._ml_loaded_stock != stock_code:
+                        need_load = True
+                        need_load_reason = f"当前加载={self._ml_loaded_stock}, 目标={stock_code}"
+                    elif not self._ml_predictor.is_ready():
+                        need_load = True
+                        need_load_reason = f"模型未就绪(loaded_stock={self._ml_loaded_stock})"
 
-                if need_load:
-                    analyzer_logger.info(f"ML模型需加载: {need_load_reason}")
-                    if os.path.isdir(stock_model_dir):
-                        load_ok = self._ml_predictor.load(stock_model_dir)
-                        if load_ok:
-                            self._ml_loaded_stock = stock_code
-                            analyzer_logger.info(f"ML模型加载成功: {stock_code} -> {stock_model_dir}")
+                    if need_load:
+                        analyzer_logger.info(f"ML模型需加载: {need_load_reason}")
+                        if os.path.isdir(stock_model_dir):
+                            load_ok = self._ml_predictor.load(stock_model_dir)
+                            if load_ok:
+                                self._ml_loaded_stock = stock_code
+                                analyzer_logger.info(f"ML模型加载成功: {stock_code} -> {stock_model_dir}")
+                            else:
+                                analyzer_logger.warning(f"ML模型加载失败: {stock_model_dir}")
+                                self._ml_loaded_stock = None
+                                self._ml_predictor.unload()  # 卸载旧模型，防止跨股票误用
                         else:
-                            analyzer_logger.warning(f"ML模型加载失败: {stock_model_dir}")
+                            analyzer_logger.info(f"ML模型目录不存在: {stock_model_dir}, 使用纯规则预测")
                             self._ml_loaded_stock = None
                             self._ml_predictor.unload()  # 卸载旧模型，防止跨股票误用
-                    else:
-                        analyzer_logger.info(f"ML模型目录不存在: {stock_model_dir}, 使用纯规则预测")
-                        self._ml_loaded_stock = None
-                        self._ml_predictor.unload()  # 卸载旧模型，防止跨股票误用
 
-                if self._ml_predictor.is_ready():
-                    from scripts.core.feature_engineering import extract_feature_vector
-                    feature_names, feature_values = extract_feature_vector(indicators)
-                    if len(feature_values) > 0:
-                        X = feature_values.reshape(1, -1)
-                        ml_prediction = self._ml_predictor.predict(X, feature_names=feature_names)
-                        if ml_prediction:
-                            alpha = self._ml_alpha
-                            result = hybrid_predict(result, ml_prediction, alpha)
-                            analyzer_logger.info(
-                                f"  ML混合预测: alpha={alpha}, "
-                                f"ml_return={ml_prediction.get('next_day_return', 'N/A')}, "
-                                f"ml_direction={ml_prediction.get('direction', 'N/A')}"
-                            )
+                    if self._ml_predictor.is_ready():
+                        from scripts.core.feature_engineering import extract_feature_vector
+                        feature_names, feature_values = extract_feature_vector(indicators)
+                        if len(feature_values) > 0:
+                            X = feature_values.reshape(1, -1)
+                            ml_prediction = self._ml_predictor.predict(X, feature_names=feature_names)
+                        else:
+                            ml_prediction = None
+                            analyzer_logger.warning("ML特征提取为空，跳过ML预测")
                     else:
-                        analyzer_logger.warning("ML特征提取为空，跳过ML预测")
-                else:
-                    analyzer_logger.info(f"ML模型未就绪，使用纯规则预测: {stock_code}")
+                        ml_prediction = None
+                        analyzer_logger.info(f"ML模型未就绪，使用纯规则预测: {stock_code}")
+
+                # hybrid_predict在锁外执行，不涉及共享状态
+                if ml_prediction:
+                    alpha = self._ml_alpha
+                    result = hybrid_predict(result, ml_prediction, alpha)
+                    analyzer_logger.info(
+                        f"  ML混合预测: alpha={alpha}, "
+                        f"ml_return={ml_prediction.get('next_day_return', 'N/A')}, "
+                        f"ml_direction={ml_prediction.get('direction', 'N/A')}"
+                    )
             except Exception as e:
                 analyzer_logger.warning(f"ML混合预测异常，使用纯规则预测: {e}")
 
@@ -2857,9 +2876,18 @@ class StockAnalyzer:
             history_df = all_data.get("history_data")
             if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
                 try:
-                    latest_close = float(history_df["收盘"].iloc[-1])
-                    prev_close = float(history_df["收盘"].iloc[-2]) if len(history_df) > 1 else latest_close
-                    change_pct = (latest_close - prev_close) / prev_close * 100 if prev_close != 0 else 0
+                    # 使用大盘涨跌幅而非个股涨跌幅
+                    market_data_from_all = all_data.get("market_data")
+                    market_change_pct = 0.0
+                    if market_data_from_all and market_data_from_all.get("涨跌幅") is not None:
+                        market_change_pct = float(market_data_from_all["涨跌幅"])
+                        analyzer_logger.info(f"regime_detector使用大盘涨跌幅: {market_change_pct:.3f}%")
+                    else:
+                        # 回退：用个股涨跌幅
+                        latest_close = float(history_df["收盘"].iloc[-1])
+                        prev_close = float(history_df["收盘"].iloc[-2]) if len(history_df) > 1 else latest_close
+                        market_change_pct = (latest_close - prev_close) / prev_close * 100 if prev_close != 0 else 0
+                        analyzer_logger.info(f"regime_detector大盘数据缺失，回退使用个股涨跌幅: {market_change_pct:.3f}%")
                     vol_col = "成交量" if "成交量" in history_df.columns else None
                     volume_ratio = 1.0
                     if vol_col and len(history_df) > 1:
@@ -2877,7 +2905,7 @@ class StockAnalyzer:
                     market_data = {
                         "volatility_signal": volatility_signal,
                         "volume_ratio": volume_ratio,
-                        "market_change_pct": change_pct,
+                        "market_change_pct": market_change_pct,
                     }
                     regime = self._regime_detector.detect_regime(market_data)
                     result["hmm_state"] = {
