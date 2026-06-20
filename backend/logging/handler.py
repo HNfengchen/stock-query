@@ -1,7 +1,7 @@
 import os
 import gzip
 import logging
-from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
+
 from datetime import datetime
 
 
@@ -68,7 +68,6 @@ class SizeAndTimeRotatingFileHandler(logging.Handler):
     def _compress_old_files(self) -> None:
         base_dir = os.path.dirname(self.base_filename)
         base_name = os.path.basename(self.base_filename)
-        now = datetime.now()
 
         try:
             files = os.listdir(base_dir)
@@ -116,6 +115,7 @@ class SizeAndTimeRotatingFileHandler(logging.Handler):
         try:
             self._current_handler.close()
         except Exception:
+            # handler 关闭失败时忽略，避免影响日志器整体关闭
             pass
         super().close()
 

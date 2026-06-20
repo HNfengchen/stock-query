@@ -4,6 +4,7 @@
 支持HMM隐马尔可夫模型的市场状态识别
 """
 
+import os
 from typing import Dict, Optional
 import numpy as np
 from scripts.logger import get_logger
@@ -51,6 +52,8 @@ class HMMRegimeDetector:
         self._model = None
         self._state_mapping: Dict[int, str] = {}
         self._ready = False
+        self._global_fallback: Optional[dict] = None
+        self._loaded_stock_code: Optional[str] = None
 
     def train(self, returns: np.ndarray, volatilities: np.ndarray, volume_changes: np.ndarray) -> dict:
         if not HMMLEARN_AVAILABLE:
@@ -226,6 +229,29 @@ class HMMRegimeDetector:
             return None
         return self._model.transmat_.copy()
 
+    def _snapshot(self) -> dict:
+        return {
+            "model": self._model,
+            "state_mapping": self._state_mapping,
+            "n_components": self.n_components,
+        }
+
+    def _restore_snapshot(self, save_data: dict) -> None:
+        self._model = save_data["model"]
+        self._state_mapping = save_data["state_mapping"]
+        self.n_components = save_data.get("n_components", self.n_components)
+        self._ready = True
+
+    def _load_file(self, model_path: str) -> Optional[dict]:
+        if not JOBLIB_AVAILABLE:
+            regime_logger.warning("joblib未安装，无法加载模型")
+            return None
+        try:
+            return joblib.load(model_path)
+        except Exception as e:
+            regime_logger.error(f"HMM模型加载失败: {model_path}, error={e}")
+            return None
+
     def save(self, model_path: str) -> bool:
         if not self.is_ready():
             regime_logger.warning("模型未训练，无法保存")
@@ -236,14 +262,8 @@ class HMMRegimeDetector:
             return False
 
         try:
-            import os
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            save_data = {
-                "model": self._model,
-                "state_mapping": self._state_mapping,
-                "n_components": self.n_components,
-            }
-            joblib.dump(save_data, model_path)
+            os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
+            joblib.dump(self._snapshot(), model_path)
             regime_logger.info(f"HMM模型已保存: {model_path}")
             return True
         except Exception as e:
@@ -251,22 +271,45 @@ class HMMRegimeDetector:
             return False
 
     def load(self, model_path: str) -> bool:
-        if not JOBLIB_AVAILABLE:
-            regime_logger.warning("joblib未安装，无法加载模型")
-            return False
-
-        try:
-            save_data = joblib.load(model_path)
-            self._model = save_data["model"]
-            self._state_mapping = save_data["state_mapping"]
-            self.n_components = save_data.get("n_components", self.n_components)
-            self._ready = True
-            regime_logger.info(f"HMM模型已加载: {model_path}, state_mapping={self._state_mapping}")
-            return True
-        except Exception as e:
-            regime_logger.error(f"HMM模型加载失败: {e}")
+        save_data = self._load_file(model_path)
+        if save_data is None:
             self._ready = False
             return False
+
+        self._restore_snapshot(save_data)
+        self._global_fallback = save_data
+        self._loaded_stock_code = "__global__"
+        regime_logger.info(f"HMM模型已加载: {model_path}, state_mapping={self._state_mapping}")
+        return True
+
+    def load_for_stock(self, stock_code: str, models_dir: str, global_model_path: str = "") -> bool:
+        """优先加载个股HMM，不存在则回退到全局HMM。"""
+        if stock_code and self._loaded_stock_code == stock_code:
+            return self.is_ready()
+
+        stock_path = os.path.join(models_dir, f"hmm_{stock_code}.pkl") if models_dir and stock_code else ""
+        if os.path.exists(stock_path):
+            save_data = self._load_file(stock_path)
+            if save_data is not None:
+                self._restore_snapshot(save_data)
+                self._loaded_stock_code = stock_code
+                regime_logger.info(f"个股HMM已加载: {stock_path}, state_mapping={self._state_mapping}")
+                return True
+
+        if not global_model_path:
+            global_model_path = os.path.join(models_dir, "hmm_regime.pkl") if models_dir else ""
+
+        if global_model_path and os.path.exists(global_model_path):
+            if self._global_fallback is None:
+                self._global_fallback = self._load_file(global_model_path)
+            if self._global_fallback is not None:
+                self._restore_snapshot(self._global_fallback)
+                self._loaded_stock_code = "__global__"
+                regime_logger.info(f"回退到全局HMM: {global_model_path}")
+                return True
+
+        self._ready = False
+        return False
 
     def is_ready(self) -> bool:
         return self._ready and self._model is not None

@@ -13,6 +13,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+tests/
 
 # Tool caches
 .pytest_cache/

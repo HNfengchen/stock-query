@@ -30,6 +30,7 @@ def clean_float(v):
                 return None
             return round(f, 6)
         except Exception:
+            # 标量转换失败时回退为字符串，保证 JSON 序列化不中断
             return str(v)
     return v
 

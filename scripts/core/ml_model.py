@@ -5,7 +5,6 @@ LightGBM混合预测模型模块
 
 import os
 import numpy as np
-from typing import Dict, Optional, Tuple
 
 from scripts.logger import get_logger
 
@@ -38,6 +37,11 @@ class LightGBMPredictor:
         ml_config = self.config.get("ml_model", {})
         self.hyperparams = ml_config.get("hyperparams", DEFAULT_HYPERPARAMS)
         self.min_training_days = ml_config.get("min_training_days", 60)
+        self.train_val_split = ml_config.get("train_val_split", 0.8)
+        self.early_stopping_rounds = ml_config.get("early_stopping_rounds", 20)
+        self.fallback_confidence_multiplier = ml_config.get(
+            "hybrid_predict", {}
+        ).get("fallback_confidence_multiplier", 10)
 
         self._return_model = None
         self._direction_model = None
@@ -61,7 +65,7 @@ class LightGBMPredictor:
 
         train_params = params or self.hyperparams
 
-        split_idx = int(X.shape[0] * 0.8)
+        split_idx = int(X.shape[0] * self.train_val_split)
         X_train, X_val = X[:split_idx], X[split_idx:]
 
         # 如果有特征名，构造 DataFrame 以消除 sklearn 特征名警告
@@ -88,7 +92,7 @@ class LightGBMPredictor:
             self._return_model.fit(
                 X_train_df, y_train_r,
                 eval_set=[(X_train_df, y_train_r), (X_val_df, y_val_r)],
-                callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)],
+                callbacks=[lgb.early_stopping(stopping_rounds=self.early_stopping_rounds, verbose=False)],
             )
             train_pred_r = self._return_model.predict(X_train_df)
             val_pred_r = self._return_model.predict(X_val_df)
@@ -112,7 +116,7 @@ class LightGBMPredictor:
             self._direction_model.fit(
                 X_train_df, y_train_d,
                 eval_set=[(X_train_df, y_train_d), (X_val_df, y_val_d)],
-                callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)],
+                callbacks=[lgb.early_stopping(stopping_rounds=self.early_stopping_rounds, verbose=False)],
             )
             train_pred_d = self._direction_model.predict(X_train_df)
             val_pred_d = self._direction_model.predict(X_val_df)
@@ -136,7 +140,7 @@ class LightGBMPredictor:
             self._volatility_model.fit(
                 X_train_df, y_train_v,
                 eval_set=[(X_train_df, y_train_v), (X_val_df, y_val_v)],
-                callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)],
+                callbacks=[lgb.early_stopping(stopping_rounds=self.early_stopping_rounds, verbose=False)],
             )
             train_pred_v = self._volatility_model.predict(X_train_df)
             val_pred_v = self._volatility_model.predict(X_val_df)
@@ -175,8 +179,8 @@ class LightGBMPredictor:
                 pred_dict = dict(zip(feature_names, X_flat))
                 aligned_values = [pred_dict.get(fn, 0.0) for fn in self._feature_names]
                 X_input = pd.DataFrame([aligned_values], columns=self._feature_names)
-                ml_logger.info(
-                    f"特征对齐: 输入{len(feature_names)}个→模型{ n_model_features}个, "
+                ml_logger.warning(
+                    f"特征名不一致: 输入{len(feature_names)}个→模型{n_model_features}个, "
                     f"缺失{set(self._feature_names) - set(feature_names)}, "
                     f"多余{set(feature_names) - set(self._feature_names)}"
                 )
@@ -215,7 +219,9 @@ class LightGBMPredictor:
         if "next_day_return" in result and "direction_confidence" in result:
             result["confidence"] = result["direction_confidence"]
         elif "next_day_return" in result:
-            result["confidence"] = min(1.0, abs(result["next_day_return"]) * 10)
+            result["confidence"] = min(
+                1.0, abs(result["next_day_return"]) * self.fallback_confidence_multiplier
+            )
         else:
             result["confidence"] = 0.0
 
@@ -330,6 +336,22 @@ class LightGBMPredictor:
             if any([self._return_model, self._direction_model, self._volatility_model]):
                 self._is_ready = True
                 self._model_dir = model_dir
+                if not self._feature_names:
+                    ml_logger.warning(f"模型 {model_dir} 缺少特征名记录，预测时无法校验特征一致性")
+                else:
+                    for model_name, model in [
+                        ("return", self._return_model),
+                        ("direction", self._direction_model),
+                        ("volatility", self._volatility_model),
+                    ]:
+                        if model is None:
+                            continue
+                        model_n_features = getattr(model, "n_features_in_", None)
+                        if model_n_features is not None and model_n_features != len(self._feature_names):
+                            ml_logger.warning(
+                                f"模型 {model_name} 特征数不一致: "
+                                f"meta记录{len(self._feature_names)}个, 模型期望{model_n_features}个"
+                            )
                 ml_logger.info(f"模型加载成功: {model_dir}")
                 return True
             else:
@@ -373,10 +395,24 @@ def build_feature_matrix(
     db_manager,
     stock_code: str,
     indicators_list: list = None,
+    config: dict = None,
 ) -> tuple:
     from scripts.core.feature_engineering import extract_feature_vector
 
-    min_days = 60
+    ml_config = {}
+    if config is not None:
+        ml_config = config.get("ml_model", {})
+    else:
+        try:
+            from scripts.core.config_loader import load_config
+
+            ml_config = load_config().get("ml_model", {})
+        except Exception:
+            ml_config = {}
+
+    min_days = ml_config.get("build_feature_min_days", 60)
+    min_feature_window_days = ml_config.get("min_feature_window_days", 5)
+    min_training_samples = ml_config.get("min_training_samples", 100)
 
     try:
         history_df = db_manager.get_historical_data()
@@ -410,7 +446,7 @@ def build_feature_matrix(
 
     for i in range(n_days):
         window_df = history_df.iloc[:i + 1]
-        if len(window_df) < 5:
+        if len(window_df) < min_feature_window_days:
             continue
         try:
             window_indicators = calculate_all_indicators(window_df)
@@ -421,15 +457,14 @@ def build_feature_matrix(
                 min_len = min(len(feature_values), n_features)
                 X[i, :min_len] = feature_values[:min_len]
         except Exception:
+            ml_logger.warning(f"第{i}期特征提取异常", exc_info=True)
             continue
 
+    # 次日收益标签：最后一期没有下一日价格，必须排除
     next_day_return = np.zeros(n_days, dtype=np.float64)
     for i in range(n_days - 1):
         if closes[i] > 0:
             next_day_return[i] = (closes[i + 1] - closes[i]) / closes[i]
-    next_day_return[-1] = 0.0
-
-    direction = (next_day_return > 0).astype(int)
 
     volatility = np.zeros(n_days, dtype=np.float64)
     if n_days >= 5:
@@ -443,8 +478,41 @@ def build_feature_matrix(
     else:
         dates = list(range(n_days))
 
+    # 过滤无效训练样本：
+    # 1. 窗口长度不足导致特征向量为全 0 的行
+    # 2. 最后一期没有真实标签的样本
+    has_label = np.zeros(n_days, dtype=bool)
+    has_label[: n_days - 1] = True
+    valid_mask = (~np.all(X == 0, axis=1)) & has_label
+
+    # 训练数据质量校验与最低样本数检查
+    n_valid = int(valid_mask.sum())
+    if n_valid < min_training_samples:
+        ml_logger.warning(
+            f"有效训练样本不足: {n_valid} < {min_training_samples}，拒绝训练"
+        )
+        return (np.array([]), {}, [], [])
+
+    X = X[valid_mask]
+    filtered_return = next_day_return[valid_mask]
+    direction = (filtered_return > 0).astype(int)
+    volatility = volatility[valid_mask]
+    dates = [dates[i] for i in np.where(valid_mask)[0]]
+
+    if np.any(np.all(X == 0, axis=1)):
+        ml_logger.error("训练数据质量校验失败：过滤后仍存在全0特征行")
+        return (np.array([]), {}, [], [])
+
+    if np.any(~np.isfinite(X)):
+        ml_logger.error("训练数据质量校验失败：特征矩阵包含非有限值")
+        return (np.array([]), {}, [], [])
+
+    if np.any(~np.isfinite(filtered_return)):
+        ml_logger.error("训练数据质量校验失败：收益标签包含非有限值")
+        return (np.array([]), {}, [], [])
+
     y = {
-        "next_day_return": next_day_return,
+        "next_day_return": filtered_return,
         "direction": direction,
         "volatility": volatility,
     }
@@ -456,12 +524,30 @@ def hybrid_predict(
     rule_prediction: dict,
     ml_prediction: dict,
     alpha: float = 0.5,
+    config: dict = None,
 ) -> dict:
     if not ml_prediction:
         return dict(rule_prediction)
 
     if not rule_prediction:
         return dict(ml_prediction)
+
+    ml_config = {}
+    if config is not None:
+        ml_config = config.get("ml_model", {})
+    else:
+        try:
+            from scripts.core.config_loader import load_config
+
+            ml_config = load_config().get("ml_model", {})
+        except Exception:
+            ml_config = {}
+
+    hybrid_cfg = ml_config.get("hybrid_predict", {})
+    direction_threshold_bull = hybrid_cfg.get("direction_threshold_bull", 0.55)
+    direction_threshold_bear = hybrid_cfg.get("direction_threshold_bear", 0.45)
+    strong_threshold = hybrid_cfg.get("strong_threshold", 0.7)
+    weak_threshold = hybrid_cfg.get("weak_threshold", 0.3)
 
     result = {}
 
@@ -506,9 +592,9 @@ def hybrid_predict(
     weighted_rule = alpha * rule_direction
     weighted_ml = (1 - alpha) * ml_direction
     hybrid_direction_score = weighted_rule + weighted_ml
-    if hybrid_direction_score > 0.55:
+    if hybrid_direction_score > direction_threshold_bull:
         hybrid_direction = 1
-    elif hybrid_direction_score < 0.45:
+    elif hybrid_direction_score < direction_threshold_bear:
         hybrid_direction = 0
     else:
         hybrid_direction = 0.5  # 中性
@@ -516,9 +602,9 @@ def hybrid_predict(
     result["direction"] = hybrid_direction
 
     if hybrid_direction == 1:
-        result["trend"] = "up" if hybrid_direction_score < 0.7 else "strong_up"
+        result["trend"] = "up" if hybrid_direction_score < strong_threshold else "strong_up"
     elif hybrid_direction == 0:
-        result["trend"] = "down" if hybrid_direction_score > 0.3 else "strong_down"
+        result["trend"] = "down" if hybrid_direction_score > weak_threshold else "strong_down"
     else:
         result["trend"] = "neutral"
 

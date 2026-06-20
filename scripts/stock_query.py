@@ -32,6 +32,7 @@ def _call_with_timeout(func, *args, timeout=15, **kwargs):
             return None
         return future.result()
     except Exception:
+        # 超时执行失败时统一返回 None，由调用方重试或回退
         return None
     finally:
         executor.shutdown(wait=False)
@@ -62,7 +63,6 @@ def clean_data(df: pd.DataFrame, stock_code: str = None, stock_name: str = None)
 
     df = df.copy()
 
-    core_fields = ["收盘", "开盘", "最高", "最低"]
     aux_fields = ["成交量", "成交额", "涨跌幅", "振幅"]
 
     for field in aux_fields:
@@ -158,6 +158,7 @@ def parse_stock_code(user_input: str) -> Tuple[Optional[str], Optional[str]]:
                             market = "sh" if stock.endswith(".SH") else "sz"
                             return code, market
                 except Exception:
+                    # 单个 sector 遍历失败继续下一个，避免整体解析中断
                     continue
         except Exception as e:
             print(f"通过 xtquant 查询失败: {e}")
@@ -426,7 +427,6 @@ def get_stock_info(stock_code: str) -> Dict:
     try:
         import requests as _req
 
-        secid = f"1.{stock_code}" if stock_code.startswith(("6", "5")) else f"0.{stock_code}"
         dc_url = "http://datacenter-web.eastmoney.com/api/data/v1/get"
         dc_params = {
             "reportName": "RPT_F10_BASIC_ORGINFO",
@@ -685,25 +685,31 @@ def get_history_data(stock_code: str, days: int = 60, stock_name: str = None, kl
 
     try:
         import baostock as bs
+        from scripts.core.data_fetcher import _baostock_lock
 
-        bs.login()
-        try:
-            _freq_map = {None: 'd', 1: 'd', 101: 'w', 102: 'm'}
-            _frequency = _freq_map.get(klt, 'd')
-            rs = bs.query_history_k_data_plus(
-                f"{'sh' if market == 'sh' else 'sz'}.{stock_code}",
-                "date,open,high,low,close,volume,amount,turn,peTTM,pbMRQ",
-                start_date=start_date,
-                end_date=end_date,
-                frequency=_frequency,
-                adjustflag="2",
-            )
+        with _baostock_lock:
+            lg = bs.login()
+            if lg.error_code != "0":
+                raise RuntimeError(
+                    f"baostock login failed: {lg.error_code} {lg.error_msg}"
+                )
+            try:
+                _freq_map = {None: 'd', 1: 'd', 101: 'w', 102: 'm'}
+                _frequency = _freq_map.get(klt, 'd')
+                rs = bs.query_history_k_data_plus(
+                    f"{'sh' if market == 'sh' else 'sz'}.{stock_code}",
+                    "date,open,high,low,close,volume,amount,turn,peTTM,pbMRQ",
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency=_frequency,
+                    adjustflag="2",
+                )
 
-            data_list = []
-            while rs.error_code == "0" and rs.next():
-                data_list.append(rs.get_row_data())
-        finally:
-            bs.logout()
+                data_list = []
+                while rs.error_code == "0" and rs.next():
+                    data_list.append(rs.get_row_data())
+            finally:
+                bs.logout()
 
         if data_list:
             df = pd.DataFrame(
@@ -817,7 +823,7 @@ def generate_report(stock_input: str) -> str:
 
     report = f"# {stock_name} ({stock_code}) 股票信息报告\n\n"
     report += f"*报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n"
-    report += f"*数据来源: xtquant, efinance*\n\n"
+    report += "*数据来源: xtquant, efinance*\n\n"
 
     report += "## 一、基本信息\n\n"
     report += "| 项目 | 内容 |\n"

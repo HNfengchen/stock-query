@@ -4,8 +4,9 @@ import math
 import re
 import logging
 import time
+from datetime import date
 from typing import Dict, List, Optional
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, wait as _futures_wait
+from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
 
 import pandas as pd
 from psycopg2 import sql
@@ -13,7 +14,7 @@ from psycopg2 import sql
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from scripts.database import get_connection, release_connection
-from scripts.core.backtest import _get_trend_from_change, _is_trend_consistent, _trend_direction
+from scripts.core.backtest import _get_trend_from_change, _is_trend_consistent
 from scripts.core.walk_forward import WalkForwardValidator
 from backend.utils import sanitize_for_json
 
@@ -23,6 +24,8 @@ VALIDATION_TIMEOUT = 30
 WALK_FORWARD_TIMEOUT = 60
 
 _STOCK_CODE_PATTERN = re.compile(r'^\d{6}$')
+
+DEFAULT_BACKTEST_YEARS = 2
 
 
 class BacktestTimeoutError(Exception):
@@ -66,6 +69,70 @@ def _safe_float(value, default: float = 0.0) -> float:
         return numeric
     except (TypeError, ValueError):
         return default
+
+
+def _parse_request_date(date_str: str) -> date:
+    try:
+        return pd.to_datetime(date_str).date()
+    except Exception as exc:
+        raise ValueError(f"无效的日期格式: {date_str}") from exc
+
+
+def _resolve_prediction_date_range(
+    start_date: Optional[str],
+    end_date: Optional[str],
+    available_dates: List[date],
+    today: Optional[pd.Timestamp] = None,
+) -> tuple[date, date, bool]:
+    if not available_dates:
+        raise ValueError("没有可用的历史数据")
+
+    reference = today if today is not None else pd.Timestamp.now().normalize()
+    default_start = (reference - pd.DateOffset(years=DEFAULT_BACKTEST_YEARS)).date()
+    default_end = reference.date()
+
+    try:
+        requested_start = _parse_request_date(start_date) if start_date else default_start
+        requested_end = _parse_request_date(end_date) if end_date else default_end
+    except ValueError:
+        raise
+
+    if requested_start > requested_end:
+        raise ValueError("start_date 不能晚于 end_date")
+
+    min_date = min(available_dates)
+    max_date = max(available_dates)
+    fallback = False
+
+    if start_date is None and end_date is None:
+        if min_date > default_start:
+            requested_start = min_date
+            requested_end = max_date
+            fallback = True
+    else:
+        if requested_start < min_date or requested_end > max_date or requested_start > requested_end:
+            requested_start = min_date
+            requested_end = max_date
+            fallback = True
+
+    return requested_start, requested_end, fallback
+
+
+def _filter_data_by_date_range(
+    rows: List[tuple],
+    all_price_rows: List[tuple],
+    start_date: date,
+    end_date: date,
+) -> tuple[List[tuple], Dict[str, float]]:
+    start_str = start_date.isoformat()
+    end_str = end_date.isoformat()
+    filtered_rows = [r for r in rows if start_str <= str(r[0])[:10] <= end_str]
+    price_map = {}
+    for r in all_price_rows:
+        d = str(r[0])[:10]
+        if start_str <= d <= end_str and r[1] is not None:
+            price_map[d] = float(r[1])
+    return filtered_rows, price_map
 
 
 def _fetch_prediction_data(stock_code: str):
@@ -127,20 +194,37 @@ def _fetch_walk_forward_data(stock_code: str):
         release_connection(conn)
 
 
-def run_prediction_validation(stock_code: str) -> Dict:
+def run_prediction_validation(
+    stock_code: str, start_date: Optional[str] = None, end_date: Optional[str] = None
+) -> Dict:
     _validate_stock_code(stock_code)
     logger.info(f"回测验证开始: stock_code={stock_code}")
     start_time = time.time()
 
-    rows, all_price_rows = _run_with_timeout(_fetch_prediction_data, VALIDATION_TIMEOUT, stock_code)
+    raw_rows, all_price_rows = _run_with_timeout(_fetch_prediction_data, VALIDATION_TIMEOUT, stock_code)
 
-    all_dates = [r[0] for r in rows]
+    available_dates = [pd.to_datetime(str(r[0])).date() for r in all_price_rows]
+    resolved_start, resolved_end, fallback = _resolve_prediction_date_range(
+        start_date, end_date, available_dates
+    )
+
+    start_str = resolved_start.isoformat()
+    end_str = resolved_end.isoformat()
+    if fallback:
+        logger.warning(
+            f"股票 {stock_code} 历史数据不足 {DEFAULT_BACKTEST_YEARS} 年，"
+            f"回测将使用全部可用数据: {start_str} ~ {end_str}"
+        )
+    else:
+        logger.info(f"回测区间: stock_code={stock_code}, start={start_str}, end={end_str}")
+
+    rows, price_map = _filter_data_by_date_range(raw_rows, all_price_rows, resolved_start, resolved_end)
+    if not rows:
+        raise ValueError(f"股票 {stock_code} 在指定时间范围内暂无预测数据")
+    if not price_map:
+        raise ValueError(f"股票 {stock_code} 在指定时间范围内暂无价格数据")
+
     all_closes = {r[0]: float(r[1]) if r[1] is not None else None for r in rows}
-
-    price_map = {}
-    for r in all_price_rows:
-        if r[1] is not None:
-            price_map[str(r[0])] = float(r[1])
 
     sorted_dates = sorted(price_map.keys())
     date_index_map = {d: i for i, d in enumerate(sorted_dates)}

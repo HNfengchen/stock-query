@@ -134,5 +134,6 @@ class CircuitBreaker:
                 try:
                     results[source] = self._health_check_callback(source)
                 except Exception:
+                    logger.warning(f"数据源{source}健康检查异常", exc_info=True)
                     results[source] = False
         return results

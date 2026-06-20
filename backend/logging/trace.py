@@ -6,6 +6,7 @@ from starlette.responses import Response
 
 trace_id_var: contextvars.ContextVar[str] = contextvars.ContextVar('trace_id', default='')
 span_id_var: contextvars.ContextVar[str] = contextvars.ContextVar('span_id', default='')
+stock_code_var: contextvars.ContextVar[str] = contextvars.ContextVar('stock_code', default='')
 
 TRACE_ID_HEADER = 'X-Trace-Id'
 SPAN_ID_HEADER = 'X-Span-Id'
@@ -33,6 +34,14 @@ def set_trace_id(tid: str) -> None:
 
 def set_span_id(sid: str) -> None:
     span_id_var.set(sid)
+
+
+def get_stock_code() -> str:
+    return stock_code_var.get('')
+
+
+def set_stock_code(code: str) -> None:
+    stock_code_var.set(code)
 
 
 class TraceMiddleware(BaseHTTPMiddleware):

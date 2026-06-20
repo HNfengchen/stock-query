@@ -10,7 +10,6 @@ import re
 import threading
 import yaml
 from psycopg2 import pool, sql
-from psycopg2.extras import RealDictCursor
 from datetime import datetime, date as date_type, timedelta
 from typing import Dict, List, Optional, Any
 import pandas as pd
@@ -62,8 +61,9 @@ def _load_db_config():
                     "user": db_cfg.get("user", DB_CONFIG["user"]),
                     "password": db_cfg.get("password", DB_CONFIG["password"]),
                     "database": db_cfg.get("database", DB_CONFIG["database"]),
-                })
+            })
     except Exception:
+        # config.yaml 可选，读取失败时使用默认 DB 配置
         pass
 
 _load_db_config()
@@ -98,8 +98,8 @@ def release_connection(conn):
         try:
             conn.rollback()
         except Exception:
+            # 连接可能已关闭，回滚失败时忽略以保证连接归还
             pass
-        conn.autocommit = True
         _connection_pool.putconn(conn)
 
 
@@ -136,6 +136,7 @@ def init_database():
     conn.close()
 
     conn = get_connection()
+    conn.autocommit = True
     cur = conn.cursor()
     try:
         cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE")
@@ -444,6 +445,7 @@ class StockDataManager:
     def insert_daily_data(self, data: Dict[str, Any]):
         """插入单条日线数据"""
         conn = get_connection()
+        conn.autocommit = False
         cur = conn.cursor()
         try:
             insert_sql = sql.SQL("""
@@ -549,8 +551,20 @@ class StockDataManager:
             cur.executemany(insert_sql, data_list)
             conn.commit()
 
-            cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(self.table_name)))
-            after_count = cur.fetchone()[0]
+            try:
+                cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(self.table_name)))
+                after_count = cur.fetchone()[0]
+            except Exception as e:
+                db_logger.warning(f"[{self.stock_code}] commit 后查询行数失败: {e}")
+                after_count = before_count
+        except Exception as e:
+            db_logger.error(f"[{self.stock_code}] 批量插入失败: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                # 回滚失败时连接可能已失效，忽略后抛原始异常
+                pass
+            raise
         finally:
             cur.close()
             release_connection(conn)
@@ -721,6 +735,11 @@ class StockDataManager:
                 conn.commit()
         except Exception as e:
             db_logger.warning(f"[{self.stock_code}] 技术指标批量更新失败: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                # 回滚失败时连接可能已失效，忽略后继续关闭游标
+                pass
         finally:
             cur.close()
             release_connection(conn)
@@ -967,6 +986,7 @@ def _supplement_from_baostock(df: pd.DataFrame, stock_code: str = "") -> pd.Data
     try:
         import baostock as bs
         from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+        from scripts.core.data_fetcher import _baostock_lock
 
         if df.empty or "日期" not in df.columns or not stock_code:
             return df
@@ -979,19 +999,26 @@ def _supplement_from_baostock(df: pd.DataFrame, stock_code: str = "") -> pd.Data
         end_date = dates.max().strftime("%Y-%m-%d") if dates.notna().any() else "20991231"
 
         def _baostock_fetch():
-            bs.login()
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,amount,turn,peTTM,pbMRQ",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="d",
-                adjustflag="2",
-            )
-            data = []
-            while rs.error_code == "0" and rs.next():
-                data.append(rs.get_row_data())
-            bs.logout()
+            with _baostock_lock:
+                lg = bs.login()
+                if lg.error_code != "0":
+                    raise RuntimeError(
+                        f"baostock login failed: {lg.error_code} {lg.error_msg}"
+                    )
+                try:
+                    rs = bs.query_history_k_data_plus(
+                        bs_code,
+                        "date,amount,turn,peTTM,pbMRQ",
+                        start_date=start_date,
+                        end_date=end_date,
+                        frequency="d",
+                        adjustflag="2",
+                    )
+                    data = []
+                    while rs.error_code == "0" and rs.next():
+                        data.append(rs.get_row_data())
+                finally:
+                    bs.logout()
             return data
 
         executor = ThreadPoolExecutor(max_workers=1)
@@ -1087,6 +1114,176 @@ def ensure_stock_table(stock_code: str):
     manager.create_table()
 
 
+def _check_data_cache(
+    stock_code: str, force_refresh: bool, days: int, manager: StockDataManager
+) -> Optional[pd.DataFrame]:
+    """检查本地/内存缓存，返回缓存的 DataFrame 或 None"""
+    if force_refresh:
+        return None
+
+    try:
+        latest_date = manager.get_latest_trade_date()
+        if latest_date is None:
+            return None
+
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                sql.SQL("SELECT MAX(created_at) FROM {}").format(
+                    sql.Identifier(manager.table_name),
+                )
+            )
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return None
+
+            age_seconds = (datetime.now() - row[0]).total_seconds()
+
+            # 判断DB数据是否已是最新（最新日期为今天或昨天）
+            today = datetime.now().date()
+            yesterday = today - timedelta(days=1)
+            latest_date_only = (
+                latest_date.date()
+                if hasattr(latest_date, "date") and not isinstance(latest_date, date_type)
+                else latest_date
+            )
+            is_data_up_to_date = latest_date_only >= yesterday
+
+            df = manager.get_historical_data()
+            if df is None or df.empty or len(df) < 5:
+                return None
+
+            if is_data_up_to_date:
+                db_logger.info(
+                    f"[{stock_code}] 数据已是最新 (最新日期={latest_date_only}, {len(df)} 条, 缓存年龄{age_seconds:.0f}秒)"
+                )
+                return df
+
+            if age_seconds < 300:
+                db_logger.info(
+                    f"[{stock_code}] 使用数据库缓存 ({len(df)} 条, 缓存年龄{age_seconds:.0f}秒)"
+                )
+                return df
+
+            db_logger.info(f"[{stock_code}] 缓存数据不完整，重新获取")
+        finally:
+            cur.close()
+            release_connection(conn)
+    except Exception as e:
+        db_logger.warning(f"[{stock_code}] 数据库缓存检查失败，回退到API: {e}")
+
+    return None
+
+
+def _fetch_data_from_sources(stock_code: str, days: int) -> Dict[str, Any]:
+    """按优先级从数据库、baostock 等数据源获取数据"""
+    from scripts.core.data_fetcher import DataFetcher
+    from scripts.technical_indicators import calculate_all_indicators
+
+    fetcher = DataFetcher({})
+    stock_info = fetcher.fetch_stock_info(stock_code)
+    fund_flow = fetcher.fetch_fund_flow(stock_code)
+    history_df = fetcher.fetch_history_data(stock_code, days)
+
+    if history_df is None or history_df.empty:
+        raise ValueError("无法获取历史数据")
+
+    history_df = _enrich_history_df(history_df, stock_code)
+    history_df = _calc_market_cap(history_df, stock_info)
+
+    indicators = calculate_all_indicators(history_df)
+
+    return {
+        "stock_info": stock_info,
+        "fund_flow": fund_flow,
+        "history_df": history_df,
+        "indicators": indicators,
+    }
+
+
+def _build_daily_data_list(
+    history_df: pd.DataFrame,
+    stock_code: str,
+    fund_flow: Dict[str, Any],
+    stock_info: Dict[str, Any],
+    manager: StockDataManager,
+    force_refresh: bool,
+) -> List[Dict[str, Any]]:
+    """将 DataFrame 转换为 data_list 结构"""
+    latest_date = manager.get_latest_trade_date()
+    is_first_time = latest_date is None
+
+    if is_first_time or force_refresh:
+        new_data_df = history_df
+    else:
+        latest_date_only = (
+            latest_date.date()
+            if hasattr(latest_date, "date") and not isinstance(latest_date, date_type)
+            else latest_date
+        )
+        cutoff_ts = pd.Timestamp(latest_date_only)
+        new_data_df = history_df[pd.to_datetime(history_df["日期"]) > cutoff_ts]
+
+    data_list: List[Dict[str, Any]] = []
+    if new_data_df.empty:
+        return data_list
+
+    for i, row in enumerate(new_data_df.itertuples()):
+        trade_date = pd.to_datetime(getattr(row, '日期', row.Index))
+        if isinstance(trade_date, pd.Timestamp):
+            trade_date = trade_date.to_pydatetime()
+        trade_date_only = (
+            trade_date.date() if hasattr(trade_date, "date") else trade_date
+        )
+        is_latest_row = i == len(new_data_df) - 1
+
+        daily_data = {
+            "trade_date": trade_date_only,
+            "trade_time": trade_date,
+            "open": to_python_type(getattr(row, '开盘', None)),
+            "high": to_python_type(getattr(row, '最高', None)),
+            "low": to_python_type(getattr(row, '最低', None)),
+            "close": to_python_type(getattr(row, '收盘', None)),
+            "volume": int(getattr(row, '成交量', 0)) if pd.notna(getattr(row, '成交量', None)) else 0,
+            "amount": to_python_type(getattr(row, '成交额', None)),
+            "change_pct": to_python_type(getattr(row, '涨跌幅', None)),
+            "change_amount": to_python_type(getattr(row, '涨跌额', None)),
+            "turnover_rate": to_python_type(getattr(row, '换手率', None)) or (to_python_type(stock_info.get("换手率")) if is_latest_row else None),
+            "pe_dynamic": to_python_type(getattr(row, '市盈率_动态', None)) or (to_python_type(stock_info.get("市盈率-动态")) if is_latest_row else None),
+            "pb": to_python_type(getattr(row, '市净率', None)) or (to_python_type(stock_info.get("市净率")) if is_latest_row else None),
+            "total_market_cap": to_python_type(getattr(row, '总市值', None)),
+            "circ_market_cap": to_python_type(getattr(row, '流通市值', None)),
+            "main_flow": to_python_type(fund_flow.get("主力净流入")) if is_latest_row else None,
+            "main_flow_ratio": to_python_type(fund_flow.get("主力净流入占比")) if is_latest_row else None,
+            "day1_pred_high": to_python_type(getattr(row, 'day1_pred_high', None)),
+            "day1_pred_low": to_python_type(getattr(row, 'day1_pred_low', None)),
+            "day2_pred_high": to_python_type(getattr(row, 'day2_pred_high', None)),
+            "day2_pred_low": to_python_type(getattr(row, 'day2_pred_low', None)),
+            "trend": to_python_type(getattr(row, 'trend', None)),
+        }
+        data_list.append(daily_data)
+
+    return data_list
+
+
+def _batch_save_daily_data(
+    data_list: List[Dict[str, Any]],
+    stock_code: str,
+    manager: StockDataManager,
+    history_df: pd.DataFrame,
+    indicators: Any,
+) -> None:
+    """批量插入/更新数据库"""
+    if not data_list:
+        return
+
+    db_logger.info(f"[{stock_code}] 批量处理 {len(data_list)} 条数据...")
+    manager.batch_insert_daily_data(data_list)
+    manager.batch_update_technical_indicators(history_df, indicators)
+    db_logger.info(f"[{stock_code}] 数据已保存到数据库")
+
+
 def get_or_fetch_stock_data(
     stock_code: str, force_refresh: bool = False, days: int = 60
 ) -> Dict[str, Any]:
@@ -1114,140 +1311,26 @@ def get_or_fetch_stock_data(
         db_logger.error(f"[{stock_code}] 创建表失败: {e}")
         return {"source": "error", "error": str(e)}
 
-    if not force_refresh:
-        try:
-            latest_date = manager.get_latest_trade_date()
-            if latest_date is not None:
-                conn = get_connection()
-                cur = conn.cursor()
-                try:
-                    cur.execute(
-                        sql.SQL("SELECT MAX(created_at) FROM {}").format(
-                            sql.Identifier(manager.table_name),
-                        )
-                    )
-                    row = cur.fetchone()
-                    if row and row[0]:
-                        age_seconds = (datetime.now() - row[0]).total_seconds()
-
-                        # 判断DB数据是否已是最新（最新日期为今天或昨天）
-                        today = datetime.now().date()
-                        yesterday = today - timedelta(days=1)
-                        latest_date_only = (
-                            latest_date.date()
-                            if hasattr(latest_date, "date") and not isinstance(latest_date, date_type)
-                            else latest_date
-                        )
-                        is_data_up_to_date = latest_date_only >= yesterday
-
-                        if is_data_up_to_date:
-                            df = manager.get_historical_data()
-                            if df is not None and not df.empty and len(df) >= 5:
-                                db_logger.info(
-                                    f"[{stock_code}] 数据已是最新 (最新日期={latest_date_only}, {len(df)} 条, 缓存年龄{age_seconds:.0f}秒)"
-                                )
-                                return {
-                                    "source": "database",
-                                    "stock_info": {},
-                                    "fund_flow": {},
-                                    "history_df": df,
-                                }
-
-                        if age_seconds < 300:
-                            df = manager.get_historical_data()
-                            if df is not None and not df.empty and len(df) >= 5:
-                                db_logger.info(
-                                    f"[{stock_code}] 使用数据库缓存 ({len(df)} 条, 缓存年龄{age_seconds:.0f}秒)"
-                                )
-                                return {
-                                    "source": "database",
-                                    "stock_info": {},
-                                    "fund_flow": {},
-                                    "history_df": df,
-                                }
-                            else:
-                                db_logger.info(f"[{stock_code}] 缓存数据不完整，重新获取")
-                finally:
-                    cur.close()
-                    release_connection(conn)
-        except Exception as e:
-            db_logger.warning(f"[{stock_code}] 数据库缓存检查失败，回退到API: {e}")
+    cached_df = _check_data_cache(stock_code, force_refresh, days, manager)
+    if cached_df is not None:
+        return {
+            "source": "database",
+            "stock_info": {},
+            "fund_flow": {},
+            "history_df": cached_df,
+        }
 
     try:
-        from scripts.core.data_fetcher import DataFetcher
+        fetched = _fetch_data_from_sources(stock_code, days)
+        stock_info = fetched["stock_info"]
+        fund_flow = fetched["fund_flow"]
+        history_df = fetched["history_df"]
+        indicators = fetched["indicators"]
 
-        fetcher = DataFetcher({})
-        stock_info = fetcher.fetch_stock_info(stock_code)
-        fund_flow = fetcher.fetch_fund_flow(stock_code)
-        history_df = fetcher.fetch_history_data(stock_code, days)
-
-        if history_df is None or history_df.empty:
-            db_logger.warning(f"[{stock_code}] 无法获取历史数据")
-            return {"source": "error", "error": "无法获取历史数据"}
-
-        history_df = _enrich_history_df(history_df, stock_code)
-        history_df = _calc_market_cap(history_df, stock_info)
-
-        from scripts.technical_indicators import calculate_all_indicators
-
-        indicators = calculate_all_indicators(history_df)
-
-        latest_date = manager.get_latest_trade_date()
-        is_first_time = latest_date is None
-
-        if is_first_time or force_refresh:
-            new_data_df = history_df
-        else:
-            latest_date_only = (
-                latest_date.date()
-                if hasattr(latest_date, "date") and not isinstance(latest_date, date_type)
-                else latest_date
-            )
-            cutoff_ts = pd.Timestamp(latest_date_only)
-            new_data_df = history_df[pd.to_datetime(history_df["日期"]) > cutoff_ts]
-
-        if not new_data_df.empty:
-            data_list = []
-            for i, row in enumerate(new_data_df.itertuples()):
-                trade_date = pd.to_datetime(getattr(row, '日期', row.Index))
-                if isinstance(trade_date, pd.Timestamp):
-                    trade_date = trade_date.to_pydatetime()
-                trade_date_only = (
-                    trade_date.date() if hasattr(trade_date, "date") else trade_date
-                )
-                is_latest_row = i == len(new_data_df) - 1
-
-                daily_data = {
-                    "trade_date": trade_date_only,
-                    "trade_time": trade_date,
-                    "open": to_python_type(getattr(row, '开盘', None)),
-                    "high": to_python_type(getattr(row, '最高', None)),
-                    "low": to_python_type(getattr(row, '最低', None)),
-                    "close": to_python_type(getattr(row, '收盘', None)),
-                    "volume": int(getattr(row, '成交量', 0)) if pd.notna(getattr(row, '成交量', None)) else 0,
-                    "amount": to_python_type(getattr(row, '成交额', None)),
-                    "change_pct": to_python_type(getattr(row, '涨跌幅', None)),
-                    "change_amount": to_python_type(getattr(row, '涨跌额', None)),
-                    "turnover_rate": to_python_type(getattr(row, '换手率', None)) or (to_python_type(stock_info.get("换手率")) if is_latest_row else None),
-                    "pe_dynamic": to_python_type(getattr(row, '市盈率_动态', None)) or (to_python_type(stock_info.get("市盈率-动态")) if is_latest_row else None),
-                    "pb": to_python_type(getattr(row, '市净率', None)) or (to_python_type(stock_info.get("市净率")) if is_latest_row else None),
-                    "total_market_cap": to_python_type(getattr(row, '总市值', None)),
-                    "circ_market_cap": to_python_type(getattr(row, '流通市值', None)),
-                    "main_flow": to_python_type(fund_flow.get("主力净流入")) if is_latest_row else None,
-                    "main_flow_ratio": to_python_type(fund_flow.get("主力净流入占比")) if is_latest_row else None,
-                    "day1_pred_high": to_python_type(getattr(row, 'day1_pred_high', None)),
-                    "day1_pred_low": to_python_type(getattr(row, 'day1_pred_low', None)),
-                    "day2_pred_high": to_python_type(getattr(row, 'day2_pred_high', None)),
-                    "day2_pred_low": to_python_type(getattr(row, 'day2_pred_low', None)),
-                    "trend": to_python_type(getattr(row, 'trend', None)),
-                }
-                data_list.append(daily_data)
-
-            if data_list:
-                db_logger.info(f"[{stock_code}] 批量处理 {len(data_list)} 条数据...")
-                manager.batch_insert_daily_data(data_list)
-                manager.batch_update_technical_indicators(history_df, indicators)
-                db_logger.info(f"[{stock_code}] 数据已保存到数据库")
+        data_list = _build_daily_data_list(
+            history_df, stock_code, fund_flow, stock_info, manager, force_refresh
+        )
+        _batch_save_daily_data(data_list, stock_code, manager, history_df, indicators)
 
         db_logger.info(f"[{stock_code}] 数据获取完成")
 
@@ -1280,7 +1363,6 @@ def get_or_fetch_stock_data(
             db_logger.error(f"[{stock_code}] 数据库回退也失败: {fallback_err}")
 
         return {"source": "error", "error": str(e)}
-
 
 def _ensure_ml_models_table():
     conn = get_connection()
@@ -1332,6 +1414,7 @@ def save_model_record(stock_code: str, model_path: str, metrics: dict, params: d
             params_clean[k] = str(v)
 
     conn = get_connection()
+    conn.autocommit = False
     cur = conn.cursor()
     try:
         cur.execute(

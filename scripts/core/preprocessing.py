@@ -6,7 +6,7 @@
 
 import pandas as pd
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import Tuple
 
 
 OHLCV_COLUMNS = ["开盘", "收盘", "最高", "最低", "成交量"]
@@ -59,7 +59,6 @@ def handle_outliers(
             continue
 
         if method == "winsorize":
-            z_scores = robust_z_score(series[valid_mask])
             median = series[valid_mask].median()
             mad = (series[valid_mask] - median).abs().median() * 1.4826
 
@@ -114,16 +113,51 @@ def preprocess_data(df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
     if not target_columns:
         return df
 
-    return handle_outliers(df, target_columns, method=method, threshold=threshold)
+    df = handle_outliers(df, target_columns, method=method, threshold=threshold)
+
+    denoise_cfg = preprocessing_config.get("denoise", {})
+    if denoise_cfg.get("enabled", False):
+        df = denoise_data(df, method=denoise_cfg.get("method", "kalman"), config=config)
+
+    return df
 
 
-def kalman_filter_denoise(series: pd.Series, Q: float = 1e-5, R: float = 1e-2) -> pd.Series:
-    # 基于近期波动率自适应调整Q，波动大时增大Q允许更快跟踪
+def _compute_adaptive_q(vol: float, Q: float, config: dict = None) -> float:
+    """根据波动率计算自适应过程噪声 Q。
+
+    波动大时缩小 Q，使滤波器更信任模型预测，适用于去噪场景。
+    兼容传入完整 config 或 preprocessing.denoise 子配置。
+    """
+    cfg = config or {}
+    if "kalman_vol_factor" in cfg:
+        denoise_cfg = cfg
+    else:
+        denoise_cfg = cfg.get("denoise", {})
+        if not denoise_cfg and "preprocessing" in cfg:
+            denoise_cfg = cfg.get("preprocessing", {}).get("denoise", {})
+
+    factor_coefficient = denoise_cfg.get("kalman_vol_factor", 10.0)
+    q_min = denoise_cfg.get("kalman_q_min", 0.1)
+    q_max = denoise_cfg.get("kalman_q_max", 2.0)
+
+    factor = 1.0 - vol * factor_coefficient
+    factor = max(q_min, min(factor, q_max))
+    return Q * factor
+
+
+def kalman_filter_denoise(
+    series: pd.Series, Q: float = 1e-5, R: float = 1e-2, config: dict = None
+) -> pd.Series:
+    # 基于近期波动率自适应调整Q，波动大时缩小Q更信任模型预测
+    q_config = config or {}
+    if "preprocessing" in q_config:
+        q_config = q_config.get("preprocessing", {}).get("denoise", {})
+
     Q_adaptive = Q
     if len(series) >= 20:
         vol = series.pct_change().rolling(20).std().iloc[-1]
         if not np.isnan(vol):
-            Q_adaptive = Q * (1 + vol * 100)
+            Q_adaptive = _compute_adaptive_q(vol, Q, q_config)
 
     x = None
     P = 1.0
@@ -187,15 +221,21 @@ def ema_adaptive_denoise(series: pd.Series, alpha_range: Tuple[float, float] = (
     return pd.Series(result, index=series.index, name=series.name)
 
 
-def denoise_data(df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
+def denoise_data(
+    df: pd.DataFrame, config: dict = None, method: str = None
+) -> pd.DataFrame:
     if df is None or df.empty:
         return df
 
     config = config or {}
-    preprocessing_config = config.get("preprocessing", {})
-    denoise_config = preprocessing_config.get("denoise", {})
+    if method is None:
+        preprocessing_config = config.get("preprocessing", {})
+        denoise_config = preprocessing_config.get("denoise", {})
+        method = denoise_config.get("method", "none")
+    else:
+        preprocessing_config = config.get("preprocessing", {})
+        denoise_config = preprocessing_config.get("denoise", {})
 
-    method = denoise_config.get("method", "none")
     if method == "none":
         return df
 
@@ -218,7 +258,7 @@ def denoise_data(df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
         if method == "kalman":
             Q = denoise_config.get("kalman_Q", 1e-5)
             R = denoise_config.get("kalman_R", 1e-2)
-            result[col] = kalman_filter_denoise(series, Q=Q, R=R)
+            result[col] = kalman_filter_denoise(series, Q=Q, R=R, config=denoise_config)
         elif method == "ema_adaptive":
             alpha_range = tuple(denoise_config.get("ema_alpha_range", [0.05, 0.3]))
             result[col] = ema_adaptive_denoise(series, alpha_range=alpha_range)

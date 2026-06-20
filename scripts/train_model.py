@@ -53,7 +53,7 @@ def train_stock(stock_code: str, config: dict, model_dir: str, dry_run: bool = F
 
     db_manager = StockDataManager(stock_code)
 
-    X, y, feature_names, dates = build_feature_matrix(db_manager, stock_code)
+    X, y, feature_names, dates = build_feature_matrix(db_manager, stock_code, config=config)
 
     if X.size == 0:
         train_logger.warning(f"[{stock_code}] 特征矩阵为空，跳过")

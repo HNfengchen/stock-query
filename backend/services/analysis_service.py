@@ -5,8 +5,8 @@ import logging
 import math
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from datetime import datetime, timedelta
+from collections import OrderedDict
+from datetime import datetime
 from typing import Dict, Optional
 
 import numpy as np
@@ -19,16 +19,18 @@ from scripts.core.data_fetcher import DataFetcher
 from scripts.core.analyzer import StockAnalyzer
 from scripts.technical_indicators import calculate_all_indicators
 
-from backend.utils import clean_float, to_list, deep_clean_nan, clean_nested
+from backend.utils import clean_float, to_list, deep_clean_nan, clean_nested, sanitize_for_json
 from backend.logging import log_data
+from backend.logging.trace import set_stock_code
 
 _svc_logger = logging.getLogger("stock_query.analysis_service")
 
 
 class AnalysisLogger:
-    def __init__(self):
+    def __init__(self, stock_code: str = ""):
         self.entries = []
         self.callback = None
+        self.stock_code = stock_code
 
     def set_callback(self, callback):
         self.callback = callback
@@ -37,14 +39,21 @@ class AnalysisLogger:
         entry = {
             "timestamp": datetime.now().strftime("%H:%M:%S"),
             "level": level,
-            "message": message
+            "message": message,
+            "stock_code": self.stock_code,
         }
         self.entries.append(entry)
+
+        # 同时写入文件日志，并带上结构化 stock_code 字段，便于检索与关联
+        level_value = getattr(logging, level.upper(), logging.INFO)
+        extra = {"stock_code": self.stock_code} if self.stock_code else {}
+        _svc_logger.log(level_value, message, extra=extra)
+
         if self.callback:
             try:
                 self.callback(entry)
             except Exception:
-                pass
+                _svc_logger.warning("分析日志回调异常", exc_info=True)
 
     def info(self, message: str):
         self.log("INFO", message)
@@ -64,7 +73,8 @@ class AnalysisLogger:
 
 _fetcher_cache = None
 _analyzer_cache = None
-_result_cache = {}
+_RESULT_CACHE_MAX_SIZE = 100
+_result_cache = OrderedDict()
 _cache_lock = threading.Lock()
 
 
@@ -73,20 +83,23 @@ def _validate_stock_code(stock_code: str):
         raise ValueError(f"无效的股票代码格式: {stock_code}，必须为6位数字")
 
 
-from scripts.core.config_loader import load_config
+def _load_config():
+    """延迟加载配置，避免模块顶层导入触发路径问题。"""
+    from scripts.core.config_loader import load_config
+    return load_config()
 
 
 def get_fetcher():
     global _fetcher_cache
     if _fetcher_cache is None:
-        _fetcher_cache = DataFetcher(load_config())
+        _fetcher_cache = DataFetcher(_load_config())
     return _fetcher_cache
 
 
 def get_analyzer():
     global _analyzer_cache
     if _analyzer_cache is None:
-        _analyzer_cache = StockAnalyzer(load_config())
+        _analyzer_cache = StockAnalyzer(_load_config())
     return _analyzer_cache
 
 
@@ -99,7 +112,6 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
             "fund_flow": {"dates": [], "main_flow": [], "main_flow_ratio": [], "small_flow": [], "change_pct": []},
         }
 
-    import pandas as pd
     df = history_df.copy()
 
     if "日期" in df.columns:
@@ -184,10 +196,15 @@ def build_chart_data(history_df, indicators: Dict, fund_flow: Dict = None) -> Di
     }
 
 
-def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_callback=None, shared_market_data=None, shared_sector_quotes=None):
-    fetcher = get_fetcher()
-    analyzer = get_analyzer()
+def _prepare_analysis_inputs(stock_input, position_type, cost_price, logger, stage_callback=None, shared_market_data=None, shared_sector_quotes=None):
+    """参数校验、默认值填充、返回规整后的参数字典"""
+    if not stock_input:
+        raise ValueError("股票代码不能为空")
 
+    position_type = position_type or "观望"
+    cost_price = cost_price if cost_price is not None else 0.0
+
+    fetcher = get_fetcher()
     try:
         stock_code, stock_name, market, market_tag = fetcher.resolve_stock_code(stock_input)
         logger.info(f"股票代码解析: {stock_code} ({stock_name})" + (f" [{market_tag}]" if market_tag else ""))
@@ -198,11 +215,32 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         market = None
         market_tag = ""
 
+    # 让 logger 与当前线程上下文都绑定到实际股票代码，保证后续日志可检索
+    if hasattr(logger, "stock_code"):
+        logger.stock_code = stock_code
+
+    return {
+        "stock_input": stock_input,
+        "stock_code": stock_code,
+        "stock_name": stock_name,
+        "market": market,
+        "market_tag": market_tag,
+        "position_type": position_type,
+        "cost_price": cost_price,
+        "stage_callback": stage_callback,
+        "shared_market_data": shared_market_data,
+        "shared_sector_quotes": shared_sector_quotes,
+    }
+
+
+def _fetch_analysis_data(stock_code, stock_name, market, market_tag, fetcher, logger, shared_market_data=None, shared_sector_quotes=None):
+    """调用 data_fetcher / indicator_service 获取行情和指标数据"""
     info = None
     fund_flow = None
     history_df = None
     indicators = None
     data_source = None
+    db_data = None
     fetch_start = time.time()
 
     try:
@@ -337,28 +375,87 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
              has_stock_info=all_data.get('stock_info') is not None,
              has_market_data='market_data' in all_data)
 
-    if stage_callback:
-        stage_callback('stage_basic', {
-            'stock_info': info,
-            'stock_name': all_data.get('stock_name'),
-            'fund_flow': fund_flow,
-        })
-
     if not indicators:
         indicators = calculate_all_indicators(history_df)
     logger.info(f"指标计算完成: {len(indicators)}组指标")
 
     all_data["indicators"] = indicators
+    all_data["weekly_df"] = weekly_df
+    all_data["monthly_df"] = monthly_df
 
+    return all_data
+
+
+def _detect_hmm_state(analyzer, history_df, indicators, logger):
+    """检测 HMM 或市场状态"""
+    hmm_state = None
+    if hasattr(analyzer, '_hmm_detector') and analyzer._hmm_detector is not None and analyzer._hmm_detector.is_ready():
+        if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+            try:
+                closes = history_df["收盘"].values.astype(np.float64)
+                returns = np.diff(closes) / closes[:-1]
+                vols = np.zeros_like(returns)
+                window = 20
+                for i_hmm in range(len(returns)):
+                    start = max(0, i_hmm - window + 1)
+                    vols[i_hmm] = np.std(returns[start:i_hmm + 1]) if i_hmm > 0 else 0.0
+                volumes = history_df["成交量"].values.astype(np.float64) if "成交量" in history_df.columns else np.ones(len(closes))
+                volume_changes = np.diff(volumes) / (volumes[:-1] + 1e-10)
+                hmm_result = analyzer._hmm_detector.predict(returns, vols, volume_changes)
+                hmm_state = {
+                    "current_state": hmm_result.get("current_state", "未知"),
+                    "state_probabilities": hmm_result.get("state_probabilities", {}),
+                    "transition_matrix": hmm_result.get("transition_matrix"),
+                }
+            except Exception:
+                logger.warning("HMM预测异常", exc_info=True)
+    elif hasattr(analyzer, '_regime_detector') and analyzer._regime_detector is not None:
+        if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+            try:
+                latest_close = float(history_df["收盘"].iloc[-1])
+                prev_close = float(history_df["收盘"].iloc[-2]) if len(history_df) > 1 else latest_close
+                change_pct = (latest_close - prev_close) / prev_close * 100 if prev_close != 0 else 0
+                vol_col = "成交量" if "成交量" in history_df.columns else None
+                volume_ratio = 1.0
+                if vol_col and len(history_df) > 1:
+                    latest_vol = float(history_df[vol_col].iloc[-1])
+                    prev_vol = float(history_df[vol_col].iloc[-2])
+                    volume_ratio = latest_vol / prev_vol if prev_vol != 0 else 1.0
+                boll = indicators.get("BOLL", {})
+                bandwidth = boll.get("latest", {}).get("bandwidth") if isinstance(boll.get("latest"), dict) else None
+                volatility_signal = "正常"
+                if bandwidth is not None:
+                    if bandwidth < 10:
+                        volatility_signal = "低波动"
+                    elif bandwidth > 25:
+                        volatility_signal = "高波动"
+                market_data_hmm = {
+                    "volatility_signal": volatility_signal,
+                    "volume_ratio": volume_ratio,
+                    "market_change_pct": change_pct,
+                }
+                regime = analyzer._regime_detector.detect_regime(market_data_hmm)
+                hmm_state = {
+                    "current_state": regime,
+                    "state_probabilities": {},
+                    "transition_matrix": None,
+                }
+            except Exception:
+                logger.warning("市场状态检测异常", exc_info=True)
+    return hmm_state
+
+
+def _execute_analysis(analyzer, stock_code, all_data, history_df, indicators, position_type, cost_price, logger, stage_callback=None):
+    """调用 StockAnalyzer 的 analyze_technical 等方法执行分析"""
     if stage_callback:
         stage_callback('stage_technical', {
             'indicators': indicators,
-            'technical_chart_data': build_chart_data(history_df, indicators, fund_flow) if indicators else None,
+            'technical_chart_data': build_chart_data(history_df, indicators, all_data.get('fund_flow')) if indicators else None,
         })
 
     current_price = 0
     try:
-        current_price = float(info.get('最新价', 0)) if info.get('最新价') else 0
+        current_price = float(all_data.get('stock_info', {}).get('最新价', 0)) if all_data.get('stock_info', {}).get('最新价') else 0
     except (TypeError, ValueError):
         current_price = 0
 
@@ -367,6 +464,8 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     logger.info(f"技术分析完成: 评分={tech_score:.2f}")
 
     # 计算周线/月线技术指标和评分
+    weekly_df = all_data.get('weekly_df')
+    monthly_df = all_data.get('monthly_df')
     weekly_indicators = None
     weekly_tech = None
     monthly_indicators = None
@@ -388,7 +487,7 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         except Exception as e:
             logger.warn(f"月线技术分析失败: {e}")
 
-    fund_flow_analysis = analyzer.analyze_fund_flow(fund_flow, info, history_df=history_df)
+    fund_flow_analysis = analyzer.analyze_fund_flow(all_data.get('fund_flow'), all_data.get('stock_info'), history_df=history_df)
     fund_score = fund_flow_analysis.get('score', 0.5) if fund_flow_analysis else 0.5
     logger.info(f"资金流向分析完成: 评分={fund_score:.2f}")
 
@@ -466,60 +565,7 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
             'position_strategy': strategy,
         })
 
-    hmm_state = None
-    if hasattr(analyzer, '_hmm_detector') and analyzer._hmm_detector is not None and analyzer._hmm_detector.is_ready():
-        if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
-            try:
-                closes = history_df["收盘"].values.astype(np.float64)
-                returns = np.diff(closes) / closes[:-1]
-                vols = np.zeros_like(returns)
-                window = 20
-                for i_hmm in range(len(returns)):
-                    start = max(0, i_hmm - window + 1)
-                    vols[i_hmm] = np.std(returns[start:i_hmm + 1]) if i_hmm > 0 else 0.0
-                volumes = history_df["成交量"].values.astype(np.float64) if "成交量" in history_df.columns else np.ones(len(closes))
-                volume_changes = np.diff(volumes) / (volumes[:-1] + 1e-10)
-                hmm_result = analyzer._hmm_detector.predict(returns, vols, volume_changes)
-                hmm_state = {
-                    "current_state": hmm_result.get("current_state", "未知"),
-                    "state_probabilities": hmm_result.get("state_probabilities", {}),
-                    "transition_matrix": hmm_result.get("transition_matrix"),
-                }
-            except Exception:
-                pass
-    elif hasattr(analyzer, '_regime_detector') and analyzer._regime_detector is not None:
-        if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
-            try:
-                latest_close = float(history_df["收盘"].iloc[-1])
-                prev_close = float(history_df["收盘"].iloc[-2]) if len(history_df) > 1 else latest_close
-                change_pct = (latest_close - prev_close) / prev_close * 100 if prev_close != 0 else 0
-                vol_col = "成交量" if "成交量" in history_df.columns else None
-                volume_ratio = 1.0
-                if vol_col and len(history_df) > 1:
-                    latest_vol = float(history_df[vol_col].iloc[-1])
-                    prev_vol = float(history_df[vol_col].iloc[-2])
-                    volume_ratio = latest_vol / prev_vol if prev_vol != 0 else 1.0
-                boll = indicators.get("BOLL", {})
-                bandwidth = boll.get("latest", {}).get("bandwidth") if isinstance(boll.get("latest"), dict) else None
-                volatility_signal = "正常"
-                if bandwidth is not None:
-                    if bandwidth < 10:
-                        volatility_signal = "低波动"
-                    elif bandwidth > 25:
-                        volatility_signal = "高波动"
-                market_data_hmm = {
-                    "volatility_signal": volatility_signal,
-                    "volume_ratio": volume_ratio,
-                    "market_change_pct": change_pct,
-                }
-                regime = analyzer._regime_detector.detect_regime(market_data_hmm)
-                hmm_state = {
-                    "current_state": regime,
-                    "state_probabilities": {},
-                    "transition_matrix": None,
-                }
-            except Exception:
-                pass
+    hmm_state = _detect_hmm_state(analyzer, history_df, indicators, logger)
 
     action_gate = validation.get('action_gate', '')
     action_gate_text_map = {
@@ -533,19 +579,60 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
     }
     action_gate_text = action_gate_text_map.get(action_gate, trading_signal.get('signal_text', '观望'))
 
+    return {
+        "technical_analysis": technical_analysis,
+        "fund_flow_analysis": fund_flow_analysis,
+        "sentiment_analysis": sentiment_analysis,
+        "tech_score": tech_score,
+        "fund_score": fund_score,
+        "sentiment_score": sentiment_score,
+        "trading_signal": trading_signal,
+        "price_prediction": price_prediction,
+        "multi_timeframe": multi_timeframe,
+        "validation": validation,
+        "strategy": strategy,
+        "hmm_state": hmm_state,
+        "action_gate": action_gate,
+        "action_gate_text": action_gate_text,
+    }
+
+
+def _persist_analysis_result(stock_code, all_data, analysis_outputs, logger):
+    """结果持久化准备、缓存写入前处理、日志记录"""
+    info = all_data.get("stock_info") or {}
+    market_data = all_data.get("market_data") or {}
+    history_df = all_data.get("history_data")
+    indicators = all_data.get("indicators")
+    fund_flow = all_data.get("fund_flow") or {}
+
+    technical_analysis = analysis_outputs["technical_analysis"]
+    fund_flow_analysis = analysis_outputs["fund_flow_analysis"]
+    sentiment_analysis = analysis_outputs["sentiment_analysis"]
+    trading_signal = analysis_outputs["trading_signal"]
+    price_prediction = analysis_outputs["price_prediction"]
+    validation = analysis_outputs["validation"]
+    strategy = analysis_outputs["strategy"]
+    hmm_state = analysis_outputs["hmm_state"]
+    action_gate = analysis_outputs["action_gate"]
+    action_gate_text = analysis_outputs["action_gate_text"]
+
     charts = build_chart_data(history_df, indicators, fund_flow)
 
     result = {
         "stock_code": stock_code,
-        "stock_name": stock_name or stock_code,
-        "market_tag": market_tag,
+        "stock_name": all_data.get("stock_name") or stock_code,
+        "market_tag": all_data.get("market_tag") or "",
         "analysis": {
-            "technical_score": clean_float(tech_score),
-            "fund_flow_score": clean_float(fund_score),
-            "sentiment_score": clean_float(sentiment_score),
+            "technical_score": clean_float(analysis_outputs["tech_score"]),
+            "fund_flow_score": clean_float(analysis_outputs["fund_score"]),
+            "sentiment_score": clean_float(analysis_outputs["sentiment_score"]),
             "overall_score": clean_float(trading_signal.get('score', 0)),
             "recommendation": action_gate_text,
-            "details": clean_nested(analysis),
+            "details": clean_nested({
+                "technical": technical_analysis,
+                "fund_flow": fund_flow_analysis,
+                "sentiment": sentiment_analysis,
+            }),
         },
         "trading_signal": {
             "score": clean_float(trading_signal.get('score', 0)),
@@ -579,7 +666,7 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         "position_strategy": clean_nested(strategy),
         "validation": clean_nested(validation),
         "stock_info": {k: clean_float(v) for k, v in info.items()},
-        "market_data": market_data if market_data else {},
+        "market_data": market_data,
         "sector_momentum": all_data.get("sector_momentum"),
         "charts": charts,
     }
@@ -588,6 +675,55 @@ def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_cal
         result["hmm_state"] = clean_nested(hmm_state)
 
     result = deep_clean_nan(result)
+    logger.info("分析结果构建完成")
+    return result
+
+
+def _run_analysis_core(stock_input, position_type, cost_price, logger, stage_callback=None, shared_market_data=None, shared_sector_quotes=None):
+    fetcher = get_fetcher()
+    analyzer = get_analyzer()
+
+    inputs = _prepare_analysis_inputs(
+        stock_input, position_type, cost_price, logger,
+        stage_callback=stage_callback,
+        shared_market_data=shared_market_data,
+        shared_sector_quotes=shared_sector_quotes,
+    )
+    stock_code = inputs["stock_code"]
+    stock_name = inputs["stock_name"]
+
+    # 绑定当前线程/协程的 stock_code，使未使用 AnalysisLogger 的标准日志也能关联到股票
+    set_stock_code(stock_code)
+    market = inputs["market"]
+    market_tag = inputs["market_tag"]
+    position_type = inputs["position_type"]
+    cost_price = inputs["cost_price"]
+    stage_callback = inputs["stage_callback"]
+
+    all_data = _fetch_analysis_data(
+        stock_code, stock_name, market, market_tag,
+        fetcher, logger,
+        shared_market_data=inputs["shared_market_data"],
+        shared_sector_quotes=inputs["shared_sector_quotes"],
+    )
+    if all_data is None:
+        return None
+
+    if stage_callback:
+        stage_callback('stage_basic', {
+            'stock_info': all_data.get('stock_info', {}),
+            'stock_name': all_data.get('stock_name'),
+            'fund_flow': all_data.get('fund_flow', {}),
+        })
+
+    analysis_outputs = _execute_analysis(
+        analyzer, stock_code, all_data,
+        all_data.get('history_data'), all_data.get('indicators'),
+        position_type, cost_price, logger,
+        stage_callback=stage_callback,
+    )
+
+    result = _persist_analysis_result(stock_code, all_data, analysis_outputs, logger)
     return result
 
 
@@ -597,6 +733,7 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     with _cache_lock:
         if cache_key in _result_cache:
             cached_result, cached_time = _result_cache[cache_key]
+            _result_cache.move_to_end(cache_key)
             if (now - cached_time).total_seconds() < 600:
                 if not skip_signal_cache:
                     try:
@@ -604,10 +741,11 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
                         stock_code = cached_result.get("stock_code", stock_input)
                         update_signal_cache(stock_code, position_status, cached_result.get("trading_signal", {}), cost_price=cost_price)
                     except Exception as e:
-                        _svc_logger.warning(f"更新信号缓存失败: {e}")
+                        cached_code = cached_result.get("stock_code", stock_input)
+                        _svc_logger.warning(f"更新信号缓存失败: {e}", extra={"stock_code": cached_code} if cached_code else {})
                 return cached_result
 
-    logger = AnalysisLogger()
+    logger = AnalysisLogger(stock_code=stock_input)
     start_time = time.time()
     logger.info(f"开始分析: {stock_input}")
 
@@ -621,28 +759,30 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
     result["analysis_log"] = logger.entries
 
     with _cache_lock:
-        _result_cache[cache_key] = (result, now)
+        _set_cache_item(cache_key, (result, now))
         # 双写：用解析后的 stock_code 也缓存一份，确保通过代码查询时也能命中
         resolved_code = result.get("stock_code", stock_input)
         if resolved_code and resolved_code != stock_input:
             cache_key_resolved = (resolved_code, position_status, cost_price)
-            _result_cache[cache_key_resolved] = (result, now)
+            _set_cache_item(cache_key_resolved, (result, now))
         _cleanup_cache()
+
+    resolved_code = result.get("stock_code", stock_input)
+    extra = {"stock_code": resolved_code} if resolved_code else {}
 
     if not skip_signal_cache:
         try:
             from backend.services.history_service import update_signal_cache
-            update_signal_cache(result.get("stock_code", stock_input), position_status, result.get("trading_signal", {}), cost_price=cost_price)
+            update_signal_cache(resolved_code, position_status, result.get("trading_signal", {}), cost_price=cost_price)
         except Exception as e:
-            _svc_logger.warning(f"更新信号缓存失败: {e}")
+            _svc_logger.warning(f"更新信号缓存失败: {e}", extra=extra)
 
     try:
         pred = result.get("price_prediction", {})
-        resolved = result.get("stock_code", stock_input)
-        _svc_logger.info(f"写入预测值到DB: {resolved}, day1={pred.get('day1', {})}, day2={pred.get('day2', {})}")
-        _update_prediction_to_db(resolved, pred)
+        _svc_logger.info(f"写入预测值到DB: {resolved_code}, day1={pred.get('day1', {})}, day2={pred.get('day2', {})}", extra=extra)
+        _update_prediction_to_db(resolved_code, pred)
     except Exception as e:
-        _svc_logger.warning(f"更新预测值到数据库失败: {e}")
+        _svc_logger.warning(f"更新预测值到数据库失败: {e}", extra=extra)
 
     return result
 
@@ -650,9 +790,10 @@ def run_analysis(stock_input: str, position_status: str, cost_price: Optional[fl
 def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
     _validate_stock_code(stock_code)
     logger = _svc_logger
+    extra = {"stock_code": stock_code}
 
     if not price_prediction:
-        logger.debug(f"[{stock_code}] 无预测数据，跳过写入")
+        logger.debug(f"[{stock_code}] 无预测数据，跳过写入", extra=extra)
         return
 
     day1 = price_prediction.get("day1", {})
@@ -675,14 +816,14 @@ def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
     day2_low = _to_native_float(day2.get("target_low"))
 
     if all(v is None for v in [day1_high, day1_low, day2_high, day2_low]):
-        logger.debug(f"[{stock_code}] 预测值全为None，跳过写入")
+        logger.debug(f"[{stock_code}] 预测值全为None，跳过写入", extra=extra)
         return
 
     from scripts.database import get_connection, release_connection
     try:
         conn = get_connection()
     except Exception as e:
-        logger.error(f"[{stock_code}] 获取数据库连接失败: {e}")
+        logger.error(f"[{stock_code}] 获取数据库连接失败: {e}", extra=extra)
         return
     cur = conn.cursor()
     try:
@@ -699,18 +840,27 @@ def _update_prediction_to_db(stock_code: str, price_prediction: Dict):
         updated = cur.rowcount
         conn.commit()
         if updated > 0:
-            logger.info(f"[{stock_code}] 预测值写入DB成功: day1={day1_low}-{day1_high}, day2={day2_low}-{day2_high}, 影响行数={updated}")
+            logger.info(f"[{stock_code}] 预测值写入DB成功: day1={day1_low}-{day1_high}, day2={day2_low}-{day2_high}, 影响行数={updated}", extra=extra)
         else:
-            logger.warning(f"[{stock_code}] 预测值写入DB: 无匹配行更新，表stock_{stock_code}可能无数据")
+            logger.warning(f"[{stock_code}] 预测值写入DB: 无匹配行更新，表stock_{stock_code}可能无数据", extra=extra)
     except Exception as e:
-        logger.error(f"[{stock_code}] 预测值写入DB SQL执行失败: {e}")
+        logger.error(f"[{stock_code}] 预测值写入DB SQL执行失败: {e}", extra=extra)
         try:
             conn.rollback()
         except Exception:
+            # 回滚失败时连接可能已关闭，静默忽略以保证资源释放
             pass
     finally:
         cur.close()
         release_connection(conn)
+
+
+def _set_cache_item(key, value):
+    """写入结果缓存，并在超过容量上限时按 LRU 驱逐最旧条目。"""
+    _result_cache[key] = value
+    _result_cache.move_to_end(key)
+    while len(_result_cache) > _RESULT_CACHE_MAX_SIZE:
+        _result_cache.popitem(last=False)
 
 
 def _cleanup_cache():
@@ -738,6 +888,7 @@ def _clean_indicators(indicators: Dict) -> Dict:
                     try:
                         cleaned[k] = clean_float(v.item())
                     except Exception:
+                        # 标量转换失败时回退到通用安全序列化
                         cleaned[k] = _safe_item(v)
                 elif isinstance(v, dict):
                     cleaned[k] = {kk: _safe_item(vv) for kk, vv in v.items()}
@@ -759,7 +910,9 @@ def _clean_indicators(indicators: Dict) -> Dict:
 
 def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_price: float = None, stage_callback=None, logger=None):
     if logger is None:
-        logger = AnalysisLogger()
+        logger = AnalysisLogger(stock_code=stock_code)
+    elif hasattr(logger, "stock_code") and not logger.stock_code:
+        logger.stock_code = stock_code
     start_time = time.time()
     logger.info(f"开始分析: {stock_code}")
 
@@ -781,12 +934,12 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
         now = datetime.now()
         cache_key_input = (stock_code, position_type, cost_price)
         with _cache_lock:
-            _result_cache[cache_key_input] = (result, now)
+            _set_cache_item(cache_key_input, (result, now))
             # 如果 result 中有解析后的 stock_code 且与输入不同，也用 stock_code 缓存
             resolved_code = result.get("stock_code", stock_code)
             if resolved_code and resolved_code != stock_code:
                 cache_key_resolved = (resolved_code, position_type, cost_price)
-                _result_cache[cache_key_resolved] = (result, now)
+                _set_cache_item(cache_key_resolved, (result, now))
             _cleanup_cache()
 
         # 写入预测值到数据库
@@ -798,11 +951,12 @@ def run_analysis_staged(stock_code: str, position_type: str = "未持有", cost_
                 f"day1_low={pred.get('day1', {}).get('target_low')}, "
                 f"day1_high={pred.get('day1', {}).get('target_high')}, "
                 f"day2_low={pred.get('day2', {}).get('target_low')}, "
-                f"day2_high={pred.get('day2', {}).get('target_high')}"
+                f"day2_high={pred.get('day2', {}).get('target_high')}",
+                extra={"stock_code": resolved_code},
             )
             _update_prediction_to_db(resolved_code, pred)
         except Exception as e:
-            _svc_logger.warning(f"[staged] 预测值写入数据库失败: {stock_code}, error={e}")
+            _svc_logger.warning(f"[staged] 预测值写入数据库失败: {stock_code}, error={e}", extra={"stock_code": stock_code})
 
         if stage_callback:
             log_data('transfer', 'analyzer', 'sse_callback', 'success',
@@ -822,6 +976,7 @@ def _safe_item(v):
         try:
             return clean_float(v.item())
         except Exception:
+            # 标量转换失败时回退到 tolist/clean_float，保持序列化不中断
             pass
     if hasattr(v, 'tolist'):
         return to_list(v)

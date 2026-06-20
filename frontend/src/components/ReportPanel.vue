@@ -165,7 +165,9 @@ const indicatorsExpanded = ref(false)
           </div>
           <div class="strat-item">
             <span class="strat-label">仓位</span>
-            <span class="strat-val font-mono">{{ notHeldPs.position_size_pct }}%</span>
+            <span class="strat-val font-mono">
+              {{ notHeldPs.position_size_label || (notHeldPs.position_size_pct != null ? notHeldPs.position_size_pct + '%' : '-') }}
+            </span>
           </div>
           <div class="strat-item">
             <span class="strat-label">止损</span>

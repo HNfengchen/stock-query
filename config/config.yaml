@@ -72,6 +72,126 @@ analyzer:
     atr_multiplier: 1.5
     boll_multiplier: 1.0
 
+  # 窗口长度配置
+  windows:
+    feature_history_maxlen: 20
+    systemic_shock_lookback: 20
+    var_lookback: 20
+    volatility_lookback: 60
+    atr_ma_window: 14
+
+  # 系统性冲击检测
+  systemic_shock:
+    z_threshold: -2.0
+    bounce_alpha: 0.6
+
+  # RSI 超卖反弹模型
+  oversold_bounce:
+    rsi_enable_threshold: 35
+    rsi_threshold_bullish: 35
+    rsi_threshold_bearish: 22
+    k_bullish: 0.15
+    k_bearish: 0.20
+    sector_change_threshold: 2.0
+
+  # VaR 动态止损
+  var_stop_loss:
+    confidence_level: 0.95
+    max_acceptable_loss: 0.08
+    z_alpha:
+      "0.90": 1.282
+      "0.95": 1.645
+      "0.99": 2.326
+
+  # 波动率自适应区间缩放
+  volatility_scaled_range:
+    scale_min: 0.3
+    scale_max: 0.8
+
+  # 技术面评分归一化与冲突惩罚
+  technical_scoring:
+    min_score: -55
+    max_score: 55
+    max_conflict_penalty: 0.15
+    conflict_penalty_per_signal: 0.03
+    atr_boll_conflict_max: 0.20
+    atr_boll_conflict_add: 0.05
+    boll_narrow_width_ratio: 0.005
+
+  # 多时间框架趋势一致性
+  multi_timeframe:
+    bull_threshold: 0.6
+    bear_threshold: 0.4
+
+  # 资金流向评分阈值
+  fund_flow:
+    thresholds_by_cap:
+      large: {market_cap: 500000000000, high: 0.01, low: 0.005}
+      mid: {market_cap: 50000000000, high: 0.03, low: 0.015}
+      small: {market_cap: 0, high: 0.05, low: 0.025}
+    history_score_boost: 0.2
+    history_score_drop: 0.15
+    price_volume_divergence_slope: 0.005
+
+  # 市场情绪评分阈值
+  sentiment:
+    turnover:
+      high: 15
+      medium: 8
+      low: 2
+    volume_ratio:
+      high: 2.0
+      medium: 1.5
+      low: 0.5
+    market_change:
+      strong_up: 1.0
+      up: 0.5
+      strong_down: -1.0
+      down: -0.5
+
+  # 资金-ML 方向背离检测
+  fund_ml_divergence:
+    confidence_threshold: 0.6
+    strong_fund_threshold: 0.7
+    weak_fund_threshold: 0.3
+    base_penalty: 0.1
+
+  # 行动门控 confidence 阈值
+  action_gate:
+    allow_buy: 0.7
+    cautious_buy: 0.5
+    bearish_confidence: 0.6
+    shock_bounce_prob: 0.6
+    low_confidence: 0.5
+    very_low_confidence: 0.4
+
+  # 仓位上下限 (%)
+  position_sizing:
+    min_pct: 10
+    max_pct: 30
+    confidence_adjust_min: 0.6
+    confidence_adjust_max: 1.0
+
+  # 风控参数
+  risk_management:
+    atr_stop_loss_multiplier: 2.0
+    atr_stop_profit_multiplier: 2.5
+    max_stop_loss_pct: 0.10
+    fallback_stop_profit:
+      gain_high: 15
+      gain_medium: 8
+      gain_low: 3
+    fallback_stop_loss:
+      loss_high: -8
+      loss_medium: -5
+      loss_low: -2
+
+  # 涨跌停比例
+  limit_pct:
+    st: 0.05
+    ccy: 0.20
+    default: 0.10
+
 # 报告配置
 report:
   default_format: html
@@ -130,6 +250,32 @@ ml_model:
     n_estimators: 200
     min_child_samples: 20
   min_training_days: 60
+  train_val_split: 0.8
+  early_stopping_rounds: 20
+  build_feature_min_days: 60
+  min_feature_window_days: 5
+  min_training_samples: 100
+  hybrid_predict:
+    direction_threshold_bull: 0.55
+    direction_threshold_bear: 0.45
+    strong_threshold: 0.7
+    weak_threshold: 0.3
+    fallback_confidence_multiplier: 10
+
+# 回测配置
+backtest:
+  cost:
+    buy_commission: 0.0003
+    sell_commission: 0.0003
+    stamp_tax: 0.001
+    slippage: 0.001
+  walk_forward:
+    train_window: 60
+    test_window: 20
+    step: 20
+  trend_thresholds:
+    strong: 0.03
+    normal: 0.01
 
 # 蒙特卡洛压力测试配置
 stress_test:
@@ -144,9 +290,13 @@ preprocessing:
   mad_fallback: "iqr"
   enabled: true
   denoise:
+    enabled: false
     method: "kalman"
     kalman_Q: 1e-5
     kalman_R: 1e-2
+    kalman_vol_factor: 10.0
+    kalman_q_min: 0.1
+    kalman_q_max: 2.0
     ema_alpha_range: [0.05, 0.3]
 
 # 数据验证配置

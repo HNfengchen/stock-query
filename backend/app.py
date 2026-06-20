@@ -1,6 +1,5 @@
 import os
 import sys
-import traceback
 import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -9,7 +8,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
 from contextlib import asynccontextmanager
 
 from backend.exceptions import StockQueryException, AnalysisFailedError
@@ -36,15 +34,6 @@ logger = logging.getLogger("stock_query")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_system('startup', 'Stock Query API 服务启动', level='INFO')
-    try:
-        from backend.celery_app import init_celery, is_celery_enabled
-        init_celery()
-        if is_celery_enabled():
-            logger.info("Celery 异步任务功能已启用")
-        else:
-            logger.info("Celery 异步任务功能未启用，使用同步模式")
-    except Exception as e:
-        logger.warning(f"Celery 初始化失败: {e}，使用同步模式")
     yield
     log_system('shutdown', 'Stock Query API 服务关闭', level='INFO')
     try:

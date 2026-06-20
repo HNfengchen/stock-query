@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Any
+from typing import Any
 
 from backend.logging.trace import get_trace_id, get_span_id
 from backend.logging.sensitive import sanitize_data

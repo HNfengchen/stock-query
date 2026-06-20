@@ -1,7 +1,7 @@
 """交叉验证阈值校准模块
 
 优化点:
-1. 引入真实资金/情绪数据替代硬编码0.5
+1. 引入真实情绪数据替代硬编码0.5; 校准中移除资金流向维度以避免前视偏差
 2. 增加样本量(默认20只)
 3. 自适应步长(先粗扫再细扫)
 4. 时间序列交叉验证(70%训练/30%验证)
@@ -9,6 +9,7 @@
 6. 多目标评分(加入预测宽度、回撤惩罚)
 """
 
+import logging
 from copy import deepcopy
 
 import yaml
@@ -18,24 +19,7 @@ from scripts.core.analyzer import (
     STRONG_THRESHOLD, NORMAL_THRESHOLD,
 )
 
-
-def _fetch_fund_flow_score(fetcher, stock_code: str, lookback_days: int = 30) -> dict:
-    """尝试获取真实资金流向数据，失败则返回默认值"""
-    if fetcher is None:
-        return {"score": 0.5, "trend": "neutral"}
-    try:
-        fund_data = fetcher.fetch_fund_flow(stock_code)
-        if fund_data and isinstance(fund_data, dict):
-            score = fund_data.get("score")
-            trend = fund_data.get("trend", "neutral")
-            if score is not None:
-                try:
-                    return {"score": float(score), "trend": trend}
-                except (TypeError, ValueError):
-                    pass
-    except Exception:
-        pass
-    return {"score": 0.5, "trend": "neutral"}
+logger = logging.getLogger(__name__)
 
 
 def _compute_sentiment_score(history_df, current_idx: int) -> dict:
@@ -75,7 +59,7 @@ def _compute_sentiment_score(history_df, current_idx: int) -> dict:
                     elif vol_ratio < 0.5:
                         score -= 0.05
     except Exception:
-        pass
+        logger.warning("情绪评分计算异常", exc_info=True)
 
     score = max(0.1, min(0.9, score))
     return {"score": round(score, 3)}
@@ -93,7 +77,7 @@ def evaluate_validation_config(
 
     优化:
     - 70%数据用于训练(参数扫描)，30%用于验证(最终评分)
-    - 引入真实资金/情绪数据
+    - 引入真实情绪数据; 校准时不使用资金流向维度以避免前视偏差
     - 多目标评分(准确率+趋势+一致性+宽度惩罚+回撤惩罚)
 
     对每只股票，取 last 2*lookback_days 历史数据，
@@ -117,6 +101,7 @@ def evaluate_validation_config(
         try:
             df = fetcher.fetch_history_data(code, lookback_days * 2 + 20)
         except Exception:
+            logger.warning(f"获取{code}历史数据失败", exc_info=True)
             continue
         if df is None or len(df) < lookback_days + 5:
             continue
@@ -128,9 +113,6 @@ def evaluate_validation_config(
             continue
 
         split_idx = min_idx + int(total_test_points * train_ratio)
-
-        fund_flow_data = _fetch_fund_flow_score(fetcher, code, lookback_days)
-        fund_flow_data["_lookahead_bias"] = True
 
         for test_idx in range(min_idx, len(df) - 1):
             history_up_to = df.iloc[:test_idx + 1].copy()
@@ -160,7 +142,6 @@ def evaluate_validation_config(
 
             analysis = {
                 "technical": technical,
-                "fund_flow": fund_flow_data,
                 "sentiment": sentiment_data,
             }
             trading_signal = analyzer.generate_trading_signal(analysis, "未持有", market_data={})
@@ -233,10 +214,10 @@ def evaluate_validation_config(
         "consistency": correct_when_has_consensus / (has_consensus or 1),
         "width_penalty": width_penalty,
         "drawdown_penalty": drawdown_penalty,
-        "lookahead_bias": True,
         "total_predictions": len(all_predictions),
         "train_predictions": len(train_preds),
         "val_predictions": len(val_preds),
+        "effective_test_points": len(eval_preds),
         "predictions_with_consensus": has_consensus,
         "_raw": all_predictions,
     }
@@ -295,6 +276,8 @@ DEFAULT_STOCK_CODES = [
 class ValidationCalibrator:
     """交叉验证阈值校准器，运行自适应步长单参数轮换扫描"""
 
+    MIN_EFFECTIVE_TEST_POINTS = 30
+
     def __init__(self, config_path_or_dict, stock_codes: list[str] = None, lookback_days: int = 120):
         if isinstance(config_path_or_dict, str):
             with open(config_path_or_dict) as f:
@@ -325,12 +308,8 @@ class ValidationCalibrator:
         consistency = metrics.get("consistency", 0)
         width_penalty = metrics.get("width_penalty", 0)
         drawdown_penalty = metrics.get("drawdown_penalty", 0)
-        lookahead_bias = metrics.get("lookahead_bias", False)
         base = 0.35 * accuracy + 0.25 * trend_accuracy + 0.25 * consistency
         score = max(0.0, base - 0.10 * width_penalty - 0.05 * drawdown_penalty)
-        # fund_flow维度含前视偏差，降低其权重影响（近似为整体评分打折）
-        if lookahead_bias:
-            score *= 0.9
         return score
 
     def _build_modified_config(self, overrides: dict) -> dict:
@@ -466,6 +445,21 @@ class ValidationCalibrator:
             evaluate_fn = self._default_evaluate
 
         baseline_metrics = evaluate_fn(self.base_config)
+        effective_points = baseline_metrics.get("effective_test_points", 0)
+        if effective_points < self.MIN_EFFECTIVE_TEST_POINTS:
+            logger.warning(
+                "校准样本不足: effective_test_points=%d < %d, 不生成校准系数",
+                effective_points,
+                self.MIN_EFFECTIVE_TEST_POINTS,
+            )
+            return {
+                "target": "validation",
+                "status": "insufficient_data",
+                "effective_test_points": effective_points,
+                "min_required": self.MIN_EFFECTIVE_TEST_POINTS,
+                "warning": "有效测试点不足，未生成校准系数",
+            }
+
         baseline_score = self._composite_score(baseline_metrics)
 
         param_sensitivity = {}
@@ -493,6 +487,7 @@ class ValidationCalibrator:
 
         report = {
             "target": "validation",
+            "status": "ok",
             "stock_sample": list(self.stock_codes),
             "lookback_days": self.lookback_days,
             "baseline": {
@@ -508,7 +503,7 @@ class ValidationCalibrator:
             "improvement": {
                 "composite_score_delta": round(calibrated_score - baseline_score, 4),
             },
-            "warning": "fund_flow维度使用当前数据，存在前视偏差，评分已相应打折",
+            "warning": "校准已移除资金流向维度，仅基于技术与情绪维度进行回测评估",
         }
 
         if not dry_run and self.config_path and optimal_overrides:

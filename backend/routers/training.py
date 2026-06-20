@@ -68,18 +68,13 @@ async def start_training(req: TrainingRequest):
         if _training_status["running"]:
             logger.warning(f"[training] 拒绝请求: 已有训练任务正在运行 (mode={_training_status['mode']})")
             return JSONResponse(status_code=409, content={"detail": "已有训练任务正在运行"})
+        _training_status["running"] = True
+        _training_status["mode"] = req.mode
+        _training_status["started_at"] = datetime.now().isoformat()
+        _training_status["pid"] = None
+        logger.info(f"[training] 训练状态已设置: mode={req.mode}, started_at={_training_status['started_at']}")
 
     async def event_generator():
-        with _training_lock:
-            if _training_status["running"]:
-                logger.warning("[training] 生成器内检测到已有训练任务")
-                yield {"event": "error", "data": json.dumps({"message": "已有训练任务正在运行"}, ensure_ascii=False)}
-                return
-            _training_status["running"] = True
-            _training_status["mode"] = req.mode
-            _training_status["started_at"] = datetime.now().isoformat()
-            _training_status["pid"] = None
-            logger.info(f"[training] 训练状态已设置: mode={req.mode}, started_at={_training_status['started_at']}")
 
         log_system("training", f"开始训练: mode={req.mode}")
 
@@ -97,7 +92,7 @@ async def start_training(req: TrainingRequest):
                     yield {"event": "log", "data": json.dumps({"message": "已清除 models/ 目录", "level": "info"}, ensure_ascii=False)}
                     log_system("training", "已清除 models/ 目录")
                 else:
-                    logger.info(f"[training] force模式: models/ 目录不存在，无需清除")
+                    logger.info("[training] force模式: models/ 目录不存在，无需清除")
 
                 cmd_args = [
                     PYTHON_BIN, "-m", "scripts.train_model",
@@ -166,13 +161,13 @@ async def start_training(req: TrainingRequest):
                 logger.error(f"[training] 训练进程异常退出: returncode={proc.returncode}")
                 yield {"event": "error", "data": json.dumps({"message": f"训练进程退出码: {proc.returncode}"}, ensure_ascii=False)}
 
-            # hmm_only 模式下不训练HMM; incremental/force模式下按需训练HMM
+            # hmm_only 模式已训练全局 HMM；incremental/force 模式下按需补充全局 HMM
             if req.mode in ("incremental", "force"):
                 hmm_model_path = os.path.join(MODELS_DIR, "hmm_regime.pkl")
                 should_train_hmm = req.mode == "force" or not os.path.exists(hmm_model_path)
                 logger.info(f"[training] HMM检查: path={hmm_model_path}, exists={os.path.exists(hmm_model_path)}, should_train={should_train_hmm}")
                 if should_train_hmm:
-                    yield {"event": "log", "data": json.dumps({"message": "开始训练HMM模型...", "level": "info"}, ensure_ascii=False)}
+                    yield {"event": "log", "data": json.dumps({"message": "开始训练全局HMM模型...", "level": "info"}, ensure_ascii=False)}
                     hmm_args = [
                         PYTHON_BIN, "-m", "scripts.train_hmm",
                         "--config", os.path.join(PROJECT_ROOT, "config", "config.yaml"),
@@ -194,11 +189,53 @@ async def start_training(req: TrainingRequest):
                                 level = _parse_log_level(hmm_line)
                                 yield {"event": "log", "data": json.dumps({"message": hmm_line, "level": level}, ensure_ascii=False)}
                         await asyncio.wait_for(hmm_proc.wait(), timeout=30)
-                        logger.info(f"[training] HMM训练完成: returncode={hmm_proc.returncode}")
+                        logger.info(f"[training] 全局HMM训练完成: returncode={hmm_proc.returncode}")
                     except asyncio.TimeoutError:
                         hmm_proc.kill()
-                        logger.error("[training] HMM训练超时，已终止")
-                        yield {"event": "error", "data": json.dumps({"message": "HMM训练超时，已终止"}, ensure_ascii=False)}
+                        logger.error("[training] 全局HMM训练超时，已终止")
+                        yield {"event": "error", "data": json.dumps({"message": "全局HMM训练超时，已终止"}, ensure_ascii=False)}
+
+            # 触发个股 HMM 训练（hmm_only / incremental / force）
+            if req.mode in ("hmm_only", "incremental", "force"):
+                yield {"event": "log", "data": json.dumps({"message": "开始训练个股HMM模型...", "level": "info"}, ensure_ascii=False)}
+                hmm_stock_args = [
+                    PYTHON_BIN, "-m", "scripts.train_hmm",
+                    "--all-watchlist",
+                    "--config", os.path.join(PROJECT_ROOT, "config", "config.yaml"),
+                ]
+                if req.mode == "incremental":
+                    hmm_stock_args.append("--skip-existing")
+                logger.info(f"[training] 个股HMM命令: {' '.join(hmm_stock_args)}")
+                hmm_stock_proc = await asyncio.create_subprocess_exec(
+                    *hmm_stock_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=PROJECT_ROOT,
+                )
+                try:
+                    while True:
+                        line_bytes = await asyncio.wait_for(hmm_stock_proc.stdout.readline(), timeout=TRAINING_TIMEOUT)
+                        if not line_bytes:
+                            break
+                        hmm_stock_line = line_bytes.decode("utf-8", errors="replace").rstrip()
+                        if hmm_stock_line:
+                            level = _parse_log_level(hmm_stock_line)
+                            yield {"event": "log", "data": json.dumps({"message": hmm_stock_line, "level": level}, ensure_ascii=False)}
+                            stock_code, status = _parse_stock_progress(hmm_stock_line)
+                            if stock_code and status:
+                                yield {"event": "progress", "data": json.dumps({"stock": stock_code, "status": status}, ensure_ascii=False)}
+                                if status == "success":
+                                    success_count += 1
+                                elif status == "failed":
+                                    failed_count += 1
+                                elif status == "skipped":
+                                    skipped_count += 1
+                    await asyncio.wait_for(hmm_stock_proc.wait(), timeout=30)
+                    logger.info(f"[training] 个股HMM训练完成: returncode={hmm_stock_proc.returncode}")
+                except asyncio.TimeoutError:
+                    hmm_stock_proc.kill()
+                    logger.error("[training] 个股HMM训练超时，已终止")
+                    yield {"event": "error", "data": json.dumps({"message": "个股HMM训练超时，已终止"}, ensure_ascii=False)}
 
             yield {"event": "complete", "data": json.dumps({
                 "success_count": success_count,
@@ -308,7 +345,7 @@ async def list_models():
         hmm_info["trained_at"] = datetime.fromtimestamp(os.path.getmtime(hmm_path)).isoformat()
         logger.info(f"[list_models] HMM模型存在: trained_at={hmm_info['trained_at']}")
     else:
-        logger.info(f"[list_models] HMM模型不存在")
+        logger.info("[list_models] HMM模型不存在")
 
     logger.info(f"[list_models] 汇总: 个股模型={len(models)}, HMM={hmm_info['exists']}")
     return {"models": models, "hmm": hmm_info, "total": len(models)}

@@ -14,6 +14,8 @@ from jinja2 import Template
 
 from scripts.technical_indicators import calculate_all_indicators
 
+logger = logging.getLogger(__name__)
+
 
 class ReportGenerationError(Exception):
     """报告生成错误"""
@@ -287,6 +289,7 @@ class ReportGenerator:
                     }
                 )
             except Exception:
+                logger.warning(f"K线数据解析失败 (index={i})", exc_info=True)
                 continue
 
         ma5_data = []
@@ -306,6 +309,7 @@ class ReportGenerator:
                 if data["ma20"][i]:
                     ma20_data.append({"x": ts, "y": float(data["ma20"][i])})
             except Exception:
+                logger.warning(f"均线数据解析失败 (index={i})", exc_info=True)
                 continue
 
         datasets = [

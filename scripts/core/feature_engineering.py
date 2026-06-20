@@ -4,7 +4,7 @@
 """
 
 import numpy as np
-from typing import Dict, List, Tuple
+from typing import List
 
 
 SIGNAL_MAP = {
@@ -32,6 +32,69 @@ def _map_signal(signal: str) -> float:
         if key in signal:
             return SIGNAL_MAP[key]
     return 0.0
+
+
+def _float_or_zero(value) -> float:
+    try:
+        return float(value) if value is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _volume_ma_ratio(ma_data) -> float:
+    """计算成交量 MA5/MA20 比值"""
+    if not isinstance(ma_data, dict):
+        return 0.0
+    ma5 = ma_data.get("MA5", {}).get("latest")
+    ma20 = ma_data.get("MA20", {}).get("latest")
+    if ma5 is not None and ma20 is not None and float(ma20) > 0:
+        return float(ma5) / float(ma20)
+    return 0.0
+
+
+def _get_distribution_feature(dist_data, feature: str) -> float:
+    """从 Distribution 指标中提取指定窗口（优先 W20，其次 W60）的分布特征"""
+    if not isinstance(dist_data, dict):
+        return 0.0
+    for window in ["W20", "W60"]:
+        window_data = dist_data.get(window, {})
+        feature_data = window_data.get(feature, {}) if isinstance(window_data, dict) else {}
+        latest = feature_data.get("latest") if isinstance(feature_data, dict) else None
+        if latest is not None:
+            return _float_or_zero(latest)
+    return 0.0
+
+
+def _get_historical_volatility(vol_data) -> float:
+    """从历史波动率指标中提取 HV20（优先）或 HV60"""
+    if not isinstance(vol_data, dict):
+        return 0.0
+    historical = vol_data.get("Historical", {})
+    latest = historical.get("latest", {}) if isinstance(historical, dict) else {}
+    if isinstance(latest, dict):
+        for window in ["HV20", "HV60"]:
+            value = latest.get(window)
+            if value is not None:
+                return _float_or_zero(value)
+    return 0.0
+
+
+def _get_parkinson_volatility(vol_data) -> float:
+    """从 Parkinson 波动率指标中提取最新值"""
+    if not isinstance(vol_data, dict):
+        return 0.0
+    parkinson = vol_data.get("Parkinson", {})
+    latest = parkinson.get("latest") if isinstance(parkinson, dict) else None
+    return _float_or_zero(latest)
+
+
+def _get_market_structure_feature(ms_data, feature: str) -> float:
+    """从 MarketStructure 指标中提取 RelativeStrength 或 Beta 的最新值"""
+    if not isinstance(ms_data, dict):
+        return 0.0
+    feature_data = ms_data.get(feature, {})
+    latest = feature_data.get("latest") if isinstance(feature_data, dict) else None
+    return _float_or_zero(latest)
 
 
 # 固定特征模板：确保每次提取的特征数量和顺序一致，缺失值填0
@@ -77,12 +140,26 @@ def _get_feature_template():
     template.append(("ATR_signal", "ATR", "signal", lambda v: _map_signal(v) if isinstance(v, str) else 0.0))
     template.append(("ATR_value", "ATR", "latest", "ATR_NORMALIZE"))
 
+    # 量价与风险特征（复用 technical_indicators.py 中已有计算）
+    template.append(("obv", "OBV", "latest", _float_or_zero))
+    template.append(("volume_ratio", "Volume_Ratio", "latest", _float_or_zero))
+    template.append(("volume_ma5_ma20", "Volume_MA", "", _volume_ma_ratio))
+    template.append(("relative_strength", "MarketStructure", "", lambda v: _get_market_structure_feature(v, "RelativeStrength")))
+    template.append(("beta", "MarketStructure", "", lambda v: _get_market_structure_feature(v, "Beta")))
+    template.append(("historical_volatility", "Volatility", "", _get_historical_volatility))
+    template.append(("parkinson_volatility", "Volatility", "", _get_parkinson_volatility))
+    template.append(("skewness", "Distribution", "", lambda v: _get_distribution_feature(v, "skewness")))
+    template.append(("kurtosis", "Distribution", "", lambda v: _get_distribution_feature(v, "kurtosis")))
+    template.append(("var_95", "Distribution", "", lambda v: _get_distribution_feature(v, "var_95")))
+
     _FEATURE_TEMPLATE = template
     return _FEATURE_TEMPLATE
 
 
 def _resolve_path(data: dict, path: str):
     """按点分隔路径从嵌套dict中取值，如 'latest.DIF' → data['latest']['DIF']"""
+    if path == "":
+        return data
     keys = path.split(".")
     current = data
     for key in keys:
@@ -161,21 +238,37 @@ def extract_feature_vector(indicators: dict, current_price: float = None) -> tup
     return (feature_names, np.array(feature_values, dtype=np.float64))
 
 
-def compute_feature_correlation(feature_dict: dict) -> dict:
-    feature_names = list(feature_dict.keys())
-    if len(feature_names) < 2:
+def compute_feature_correlation(
+    feature_matrix: np.ndarray,
+    feature_names: List[str],
+    threshold: float = 0.7,
+) -> dict:
+    """基于多期特征历史计算特征相关性矩阵。
+
+    Args:
+        feature_matrix: 形状为 (n_samples, n_features) 的二维特征矩阵。
+        feature_names: 与矩阵列对应的特征名称列表。
+        threshold: 高相关性判定阈值。
+
+    Returns:
+        dict: 包含 correlation_matrix、feature_names、high_correlation_pairs 的结果字典。
+    """
+    if (
+        feature_matrix.ndim != 2
+        or feature_matrix.shape[0] < 2
+        or feature_matrix.shape[1] != len(feature_names)
+        or len(feature_names) < 2
+    ):
         return {
             "correlation_matrix": np.array([]),
-            "feature_names": [],
+            "feature_names": feature_names,
             "high_correlation_pairs": [],
         }
 
-    values = np.array([feature_dict[name] for name in feature_names], dtype=np.float64)
-
+    with np.errstate(divide="ignore", invalid="ignore"):
+        corr_matrix = np.corrcoef(feature_matrix, rowvar=False)
     n = len(feature_names)
-    corr_matrix = np.corrcoef(values)
-
-    if corr_matrix.ndim != 2 or corr_matrix.shape[0] != n:
+    if corr_matrix.ndim != 2 or corr_matrix.shape != (n, n):
         return {
             "correlation_matrix": np.array([]),
             "feature_names": feature_names,
@@ -185,9 +278,10 @@ def compute_feature_correlation(feature_dict: dict) -> dict:
     high_corr_pairs = []
     for i in range(n):
         for j in range(i + 1, n):
-            if abs(corr_matrix[i, j]) > 0.7:
+            corr_val = corr_matrix[i, j]
+            if np.isfinite(corr_val) and abs(corr_val) > threshold:
                 high_corr_pairs.append(
-                    (feature_names[i], feature_names[j], float(corr_matrix[i, j]))
+                    (feature_names[i], feature_names[j], float(corr_val))
                 )
 
     return {

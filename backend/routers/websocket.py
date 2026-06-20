@@ -35,6 +35,7 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
         try:
             await websocket.close()
         except Exception:
+            # 连接已断开或关闭失败，忽略以避免影响清理流程
             pass
 
 
@@ -46,6 +47,7 @@ async def broadcast_progress(task_id: str, message: dict):
         try:
             await ws.send_json(message)
         except Exception:
+            logger.warning(f"WebSocket广播失败 (task_id={task_id})", exc_info=True)
             disconnected.add(ws)
     for ws in disconnected:
         active_connections[task_id].discard(ws)

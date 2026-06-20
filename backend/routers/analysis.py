@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from backend.exceptions import InvalidStockCodeError, DataInsufficientError, AnalysisFailedError, StockQueryException
 from backend.services.analysis_service import run_analysis, run_analysis_staged, AnalysisLogger, _result_cache, _cache_lock
+from backend.logging.trace import set_stock_code, get_trace_id, get_span_id, set_trace_id, set_span_id
 from backend.utils import sanitize_for_json
 
 
@@ -36,9 +37,19 @@ class BatchAnalysisRequest(BaseModel):
 @router.post("/analysis")
 async def analyze(req: AnalysisRequest):
     try:
+        set_stock_code(req.stock_input)
         loop = asyncio.get_running_loop()
+
+        trace_id = get_trace_id()
+        span_id = get_span_id()
+
+        def _run(stock_input, position_status, cost_price):
+            set_trace_id(trace_id)
+            set_span_id(span_id)
+            return run_analysis(stock_input, position_status, cost_price)
+
         result = await loop.run_in_executor(
-            None, run_analysis, req.stock_input, req.position_status, req.cost_price
+            None, _run, req.stock_input, req.position_status, req.cost_price
         )
         return sanitize_for_json(result)
     except ValueError as e:
@@ -158,7 +169,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
         nonlocal completed_count
         loop = asyncio.get_running_loop()
         try:
-            logger.info(f"BatchQuick: 开始分析 {stock_req.stock_input}")
+            logger.info(f"BatchQuick: 开始分析 {stock_req.stock_input}", extra={"stock_code": stock_req.stock_input})
             await progress_queue.put({
                 "type": "analyzing",
                 "current": i,
@@ -167,7 +178,12 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "index": i,
             })
 
+            trace_id = get_trace_id()
+            span_id = get_span_id()
+
             def _run(sr=stock_req, smd=shared_market_data, ssq=shared_sector_quotes):
+                set_trace_id(trace_id)
+                set_span_id(span_id)
                 return run_analysis(sr.stock_input, sr.position_status, sr.cost_price, skip_signal_cache=True, shared_market_data=smd, shared_sector_quotes=ssq)
 
             try:
@@ -176,7 +192,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                     timeout=BATCH_TOTAL_TIMEOUT_PER_STOCK,
                 )
             except asyncio.TimeoutError:
-                logger.warning(f"BatchQuick: 分析超时 {stock_req.stock_input} ({BATCH_TOTAL_TIMEOUT_PER_STOCK}s)")
+                logger.warning(f"BatchQuick: 分析超时 {stock_req.stock_input} ({BATCH_TOTAL_TIMEOUT_PER_STOCK}s)", extra={"stock_code": stock_req.stock_input})
                 err = {"stock_input": stock_req.stock_input, "error": f"分析超时({BATCH_TOTAL_TIMEOUT_PER_STOCK}s)", "index": i}
                 async with lock:
                     completed_count += 1
@@ -213,7 +229,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
             async with lock:
                 completed_count += 1
                 all_summaries.append(summary)
-            logger.info(f"BatchQuick: 分析完成 {stock_req.stock_input}, signal={signal_text}")
+            logger.info(f"BatchQuick: 分析完成 {stock_req.stock_input}, signal={signal_text}", extra={"stock_code": stock_req.stock_input})
             await progress_queue.put({
                 "type": "completed",
                 "current": completed_count,
@@ -221,7 +237,7 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "summary": summary,
             })
         except Exception as e:
-            logger.warning(f"BatchQuick: 分析失败 {stock_req.stock_input}: {e}")
+            logger.warning(f"BatchQuick: 分析失败 {stock_req.stock_input}: {e}", extra={"stock_code": stock_req.stock_input})
             err = {"stock_input": stock_req.stock_input, "error": str(e), "index": i}
             async with lock:
                 completed_count += 1
@@ -266,9 +282,9 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 if evt_type in ("completed", "error"):
                     sent_completed += 1
 
-            logger.info(f"BatchQuick: 所有进度事件已发送，等待任务完成")
+            logger.info("BatchQuick: 所有进度事件已发送，等待任务完成")
             await asyncio.gather(*tasks, return_exceptions=True)
-            logger.info(f"BatchQuick: 所有任务已完成，开始更新缓存")
+            logger.info("BatchQuick: 所有任务已完成，开始更新缓存")
         except (asyncio.CancelledError, GeneratorExit):
             cancel_event.set()
             for t in tasks:
@@ -328,7 +344,7 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
         stage_queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
-        analysis_logger = AnalysisLogger()
+        analysis_logger = AnalysisLogger(stock_code=stock_input)
 
         def log_callback(entry):
             asyncio.run_coroutine_threadsafe(
@@ -344,8 +360,13 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
                 loop,
             )
 
+        trace_id = get_trace_id()
+        span_id = get_span_id()
+
         def _run_staged():
             try:
+                set_trace_id(trace_id)
+                set_span_id(span_id)
                 stock_code = stock_input  # 供日志使用
                 logger.info(f"SSE流: 开始分析 {stock_code}, position={position_status}")
                 logger.info("SSE流: 开始执行分析线程")
@@ -358,6 +379,7 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
                 )
 
         task = loop.run_in_executor(_executor, _run_staged)
+        background_tasks = [task]
 
         try:
             while True:
@@ -379,6 +401,8 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
 
                             def _run_stress_test(p=pending):
                                 try:
+                                    set_trace_id(trace_id)
+                                    set_span_id(span_id)
                                     from scripts.core.stress_test import MonteCarloStressTest
                                     n_sim = analyzer._stress_test_config.get("n_simulations", 200)
                                     mc = MonteCarloStressTest(n_simulations=n_sim, config=analyzer._stress_test_config)
@@ -388,6 +412,7 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
                                     return None
 
                             stress_task = loop.run_in_executor(_executor, _run_stress_test)
+                            background_tasks.append(stress_task)
                             try:
                                 stress_result = await asyncio.wait_for(stress_task, timeout=120)
                                 if stress_result:
@@ -408,7 +433,8 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
             return
         finally:
             logger.info("SSE流: 连接关闭")
-            if not task.done():
-                task.cancel()
+            for bg_task in background_tasks:
+                if not bg_task.done():
+                    bg_task.cancel()
 
     return EventSourceResponse(event_generator())

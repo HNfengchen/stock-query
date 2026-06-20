@@ -130,6 +130,7 @@ export interface PositionStrategyNotHeld {
   current_price?: number | null
   buy_timing?: string
   position_size_pct?: number | null
+  position_size_label?: string
   stop_loss_price?: number | null
   risk_level?: string
   risk_control?: string
@@ -271,6 +272,8 @@ export interface AnalysisResult {
 
 export interface BacktestRequest {
   stock_code: string
+  start_date?: string
+  end_date?: string
 }
 
 export interface BacktestPrediction {
@@ -387,7 +390,7 @@ export interface WalkForwardResult {
     hit_rate_std: number
     direction_accuracy_std: number
     trend_accuracy_std: number
-    sharpe_ratio: number
+    consistency_ratio: number
   }
 }
 

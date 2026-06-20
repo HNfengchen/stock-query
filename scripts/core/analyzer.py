@@ -42,14 +42,35 @@ class AnalysisError(Exception):
 class StockAnalyzer:
     """股票分析器"""
 
+    # 按股票代码隔离的多期特征历史，类级别共享并使用锁保护
+    _feature_history_lock = threading.Lock()
+    _feature_history: Dict[str, deque] = {}
+
     def __init__(self, config: dict):
         self.config = config
-        self.weights = config.get("analyzer", {}).get("weights", {})
-        self.thresholds = config.get("analyzer", {}).get("thresholds", {})
-        self.prediction_config = config.get("analyzer", {}).get("price_prediction", {})
-        self.validation_config = config.get("analyzer", {}).get("validation", {})
+        analyzer_config = config.get("analyzer", {})
+        self.weights = analyzer_config.get("weights", {})
+        self.thresholds = analyzer_config.get("thresholds", {})
+        self.prediction_config = analyzer_config.get("price_prediction", {})
+        self.validation_config = analyzer_config.get("validation", {})
         self._dynamic_weight_manager = DynamicWeightManager(config)
         self._market_regime = None
+
+        # 从配置读取分析参数，保留硬编码默认值以防配置缺失
+        self._windows_cfg = analyzer_config.get("windows", {})
+        self._systemic_shock_cfg = analyzer_config.get("systemic_shock", {})
+        self._oversold_bounce_cfg = analyzer_config.get("oversold_bounce", {})
+        self._var_cfg = analyzer_config.get("var_stop_loss", {})
+        self._volatility_scaled_cfg = analyzer_config.get("volatility_scaled_range", {})
+        self._technical_scoring_cfg = analyzer_config.get("technical_scoring", {})
+        self._multi_timeframe_cfg = analyzer_config.get("multi_timeframe", {})
+        self._fund_flow_cfg = analyzer_config.get("fund_flow", {})
+        self._sentiment_cfg = analyzer_config.get("sentiment", {})
+        self._fund_ml_cfg = analyzer_config.get("fund_ml_divergence", {})
+        self._action_gate_cfg = analyzer_config.get("action_gate", {})
+        self._position_sizing_cfg = analyzer_config.get("position_sizing", {})
+        self._risk_cfg = analyzer_config.get("risk_management", {})
+        self._limit_pct_cfg = analyzer_config.get("limit_pct", {})
 
         self._ml_config = config.get("ml_model", {})
         self._ml_enabled = self._ml_config.get("enabled", False)
@@ -77,14 +98,40 @@ class StockAnalyzer:
 
         self._stress_test_config = config.get("stress_test", {})
         self._pending_stress_test = None
-        self._feature_history = deque(maxlen=20)
+
+    # ------------------------------------------------------------------
+    # 特征历史管理（按股票代码隔离、线程安全）
+    # ------------------------------------------------------------------
+
+    def _feature_history_maxlen(self) -> int:
+        return self._windows_cfg.get("feature_history_maxlen", 20)
+
+    def _get_feature_history(self, stock_code: Optional[str]) -> deque:
+        """获取指定股票代码的特征历史队列，不存在则创建。"""
+        code = stock_code if stock_code else "__default__"
+        maxlen = self._feature_history_maxlen()
+        with self._feature_history_lock:
+            if code not in self._feature_history:
+                self._feature_history[code] = deque(maxlen=maxlen)
+            return self._feature_history[code]
+
+    def _append_feature_history(
+        self, stock_code: Optional[str], feature_values: np.ndarray
+    ) -> deque:
+        """按股票代码追加特征向量，返回追加后的历史快照副本。"""
+        code = stock_code if stock_code else "__default__"
+        maxlen = self._feature_history_maxlen()
+        with self._feature_history_lock:
+            if code not in self._feature_history:
+                self._feature_history[code] = deque(maxlen=maxlen)
+            self._feature_history[code].append(feature_values.copy())
+            return self._feature_history[code]
 
     # ------------------------------------------------------------------
     # 系统性冲击检测 & 超卖反弹概率 & VaR止损 & 波动率缩放
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _detect_systemic_shock(history_df, lookback: int = 20) -> Dict:
+    def _detect_systemic_shock(self, history_df, lookback: int = None) -> Dict:
         """基于波动率z-score的系统性冲击检测
 
         数学原理:
@@ -109,6 +156,12 @@ class StockAnalyzer:
                 'daily_return': float,       # 当日收益率
             }
         """
+        cfg = self._systemic_shock_cfg
+        if lookback is None:
+            lookback = self._windows_cfg.get("systemic_shock_lookback", 20)
+        z_threshold = cfg.get("z_threshold", -2.0)
+        bounce_alpha = cfg.get("bounce_alpha", 0.6)
+
         result = {
             "is_shock": False,
             "z_score": 0.0,
@@ -155,8 +208,8 @@ class StockAnalyzer:
             shock_prob = 1.0 - _norm_cdf(z)
             result["shock_probability"] = float(shock_prob)
 
-            # 冲击判定: z < -2 (即 P < 2.5% 的单尾)
-            if z < -2.0:
+            # 冲击判定: z < z_threshold (默认 -2, 即 P < 2.5% 的单尾)
+            if z < z_threshold:
                 result["is_shock"] = True
 
                 # 反弹概率模型: 基于z-score的连续函数
@@ -169,16 +222,15 @@ class StockAnalyzer:
 
                 # 置信度调整: 冲击后反弹概率>0.5时，对看空方向降权
                 # confidence_adj = 1 + α * (bounce_prob - 0.5)
-                # α=0.6: 较强修正，2σ冲击后bearish置信度应显著降低
-                alpha = 0.6
-                result["confidence_adj"] = 1.0 + alpha * (bounce_prob - 0.5)
+                # α=bounce_alpha: 较强修正，2σ冲击后bearish置信度应显著降低
+                result["confidence_adj"] = 1.0 + bounce_alpha * (bounce_prob - 0.5)
 
             return result
         except Exception:
+            analyzer_logger.warning("系统性冲击检测异常", exc_info=True)
             return result
 
-    @staticmethod
-    def _oversold_bounce_probability(rsi_value: float, macd_bearish: bool,
+    def _oversold_bounce_probability(self, rsi_value: float, macd_bearish: bool,
                                       sector_change: float = 0.0,
                                       sector_net_inflow_positive: bool = False) -> Dict:
         """RSI超卖反弹概率模型
@@ -213,6 +265,14 @@ class StockAnalyzer:
                 'description': str,
             }
         """
+        cfg = self._oversold_bounce_cfg
+        rsi_enable_threshold = cfg.get("rsi_enable_threshold", 35)
+        rsi_threshold_bullish = cfg.get("rsi_threshold_bullish", 35)
+        rsi_threshold_bearish = cfg.get("rsi_threshold_bearish", 22)
+        k_bullish = cfg.get("k_bullish", 0.15)
+        k_bearish = cfg.get("k_bearish", 0.20)
+        sector_change_threshold = cfg.get("sector_change_threshold", 2.0)
+
         if rsi_value is None:
             return {"bounce_prob": 0.5, "factor_type": "neutral", "weight": 0.0, "description": ""}
 
@@ -221,27 +281,27 @@ class StockAnalyzer:
         except (TypeError, ValueError):
             return {"bounce_prob": 0.5, "factor_type": "neutral", "weight": 0.0, "description": ""}
 
-        # 只在RSI<=35时启用此模型（RSI 35-40区间走原有的偏强/偏弱逻辑）
-        if rsi_value > 35:
+        # 只在RSI<=rsi_enable_threshold时启用此模型
+        if rsi_value > rsi_enable_threshold:
             return {"bounce_prob": 0.5, "factor_type": "neutral", "weight": 0.0, "description": ""}
 
         # MACD空头时需要更极端的RSI才判定为反弹信号
         if macd_bearish:
-            rsi_threshold = 22.0  # MACD空头下，RSI=22时反弹概率50%
-            k = 0.20
+            rsi_threshold = rsi_threshold_bearish
+            k = k_bearish
         else:
-            rsi_threshold = 35.0  # MACD多头下，RSI=35时反弹概率50%
-            k = 0.15
+            rsi_threshold = rsi_threshold_bullish
+            k = k_bullish
 
         # sigmoid: RSI越低，bounce_prob越高
         bounce_prob = 1.0 / (1.0 + math.exp(k * (rsi_value - rsi_threshold)))
 
         # 板块动量修正: 板块强势时，超卖反弹概率上调
         sector_momentum_factor = 1.0
-        if sector_change > 2.0 and sector_net_inflow_positive:
-            # 修正因子: 1 + 0.5 * min(1.0, (sector_change - 2) / 5)
+        if sector_change > sector_change_threshold and sector_net_inflow_positive:
+            # 修正因子: 1 + 0.5 * min(1.0, (sector_change - sector_change_threshold) / 5)
             # 2%→1.0, 7%→1.5, 上限1.5
-            sector_momentum_factor = 1.0 + 0.5 * min(1.0, (sector_change - 2.0) / 5.0)
+            sector_momentum_factor = 1.0 + 0.5 * min(1.0, (sector_change - sector_change_threshold) / 5.0)
             bounce_prob = min(1.0, bounce_prob * sector_momentum_factor)
 
         # 因素类型判定
@@ -269,10 +329,9 @@ class StockAnalyzer:
             "description": desc,
         }
 
-    @staticmethod
-    def _compute_var_stop_loss(current_price: float, history_df,
-                               confidence_level: float = 0.95,
-                               max_acceptable_loss: float = 0.08) -> Dict:
+    def _compute_var_stop_loss(self, current_price: float, history_df,
+                               confidence_level: float = None,
+                               max_acceptable_loss: float = None) -> Dict:
         """基于VaR的动态止损计算
 
         数学原理:
@@ -301,6 +360,18 @@ class StockAnalyzer:
                 'stop_reason': str,
             }
         """
+        cfg = self._var_cfg
+        if confidence_level is None:
+            confidence_level = cfg.get("confidence_level", 0.95)
+        if max_acceptable_loss is None:
+            max_acceptable_loss = cfg.get("max_acceptable_loss", 0.08)
+        var_lookback = self._windows_cfg.get("var_lookback", 20)
+        z_alpha_map = cfg.get("z_alpha", {"0.90": 1.282, "0.95": 1.645, "0.99": 2.326})
+        # 兼容数字键和字符串键
+        z_alpha = z_alpha_map.get(confidence_level)
+        if z_alpha is None:
+            z_alpha = z_alpha_map.get(str(confidence_level), 1.645)
+
         result = {
             "var_95": 0.0,
             "var_stop_price": current_price,
@@ -313,18 +384,15 @@ class StockAnalyzer:
 
         try:
             closes = history_df["收盘"].values.astype(np.float64) if "收盘" in history_df.columns else None
-            if closes is None or len(closes) < 20:
+            if closes is None or len(closes) < var_lookback:
                 return result
 
-            returns = np.diff(closes[-21:]) / closes[-21:-1]
+            returns = np.diff(closes[-(var_lookback + 1):]) / closes[-(var_lookback + 1):-1]
             mu = np.mean(returns)
             sigma = np.std(returns, ddof=1)
 
             if sigma < 1e-10:
                 return result
-
-            # z_α for 95% confidence
-            z_alpha = {0.90: 1.282, 0.95: 1.645, 0.99: 2.326}.get(confidence_level, 1.645)
 
             # VaR: 最大可能损失比例（正值）
             var_95 = -(mu - z_alpha * sigma)  # 取绝对值
@@ -344,10 +412,10 @@ class StockAnalyzer:
 
             return result
         except Exception:
+            analyzer_logger.warning("VaR止损计算异常", exc_info=True)
             return result
 
-    @staticmethod
-    def _volatility_scaled_range(atr_value: float, history_df,
+    def _volatility_scaled_range(self, atr_value: float, history_df,
                                  base_scale: float = 0.5) -> float:
         """波动率自适应的预测区间缩放
 
@@ -370,6 +438,12 @@ class StockAnalyzer:
         Returns:
             float: 调整后的 day_range = ATR * day_range_scale
         """
+        cfg = self._volatility_scaled_cfg
+        volatility_lookback = self._windows_cfg.get("volatility_lookback", 60)
+        atr_ma_window = self._windows_cfg.get("atr_ma_window", 14)
+        scale_min = cfg.get("scale_min", 0.3)
+        scale_max = cfg.get("scale_max", 0.8)
+
         if atr_value <= 0:
             return 0.0
 
@@ -382,11 +456,11 @@ class StockAnalyzer:
             if closes is None or len(closes) < 20:
                 return atr_value * base_scale
 
-            # 用近60日TR近似ATR分位数
+            # 用近 volatility_lookback 日TR近似ATR分位数
             highs = history_df["最高"].values.astype(np.float64) if "最高" in history_df.columns else closes
             lows = history_df["最低"].values.astype(np.float64) if "最低" in history_df.columns else closes
 
-            lookback = min(60, len(closes) - 1)
+            lookback = min(volatility_lookback, len(closes) - 1)
             tr_list = []
             for i in range(len(closes) - lookback, len(closes)):
                 if i < 1:
@@ -403,8 +477,8 @@ class StockAnalyzer:
 
             # ATR分位数
             atr_array = np.array(tr_list)
-            # 用14日滚动均值模拟ATR
-            window = 14
+            # 用 atr_ma_window 日滚动均值模拟ATR
+            window = atr_ma_window
             atr_ma_list = []
             for i in range(window - 1, len(atr_array)):
                 atr_ma_list.append(np.mean(atr_array[i - window + 1:i + 1]))
@@ -416,15 +490,19 @@ class StockAnalyzer:
             vol_percentile = float(np.mean(atr_history[-1] <= atr_history)) if len(atr_history) > 1 else 0.5
 
             # 连续缩放: scale_min + (scale_max - scale_min) * percentile
-            scale_min = 0.3
-            scale_max = 0.8
             day_range_scale = scale_min + (scale_max - scale_min) * vol_percentile
 
             return atr_value * day_range_scale
         except Exception:
+            analyzer_logger.warning("波动率缩放计算异常", exc_info=True)
             return atr_value * base_scale
 
-    def analyze_technical(self, indicators: Dict, current_price: float = 0) -> Dict:
+    def analyze_technical(
+        self,
+        indicators: Dict,
+        current_price: float = 0,
+        stock_code: Optional[str] = None,
+    ) -> Dict:
         """分析技术指标"""
         analyzer_logger.info("=" * 50)
         analyzer_logger.info("开始技术指标分析...")
@@ -628,23 +706,28 @@ class StockAnalyzer:
                 pass
 
         # --- 归一化与冲突检测 ---
-        MIN_SCORE = -55
-        MAX_SCORE = 55
+        scoring_cfg = self._technical_scoring_cfg
+        min_score = scoring_cfg.get("min_score", -55)
+        max_score = scoring_cfg.get("max_score", 55)
+        max_conflict_penalty = scoring_cfg.get("max_conflict_penalty", 0.15)
+        conflict_penalty_per_signal = scoring_cfg.get("conflict_penalty_per_signal", 0.03)
+        atr_boll_conflict_max = scoring_cfg.get("atr_boll_conflict_max", 0.20)
+        atr_boll_conflict_add = scoring_cfg.get("atr_boll_conflict_add", 0.05)
 
         # 超买视为看空方向，超卖视为看多方向
         upward_signals = sum(1 for s in signals if any(x in s for x in ["金叉", "多头", "偏强", "超卖"]))
         downward_signals = sum(1 for s in signals if any(x in s for x in ["死叉", "空头", "偏弱", "空头排列", "超买"]))
 
-        conflict_penalty = 0
+        conflict_penalty = 0.0
         if upward_signals > 0 and downward_signals > 0:
-            conflict_penalty = min(0.15, abs(upward_signals - downward_signals) * 0.03)
+            conflict_penalty = min(max_conflict_penalty, abs(upward_signals - downward_signals) * conflict_penalty_per_signal)
 
         atr_signal = atr.get("signal", "") if isinstance(atr, dict) else ""
         boll_signal = boll.get("signal", "") if isinstance(boll, dict) else ""
         if atr_signal == "波动剧烈" and boll_signal in ("收窄", "扩张"):
-            conflict_penalty = min(0.20, conflict_penalty + 0.05)
+            conflict_penalty = min(atr_boll_conflict_max, conflict_penalty + atr_boll_conflict_add)
 
-        normalized_score = (score - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
+        normalized_score = (score - min_score) / (max_score - min_score)
         normalized_score = max(0, min(1, normalized_score))
 
         if upward_signals > 0 and downward_signals > 0:
@@ -666,30 +749,37 @@ class StockAnalyzer:
             try:
                 feature_names, feature_values = extract_feature_vector(indicators)
                 if len(feature_values) >= 2:
-                    feature_dict = dict(zip(feature_names, feature_values))
-                    self._feature_history.append(feature_values.copy())
+                    # 按股票代码隔离追加特征历史，并在锁内获取快照
+                    code = stock_code if stock_code else "__default__"
+                    with self._feature_history_lock:
+                        if code not in self._feature_history:
+                            self._feature_history[code] = deque(maxlen=20)
+                        self._feature_history[code].append(feature_values.copy())
+                        history_snapshot = list(self._feature_history[code])
 
-                    if len(self._feature_history) >= 5:
+                    if len(history_snapshot) >= 5:
                         # 确保所有历史特征向量长度一致（固定模板后应一致，做防御性检查）
                         expected_len = len(feature_values)
-                        valid_history = [h for h in self._feature_history if len(h) == expected_len]
+                        valid_history = [h for h in history_snapshot if len(h) == expected_len]
                         if len(valid_history) >= 5:
                             feature_matrix = np.array(valid_history)
                         else:
-                            feature_matrix = np.array(list(self._feature_history)[-min(len(self._feature_history), expected_len):])
+                            feature_matrix = np.array(history_snapshot[-min(len(history_snapshot), expected_len):])
                             # 如果仍然不规则，跳过正交化
                             if feature_matrix.ndim != 2:
-                                analyzer_logger.info(f"特征历史长度不一致，跳过正交化")
+                                analyzer_logger.info("特征历史长度不一致，跳过正交化")
                                 feature_matrix = None
 
                         if feature_matrix is not None:
-                            corr_result = compute_feature_correlation(feature_dict)
+                            corr_threshold = fe_config.get("correlation_threshold", 0.7)
+                            corr_result = compute_feature_correlation(
+                                feature_matrix, feature_names, corr_threshold
+                            )
                             result["feature_correlation"] = {
                                 "high_correlation_pairs": corr_result["high_correlation_pairs"],
                                 "feature_names": corr_result["feature_names"],
                             }
 
-                            corr_threshold = fe_config.get("correlation_threshold", 0.7)
                             if corr_result["high_correlation_pairs"]:
                                 variance_threshold = fe_config.get("variance_threshold", 0.95)
                                 orth_result = orthogonalize_features(
@@ -721,7 +811,7 @@ class StockAnalyzer:
                                 result["feature_correlation"]["orthogonalized"] = False
                                 analyzer_logger.info("特征相关性低，无需正交化")
                     else:
-                        analyzer_logger.info(f"特征历史不足5期(当前{len(self._feature_history)}期)，跳过正交化")
+                        analyzer_logger.info(f"特征历史不足5期(当前{len(history_snapshot)}期)，跳过正交化")
             except Exception as e:
                 analyzer_logger.warning(f"特征正交化处理异常: {e}")
                 result["feature_correlation"] = {"error": str(e)}
@@ -765,8 +855,9 @@ class StockAnalyzer:
             }
 
         # 定义看多/看空阈值
-        bull_threshold = 0.6
-        bear_threshold = 0.4
+        mtf_cfg = self._multi_timeframe_cfg
+        bull_threshold = mtf_cfg.get("bull_threshold", 0.6)
+        bear_threshold = mtf_cfg.get("bear_threshold", 0.4)
 
         daily_bull = daily_score > bull_threshold
         daily_bear = daily_score < bear_threshold
@@ -931,12 +1022,24 @@ class StockAnalyzer:
             except (TypeError, ValueError):
                 market_cap = 0
 
-        if market_cap > 500e8:
-            threshold_high, threshold_low = 0.01, 0.005
-        elif market_cap > 50e8:
-            threshold_high, threshold_low = 0.03, 0.015
+        ff_cfg = self._fund_flow_cfg
+        thresholds_by_cap = ff_cfg.get("thresholds_by_cap", {
+            "large": {"market_cap": 500000000000, "high": 0.01, "low": 0.005},
+            "mid": {"market_cap": 50000000000, "high": 0.03, "low": 0.015},
+            "small": {"market_cap": 0, "high": 0.05, "low": 0.025},
+        })
+        history_score_boost = ff_cfg.get("history_score_boost", 0.2)
+        history_score_drop = ff_cfg.get("history_score_drop", 0.15)
+
+        if market_cap > thresholds_by_cap["large"]["market_cap"]:
+            threshold_high = thresholds_by_cap["large"]["high"]
+            threshold_low = thresholds_by_cap["large"]["low"]
+        elif market_cap > thresholds_by_cap["mid"]["market_cap"]:
+            threshold_high = thresholds_by_cap["mid"]["high"]
+            threshold_low = thresholds_by_cap["mid"]["low"]
         else:
-            threshold_high, threshold_low = 0.05, 0.025
+            threshold_high = thresholds_by_cap["small"]["high"]
+            threshold_low = thresholds_by_cap["small"]["low"]
 
         if inflow_ratio > threshold_high:
             score = 1.0
@@ -961,10 +1064,10 @@ class StockAnalyzer:
         if len(history) >= 3:
             recent_inflows = [h.get("主力净流入", 0) for h in history[-3:]]
             if all(x > 0 for x in recent_inflows):
-                score = min(1.0, score + 0.2)
+                score = min(1.0, score + history_score_boost)
                 trend = "inflow"
             elif all(x < 0 for x in recent_inflows):
-                score = max(0.1, score - 0.15)
+                score = max(0.1, score - history_score_drop)
                 trend = "outflow"
 
         result["score"] = score
@@ -1017,7 +1120,7 @@ class StockAnalyzer:
                     mean_price = np.mean(close_prices)
                     normalized_slope = slope / mean_price if mean_price > 0 else 0
 
-                    slope_threshold = 0.005  # 判定为趋势的最小斜率
+                    slope_threshold = ff_cfg.get("price_volume_divergence_slope", 0.005)  # 判定为趋势的最小斜率
                     if normalized_slope < -slope_threshold and score >= 0.7:
                         # 价格下跌但资金评分偏高 → 背离
                         divergence_strength = min(1.0, abs(normalized_slope) / 0.02)
@@ -1056,28 +1159,33 @@ class StockAnalyzer:
 
         score = 0.5
 
+        sent_cfg = self._sentiment_cfg
+        turnover_cfg = sent_cfg.get("turnover", {"high": 15, "medium": 8, "low": 2})
+        volume_ratio_cfg = sent_cfg.get("volume_ratio", {"high": 2.0, "medium": 1.5, "low": 0.5})
+        market_change_cfg = sent_cfg.get("market_change", {"strong_up": 1.0, "up": 0.5, "strong_down": -1.0, "down": -0.5})
+
         try:
             turnover = (
                 float(turnover.replace("%", ""))
                 if isinstance(turnover, str)
                 else float(turnover)
             )
-            if turnover > 15:
+            if turnover > turnover_cfg["high"]:
                 score += 0.15
-            elif turnover > 8:
+            elif turnover > turnover_cfg["medium"]:
                 score += 0.1
-            elif turnover < 2:
+            elif turnover < turnover_cfg["low"]:
                 score -= 0.05
         except (ValueError, TypeError):
             pass
 
         try:
             volume_ratio = float(volume_ratio) if volume_ratio else 1.0
-            if volume_ratio > 2:
+            if volume_ratio > volume_ratio_cfg["high"]:
                 score += 0.15
-            elif volume_ratio > 1.5:
+            elif volume_ratio > volume_ratio_cfg["medium"]:
                 score += 0.1
-            elif volume_ratio < 0.5:
+            elif volume_ratio < volume_ratio_cfg["low"]:
                 score -= 0.05
         except (ValueError, TypeError):
             pass
@@ -1091,16 +1199,16 @@ class StockAnalyzer:
                 market_change = float(market_change)
             except (ValueError, TypeError):
                 market_change = 0
-            if market_change > 1:
+            if market_change > market_change_cfg["strong_up"]:
                 market_status = "大涨"
                 score += 0.1
-            elif market_change > 0.5:
+            elif market_change > market_change_cfg["up"]:
                 market_status = "上涨"
                 score += 0.05
-            elif market_change < -1:
+            elif market_change < market_change_cfg["strong_down"]:
                 market_status = "大跌"
                 score -= 0.1
-            elif market_change < -0.5:
+            elif market_change < market_change_cfg["down"]:
                 market_status = "下跌"
                 score -= 0.05
             else:
@@ -1117,6 +1225,8 @@ class StockAnalyzer:
                 def _fetch_index():
                     with _baostock_lock:
                         lg = bs.login()
+                        if lg.error_code != "0":
+                            raise Exception(f"baostock登录失败: {lg.error_msg}")
                         try:
                             today = datetime.now().strftime('%Y-%m-%d')
                             start = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
@@ -1143,6 +1253,7 @@ class StockAnalyzer:
                     else:
                         market_change = future.result() or 0
                 except Exception:
+                    analyzer_logger.warning("大盘涨跌幅获取异常", exc_info=True)
                     market_change = 0
                 finally:
                     _executor.shutdown(wait=False)
@@ -1151,16 +1262,16 @@ class StockAnalyzer:
                     market_change = float(market_change)
                 except (ValueError, TypeError):
                     market_change = 0
-                if market_change > 1:
+                if market_change > market_change_cfg["strong_up"]:
                     market_status = "大涨"
                     score += 0.1
-                elif market_change > 0.5:
+                elif market_change > market_change_cfg["up"]:
                     market_status = "上涨"
                     score += 0.05
-                elif market_change < -1:
+                elif market_change < market_change_cfg["strong_down"]:
                     market_status = "大跌"
                     score -= 0.1
-                elif market_change < -0.5:
+                elif market_change < market_change_cfg["down"]:
                     market_status = "下跌"
                     score -= 0.05
                 else:
@@ -1203,11 +1314,9 @@ class StockAnalyzer:
             w_technical = dynamic_weights.get("technical", 0.5)
             w_fund_flow = dynamic_weights.get("fund_flow", 0.3)
             w_sentiment = dynamic_weights.get("sentiment", 0.2)
-            weight_total = w_technical + w_fund_flow + w_sentiment
-            if weight_total > 0:
-                w_technical /= weight_total
-                w_fund_flow /= weight_total
-                w_sentiment /= weight_total
+            w_technical, w_fund_flow, w_sentiment = self._normalize_weights(
+                w_technical, w_fund_flow, w_sentiment
+            )
             weights = {"technical": w_technical, "fund_flow": w_fund_flow, "sentiment": w_sentiment}
             analyzer_logger.info(f"动态权重: {weights}, 市场状态: {self._market_regime}")
         else:
@@ -1215,6 +1324,9 @@ class StockAnalyzer:
             w_technical = weights.get("technical", 0.5)
             w_fund_flow = weights.get("fund_flow", 0.3)
             w_sentiment = weights.get("sentiment", 0.2)
+            w_technical, w_fund_flow, w_sentiment = self._normalize_weights(
+                w_technical, w_fund_flow, w_sentiment
+            )
 
         total_score = (
             technical_score * w_technical
@@ -1293,6 +1405,14 @@ class StockAnalyzer:
             return value
         except (IndexError, TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _normalize_weights(w_tech: float, w_fund: float, w_sent: float):
+        """归一化三维权重，使其加和为 1.0"""
+        weight_total = w_tech + w_fund + w_sent
+        if weight_total > 0:
+            return w_tech / weight_total, w_fund / weight_total, w_sent / weight_total
+        return 0.5, 0.3, 0.2
 
     def _detect_signal_persistence(self, indicators: Dict) -> Dict:
         """检测技术指标的信号持续性
@@ -1383,13 +1503,13 @@ class StockAnalyzer:
         # 从最新到最旧，逐日分配筹码
         for i in range(n - 1, -1, -1):
             days_ago = n - 1 - i
-            h, l, vol = highs[i], lows[i], volumes[i]
-            if vol <= 0 or h <= l:
+            h, low, vol = highs[i], lows[i], volumes[i]
+            if vol <= 0 or h <= low:
                 continue
 
             weight = vol * (decay ** days_ago)
 
-            low_bin = max(0, np.searchsorted(bin_edges, l, side="left") - 1)
+            low_bin = max(0, np.searchsorted(bin_edges, low, side="left") - 1)
             high_bin = min(price_bins - 1, np.searchsorted(bin_edges, h, side="right") - 1)
 
             if high_bin >= low_bin:
@@ -1442,6 +1562,30 @@ class StockAnalyzer:
             "peak_price": peak_price,
         }
 
+    def _resolve_hmm_state(self, history_df, hmm_state_override=None):
+        """解析当前市场状态，优先使用传入状态，否则从 HMM 检测器获取。"""
+        hmm_state = hmm_state_override
+        if not hmm_state and self._hmm_detector is not None and self._hmm_detector.is_ready():
+            try:
+                if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
+                    closes = history_df["收盘"].values.astype(np.float64)
+                    if len(closes) > 20:
+                        returns = np.diff(closes) / closes[:-1]
+                        vols = np.zeros_like(returns)
+                        window = 20
+                        for i in range(len(returns)):
+                            start = max(0, i - window + 1)
+                            vols[i] = np.std(returns[start:i + 1]) if i > 0 else 0.0
+                        volumes = history_df["成交量"].values.astype(np.float64) if "成交量" in history_df.columns else np.ones(len(closes))
+                        volume_changes = np.diff(volumes) / (volumes[:-1] + 1e-10)
+                        hmm_result = self._hmm_detector.predict(returns, vols, volume_changes)
+                        hmm_state = hmm_result.get("current_state", "")
+            except Exception:
+                analyzer_logger.warning("HMM状态检测异常", exc_info=True)
+        if not hmm_state and self._dynamic_weight_manager and self._dynamic_weight_manager.enabled:
+            hmm_state = self._dynamic_weight_manager.get_regime()
+        return hmm_state
+
     def cross_validate_analysis(
         self,
         analysis: Dict,
@@ -1479,7 +1623,6 @@ class StockAnalyzer:
         trading_signal = trading_signal or {}
         vcfg = self.validation_config
         st = vcfg.get("score_thresholds", {})
-        vt = vcfg.get("vote_thresholds", {})
         cw = vcfg.get("confidence_weights", {})
         cp = vcfg.get("conflict_penalty", {})
 
@@ -1489,8 +1632,6 @@ class StockAnalyzer:
         fund_bearish = st.get("fund_bearish", 0.4)
         sentiment_bullish = st.get("sentiment_bullish", 0.6)
         sentiment_bearish = st.get("sentiment_bearish", 0.4)
-        bullish_margin = vt.get("bullish_consensus_margin", 3)
-        bearish_margin = vt.get("bearish_consensus_margin", 2)
         signal_weight = cw.get("signal", 0.4)
         agreement_weight = cw.get("agreement", 0.6)
         per_conflict_penalty = cp.get("per_conflict", 0.1)
@@ -1531,6 +1672,8 @@ class StockAnalyzer:
                 f"未满足涨幅>2%且排名前3的条件"
             )
 
+        w_tech, w_fund, w_sent = self._normalize_weights(w_tech, w_fund, w_sent)
+
         supporting_factors = []
         opposing_factors = []
         conflicts = []
@@ -1539,12 +1682,23 @@ class StockAnalyzer:
         technical_score = self._safe_score(
             analysis.get("technical", {}).get("score"), default=None
         )
+        technical_confidence = analysis.get("technical", {}).get("confidence", 1.0)
         fund_flow = analysis.get("fund_flow", {})
         fund_score_raw = self._safe_score(fund_flow.get("score"), default=None)
         sentiment_score_raw = self._safe_score(
             analysis.get("sentiment", {}).get("score"), default=None
         )
         signal_score = self._safe_score(trading_signal.get("score"), default=0.5)
+        # 8.1: 消费 analyze_technical 的 confidence，技术维度内部冲突大时降低信号得分
+        try:
+            technical_confidence = float(technical_confidence)
+        except (TypeError, ValueError):
+            technical_confidence = 1.0
+        if technical_confidence < 0.5:
+            signal_score = signal_score * (0.5 + 0.5 * technical_confidence)
+            analyzer_logger.info(
+                f"技术维度confidence低({technical_confidence:.2f})，signal_score调整至{signal_score:.3f}"
+            )
 
         tech_missing = technical_score is None
         fund_missing = fund_score_raw is None
@@ -1564,6 +1718,8 @@ class StockAnalyzer:
         weighted_bullish = 0.0
         weighted_bearish = 0.0
         active_weight_total = 0.0
+        # 活跃维度计数：记录有多少个维度（tech/fund/sent）贡献了非零的看多/看空权重
+        active_dim_count = 0
 
         # 改动1+2：评分幅度参与共识计算，中性维度不占座
         if not tech_missing:
@@ -1571,12 +1727,14 @@ class StockAnalyzer:
                 strength = (technical_score - 0.5) / 0.5  # 0~1
                 weighted_bullish += w_tech * strength
                 active_weight_total += w_tech * strength
+                active_dim_count += 1
                 if technical_score >= tech_bullish:
                     supporting_factors.append("技术评分偏强")
             elif technical_score < 0.5:
                 strength = (0.5 - technical_score) / 0.5  # 0~1
                 weighted_bearish += w_tech * strength
                 active_weight_total += w_tech * strength
+                active_dim_count += 1
                 if technical_score <= tech_bearish:
                     opposing_factors.append("技术评分偏弱")
 
@@ -1585,22 +1743,25 @@ class StockAnalyzer:
                 strength = (fund_score - 0.5) / 0.5
                 weighted_bullish += w_fund * strength
                 active_weight_total += w_fund * strength
+                active_dim_count += 1
                 if fund_score >= fund_bullish:
                     supporting_factors.append("资金流入支持")
             elif fund_score < 0.5:
                 strength = (0.5 - fund_score) / 0.5
                 weighted_bearish += w_fund * strength
                 active_weight_total += w_fund * strength
+                active_dim_count += 1
                 if fund_score <= fund_bearish:
                     opposing_factors.append("资金流出压制")
-            # 资金趋势辅助判断
+            # 资金趋势辅助判断：仅在评分与趋势背离时触发，避免与主分支双重计入
             fund_trend = fund_flow.get("trend", "neutral")
-            if fund_trend == "inflow" and fund_score <= fund_bullish:
-                # 评分未达偏强但趋势为流入，小幅加成
+            if fund_trend == "inflow" and fund_score < 0.5:
+                # 评分偏弱但趋势为流入，作为反向信号小幅加成
                 weighted_bullish += w_fund * 0.2
                 active_weight_total += w_fund * 0.2
                 supporting_factors.append("资金流入支持(趋势)")
-            elif fund_trend == "outflow" and fund_score >= fund_bearish:
+            elif fund_trend == "outflow" and fund_score > 0.5:
+                # 评分偏强但趋势为流出，作为反向信号小幅加成
                 weighted_bearish += w_fund * 0.2
                 active_weight_total += w_fund * 0.2
                 opposing_factors.append("资金流出压制(趋势)")
@@ -1610,12 +1771,14 @@ class StockAnalyzer:
                 strength = (sentiment_score - 0.5) / 0.5
                 weighted_bullish += w_sent * strength
                 active_weight_total += w_sent * strength
+                active_dim_count += 1
                 if sentiment_score >= sentiment_bullish:
                     supporting_factors.append("市场情绪偏暖")
             elif sentiment_score < 0.5:
                 strength = (0.5 - sentiment_score) / 0.5
                 weighted_bearish += w_sent * strength
                 active_weight_total += w_sent * strength
+                active_dim_count += 1
                 if sentiment_score <= sentiment_bearish:
                     opposing_factors.append("市场情绪偏弱")
 
@@ -1771,34 +1934,39 @@ class StockAnalyzer:
 
         # 资金-ML方向背离检测
         # 当ML置信度低于阈值时，ML预测形同随机，不应构成"背离"
-        ML_CONFIDENCE_THRESHOLD = 0.6
+        fund_ml_cfg = self._fund_ml_cfg
+        ml_confidence_threshold = fund_ml_cfg.get("confidence_threshold", 0.6)
+        strong_fund_threshold = fund_ml_cfg.get("strong_fund_threshold", 0.7)
+        weak_fund_threshold = fund_ml_cfg.get("weak_fund_threshold", 0.3)
+        base_penalty = fund_ml_cfg.get("base_penalty", 0.1)
         fund_ml_diverged = False
         fund_ml_divergence_penalty = 0.0
+        fund_ml_confidence_multiplier = 1.0
         ml_prediction = price_prediction.get("ml_prediction")
         ml_direction = ml_prediction.get("direction") if ml_prediction else None
         ml_confidence = ml_prediction.get("confidence", 0.0) if ml_prediction else 0.0
-        if ml_direction is not None and ml_confidence >= ML_CONFIDENCE_THRESHOLD:
-            if fund_score >= 0.7 and ml_direction == 0:
+        if ml_direction is not None and ml_confidence >= ml_confidence_threshold:
+            if ml_direction == 1 and fund_score < weak_fund_threshold:
                 fund_ml_diverged = True
-                conflicts.append("资金强流入但ML预测看跌")
-                opposing_factors.append("资金-ML方向背离")
-                fund_ml_divergence_penalty = 0.1 + 0.1 * (fund_score - 0.7) / 0.3
+                conflicts.append("资金-ML 背离")
+                fund_ml_divergence_penalty = base_penalty
+                fund_ml_confidence_multiplier = 0.7
                 analyzer_logger.info(
-                    f"资金-ML背离: 资金评分={fund_score:.3f}(强流入), ML direction=0(看跌), "
-                    f"ML confidence={ml_confidence:.3f}, 惩罚={fund_ml_divergence_penalty:.3f}"
+                    f"资金-ML背离: 资金评分={fund_score:.3f}(流出), ML direction=up(看涨), "
+                    f"ML confidence={ml_confidence:.3f}, confidence×0.7, penalty={base_penalty}"
                 )
-            elif fund_score <= 0.3 and ml_direction == 1:
+            elif ml_direction == 0 and fund_score > strong_fund_threshold:
                 fund_ml_diverged = True
-                conflicts.append("资金强流出但ML预测看涨")
-                supporting_factors.append("资金-ML方向背离(反向)")
-                fund_ml_divergence_penalty = 0.1 + 0.1 * (0.3 - fund_score) / 0.3
+                conflicts.append("资金-ML 背离")
+                fund_ml_divergence_penalty = base_penalty
+                fund_ml_confidence_multiplier = 0.7
                 analyzer_logger.info(
-                    f"资金-ML背离: 资金评分={fund_score:.3f}(强流出), ML direction=1(看涨), "
-                    f"ML confidence={ml_confidence:.3f}, 惩罚={fund_ml_divergence_penalty:.3f}"
+                    f"资金-ML背离: 资金评分={fund_score:.3f}(流入), ML direction=down(看跌), "
+                    f"ML confidence={ml_confidence:.3f}, confidence×0.7, penalty={base_penalty}"
                 )
-        elif ml_direction is not None and ml_confidence < ML_CONFIDENCE_THRESHOLD:
+        elif ml_direction is not None and ml_confidence < ml_confidence_threshold:
             analyzer_logger.info(
-                f"资金-ML背离跳过: ML confidence={ml_confidence:.3f} < {ML_CONFIDENCE_THRESHOLD}, "
+                f"资金-ML背离跳过: ML confidence={ml_confidence:.3f} < {ml_confidence_threshold}, "
                 f"ML预测不可靠，不触发背离惩罚"
             )
 
@@ -1888,7 +2056,8 @@ class StockAnalyzer:
                         boll_lower = float(boll_lower)
                     if boll_upper is not None and boll_lower is not None and boll_lower > 0:
                         boll_width_ratio = (boll_upper - boll_lower) / current_price
-                        if boll_width_ratio < 0.005:
+                        boll_narrow_threshold = self._technical_scoring_cfg.get("boll_narrow_width_ratio", 0.005)
+                        if boll_width_ratio < boll_narrow_threshold:
                             boll_narrow = True
                             conflicts.append(f"布林带极度收敛(宽度{boll_width_ratio*100:.2f}%)，方向不确定")
                             analyzer_logger.info(
@@ -1914,6 +2083,20 @@ class StockAnalyzer:
             elif mtf_consistency == "pullback_opportunity":
                 supporting_factors.append("大周期上涨中的回调")
 
+        if active_weight_total > 0:
+            bull_ratio = weighted_bullish / active_weight_total
+            bear_ratio = weighted_bearish / active_weight_total
+        else:
+            bull_ratio = 0.5
+            bear_ratio = 0.5
+
+        if bull_ratio >= 0.6:
+            direction_consensus = "bullish"
+        elif bear_ratio >= 0.6:
+            direction_consensus = "bearish"
+        else:
+            direction_consensus = "mixed"
+
         # 独立检测：近3日价格变化率与资金评分背离
         surge_risk = False
         if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
@@ -1921,9 +2104,9 @@ class StockAnalyzer:
                 recent_closes = history_df["收盘"].tail(4).astype(float).values
                 if len(recent_closes) >= 2:
                     price_change_3d = (recent_closes[-1] - recent_closes[0]) / recent_closes[0] * 100
-                    if price_change_3d < -3 and fund_score >= 0.7:
+                    if price_change_3d < -3 and fund_score >= strong_fund_threshold:
                         conflicts.append("近期下跌但资金评分偏高")
-                    elif price_change_3d > 3 and fund_score <= 0.3:
+                    elif price_change_3d > 3 and fund_score <= weak_fund_threshold:
                         conflicts.append("近期上涨但资金评分偏低")
 
                 # 大涨后回调风险检测
@@ -1934,14 +2117,7 @@ class StockAnalyzer:
                         conflicts.append(f"单日大涨{last_change:.1f}%后追高风险")
                         opposing_factors.append(f"追高风险(单日+{last_change:.1f}%)")
             except Exception:
-                pass
-
-        if active_weight_total > 0:
-            bull_ratio = weighted_bullish / active_weight_total
-            bear_ratio = weighted_bearish / active_weight_total
-        else:
-            bull_ratio = 0.5
-            bear_ratio = 0.5
+                analyzer_logger.warning("追高风险检测异常", exc_info=True)
 
         missing_penalty = len(missing_dimensions) * 0.05
 
@@ -1951,17 +2127,24 @@ class StockAnalyzer:
             missing_penalty += 0.1
             analyzer_logger.info("数据质量低(DB回退)，加重missing_penalty")
 
-        if bull_ratio >= 0.6:
-            direction_consensus = "bullish"
-        elif bear_ratio >= 0.6:
-            direction_consensus = "bearish"
-        else:
-            direction_consensus = "mixed"
-
         conflict_penalty = min(max_conflict_penalty, len(conflicts) * per_conflict_penalty) + conflict_penalty_extra
-        agreement_ratio = max(bull_ratio, bear_ratio)
+        raw_agreement = max(bull_ratio, bear_ratio)
+        # 单维度约束：仅1个维度活跃时，agreement_ratio 上限 0.7，避免单维度强烈信号虚高
+        if active_dim_count <= 1:
+            agreement_ratio = min(raw_agreement, 0.7)
+        else:
+            agreement_ratio = raw_agreement
         confidence = (signal_score * signal_weight) + (agreement_ratio * agreement_weight) - conflict_penalty - missing_penalty - fund_ml_divergence_penalty
+        # 方向区分：看空场景下 confidence 乘以方向因子，避免与看多等同
+        if direction_consensus == "bearish":
+            confidence = confidence * 0.85
         confidence = round(max(0.0, min(1.0, confidence)), 3)
+        if fund_ml_confidence_multiplier != 1.0:
+            confidence = round(max(0.0, min(1.0, confidence * fund_ml_confidence_multiplier)), 3)
+            analyzer_logger.info(
+                f"资金-ML背离惩罚: confidence×{fund_ml_confidence_multiplier}, "
+                f"修正后confidence={confidence:.3f}"
+            )
         analyzer_logger.info(
             f"置信度计算: signal_score={signal_score:.3f}*{signal_weight}, "
             f"agreement_ratio={agreement_ratio:.3f}*{agreement_weight}, "
@@ -2005,28 +2188,8 @@ class StockAnalyzer:
 
         # P2: HMM状态信号约束
         # 优先使用直接传入的HMM状态，其次从HMM检测器实时获取（避免并发共享状态问题）
-        hmm_state = hmm_state_override
+        hmm_state = self._resolve_hmm_state(history_df, hmm_state_override)
         hmm_decay = 1.0
-        if not hmm_state and self._hmm_detector is not None and self._hmm_detector.is_ready():
-            # 直接从HMM检测器获取当前股票的市场状态，而非依赖共享的DynamicWeightManager
-            try:
-                if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
-                    closes = history_df["收盘"].values.astype(np.float64)
-                    if len(closes) > 20:
-                        returns = np.diff(closes) / closes[:-1]
-                        vols = np.zeros_like(returns)
-                        window = 20
-                        for i in range(len(returns)):
-                            start = max(0, i - window + 1)
-                            vols[i] = np.std(returns[start:i + 1]) if i > 0 else 0.0
-                        volumes = history_df["成交量"].values.astype(np.float64) if "成交量" in history_df.columns else np.ones(len(closes))
-                        volume_changes = np.diff(volumes) / (volumes[:-1] + 1e-10)
-                        hmm_result = self._hmm_detector.predict(returns, vols, volume_changes)
-                        hmm_state = hmm_result.get("current_state", "")
-            except Exception:
-                pass
-        if not hmm_state and self._dynamic_weight_manager and self._dynamic_weight_manager.enabled:
-            hmm_state = self._dynamic_weight_manager.get_regime()
 
         decay_map = vcfg.get("hmm_confidence_decay", {
             "高波动": 0.75, "趋势下跌": 0.85, "低波动震荡": 0.9, "趋势上涨": 1.0
@@ -2040,10 +2203,15 @@ class StockAnalyzer:
                 f"confidence {confidence_before_decay:.3f}→{confidence:.3f}"
             )
 
+        # action_gate confidence 阈值
+        action_gate_cfg = self._action_gate_cfg
+        allow_buy_threshold = action_gate_cfg.get("allow_buy", 0.7)
+        cautious_buy_threshold = action_gate_cfg.get("cautious_buy", 0.5)
+        bearish_confidence_threshold = action_gate_cfg.get("bearish_confidence", 0.6)
+        shock_bounce_prob_threshold = action_gate_cfg.get("shock_bounce_prob", 0.6)
+
         # P2: 高波动状态下action_gate门槛提升
         gate_boost = vcfg.get("hmm_gate_threshold_boost", {})
-        allow_buy_threshold = 0.7
-        cautious_buy_threshold = 0.5
         if hmm_state == "高波动" and "高波动" in gate_boost:
             allow_buy_threshold = gate_boost["高波动"].get("allow_buy", 0.8)
             cautious_buy_threshold = gate_boost["高波动"].get("cautious_buy", 0.6)
@@ -2057,9 +2225,70 @@ class StockAnalyzer:
         if missing_dimensions:
             risk_level = "high" if risk_level == "low" else risk_level
 
+        # P0: 在 action_gate 决策前完成 confidence 修正和 risk_level 升级
+        distribution = indicators.get("Distribution", {})
+        dist_w20 = distribution.get("W20", {})
+        dist_w60 = distribution.get("W60", {})
+        dist_window = dist_w20 if dist_w20.get("skewness", {}).get("latest") is not None else dist_w60
+
+        skewness_val = None
+        kurtosis_val = None
+        skew_data = dist_window.get("skewness", {})
+        kurt_data = dist_window.get("kurtosis", {})
+        if isinstance(skew_data, dict):
+            skewness_val = skew_data.get("latest")
+        if isinstance(kurt_data, dict):
+            kurtosis_val = kurt_data.get("latest")
+
+        try:
+            skewness_val = float(skewness_val) if skewness_val is not None else None
+        except (TypeError, ValueError):
+            skewness_val = None
+        try:
+            kurtosis_val = float(kurtosis_val) if kurtosis_val is not None else None
+        except (TypeError, ValueError):
+            kurtosis_val = None
+
+        if skewness_val is not None and skewness_val < -0.5:
+            confidence = confidence * 0.8
+            if direction_consensus == "bullish":
+                weighted_bullish *= 0.8
+            opposing_factors.append("收益率左偏分布")
+
+        if kurtosis_val is not None and kurtosis_val > 5:
+            risk_level_map = {"low": "medium", "medium": "high"}
+            risk_level = risk_level_map.get(risk_level, risk_level)
+            conflicts.append("尾部风险显著")
+
+        market_structure = indicators.get("MarketStructure", {})
+        rs_data = market_structure.get("RelativeStrength", {})
+        beta_data = market_structure.get("Beta", {})
+
+        rs_latest = rs_data.get("latest") if isinstance(rs_data, dict) else None
+        beta_latest = beta_data.get("latest") if isinstance(beta_data, dict) else None
+
+        try:
+            rs_latest = float(rs_latest) if rs_latest is not None else None
+        except (TypeError, ValueError):
+            rs_latest = None
+        try:
+            beta_latest = float(beta_latest) if beta_latest is not None else None
+        except (TypeError, ValueError):
+            beta_latest = None
+
+        if rs_latest is not None and rs_latest > 1.2:
+            confidence = min(1.0, confidence * 1.1)
+            supporting_factors.append("相对强度强势")
+
+        if beta_latest is not None and beta_latest > 1.5:
+            risk_level_map = {"low": "medium", "medium": "high"}
+            risk_level = risk_level_map.get(risk_level, risk_level)
+            opposing_factors.append("高Beta风险")
+
         signal = trading_signal.get("signal", "hold")
         # VaR止损: 无论持仓状态都计算（日志记录），但仅已持有时影响action_gate
         var_info = {"var_95": 0.0, "var_stop_price": current_price, "should_stop": False, "stop_reason": ""}
+        vol_scale = 1.0
         if current_price > 0 and history_df is not None and not history_df.empty:
             var_info = self._compute_var_stop_loss(current_price, history_df)
             analyzer_logger.info(
@@ -2097,10 +2326,10 @@ class StockAnalyzer:
                     action_gate = "watch"
                 else:
                     action_gate = "cautious_buy"
-            elif direction_consensus == "bearish" and confidence >= 0.6:
+            elif direction_consensus == "bearish" and confidence >= bearish_confidence_threshold:
                 # 系统性冲击后: bearish+高置信度不一定应avoid_buy
                 # 若冲击检测显示反弹概率高，降级为watch而非avoid_buy
-                if shock_info.get("is_shock") and shock_info.get("bounce_probability", 0) > 0.6:
+                if shock_info.get("is_shock") and shock_info.get("bounce_probability", 0) > shock_bounce_prob_threshold:
                     action_gate = "watch"
                     analyzer_logger.info(
                         f"系统性冲击修正: bearish+高置信度但反弹概率{shock_info['bounce_probability']:.0%}，"
@@ -2174,69 +2403,22 @@ class StockAnalyzer:
 
         missing_note = f"缺失维度：{'、'.join(missing_dimensions)}。" if missing_dimensions else ""
 
-        distribution = indicators.get("Distribution", {})
-        dist_w20 = distribution.get("W20", {})
-        dist_w60 = distribution.get("W60", {})
-        dist_window = dist_w20 if dist_w20.get("skewness", {}).get("latest") is not None else dist_w60
-
-        skewness_val = None
-        kurtosis_val = None
-        skew_data = dist_window.get("skewness", {})
-        kurt_data = dist_window.get("kurtosis", {})
-        if isinstance(skew_data, dict):
-            skewness_val = skew_data.get("latest")
-        if isinstance(kurt_data, dict):
-            kurtosis_val = kurt_data.get("latest")
-
-        try:
-            skewness_val = float(skewness_val) if skewness_val is not None else None
-        except (TypeError, ValueError):
-            skewness_val = None
-        try:
-            kurtosis_val = float(kurtosis_val) if kurtosis_val is not None else None
-        except (TypeError, ValueError):
-            kurtosis_val = None
-
-        if skewness_val is not None and skewness_val < -0.5:
-            confidence = confidence * 0.8
-            if direction_consensus == "bullish":
-                weighted_bullish *= 0.8
-            opposing_factors.append("收益率左偏分布")
-
-        if kurtosis_val is not None and kurtosis_val > 5:
-            risk_level_map = {"low": "medium", "medium": "high"}
-            risk_level = risk_level_map.get(risk_level, risk_level)
-            conflicts.append("尾部风险显著")
-
-        market_structure = indicators.get("MarketStructure", {})
-        rs_data = market_structure.get("RelativeStrength", {})
-        beta_data = market_structure.get("Beta", {})
-
-        rs_latest = rs_data.get("latest") if isinstance(rs_data, dict) else None
-        beta_latest = beta_data.get("latest") if isinstance(beta_data, dict) else None
-
-        try:
-            rs_latest = float(rs_latest) if rs_latest is not None else None
-        except (TypeError, ValueError):
-            rs_latest = None
-        try:
-            beta_latest = float(beta_latest) if beta_latest is not None else None
-        except (TypeError, ValueError):
-            beta_latest = None
-
-        if rs_latest is not None and rs_latest > 1.2:
-            confidence = min(1.0, confidence * 1.1)
-            supporting_factors.append("相对强度强势")
-
-        if beta_latest is not None and beta_latest > 1.5:
-            risk_level_map = {"low": "medium", "medium": "high"}
-            risk_level = risk_level_map.get(risk_level, risk_level)
-            opposing_factors.append("高Beta风险")
+        # 一致性断言：action_gate 决策后 confidence/risk_level 不得再被修改
+        final_confidence = confidence
+        final_risk_level = risk_level
 
         validation_note = (
             f"方向{direction_consensus}，置信度{confidence:.3f}，风险{risk_level}。"
             f"支持因素{len(supporting_factors)}项，反对因素{len(opposing_factors)}项，"
             f"冲突{len(conflicts)}项。{missing_note}"
+        )
+
+        # 一致性断言：确保 action_gate 与最终 confidence/risk_level 一致
+        assert confidence == final_confidence, (
+            f"confidence 在 action_gate 决策后被修改: {final_confidence} -> {confidence}"
+        )
+        assert risk_level == final_risk_level, (
+            f"risk_level 在 action_gate 决策后被修改: {final_risk_level} -> {risk_level}"
         )
 
         result = {
@@ -2252,6 +2434,10 @@ class StockAnalyzer:
             "weighted_bearish": round(weighted_bearish, 3),
             "active_weight_total": round(active_weight_total, 3),
             "missing_dimensions": missing_dimensions,
+            "var_result": var_info,
+            "var_value": var_info,
+            "regime_state": hmm_state,
+            "vol_scale": vol_scale,
         }
         if shock_info.get("is_shock"):
             result["systemic_shock"] = shock_info
@@ -2262,7 +2448,6 @@ class StockAnalyzer:
 
         if self._stress_test_config.get("enabled", False) and history_df is not None:
             try:
-                from scripts.core.stress_test import MonteCarloStressTest
                 original_signal = trading_signal.get("signal", "hold")
                 self._pending_stress_test = {
                     "analyzer": self,
@@ -2290,16 +2475,21 @@ class StockAnalyzer:
             stock_code: 股票代码
             stock_name: 股票名称（用于判断ST股）
         """
+        limit_cfg = self._limit_pct_cfg
+        st_pct = limit_cfg.get("st", 0.05)
+        ccy_pct = limit_cfg.get("ccy", 0.20)
+        default_pct = limit_cfg.get("default", 0.10)
+
         # M-04: ST股判断
         if stock_name:
             name_upper = str(stock_name).upper()
             if "ST" in name_upper or "*ST" in name_upper or "S*" in name_upper:
-                return 0.05
+                return st_pct
 
         if stock_code.startswith("30") or stock_code.startswith("68"):
-            return 0.20
+            return ccy_pct
         else:
-            return 0.10
+            return default_pct
 
     def predict_price_range(
         self,
@@ -2601,8 +2791,6 @@ class StockAnalyzer:
         day1_trend = trend
         day2_trend = trend
 
-        macd = indicators.get("MACD", {}).get("signal", "")
-        rsi_6 = indicators.get("RSI", {}).get("RSI(6)", {}).get("signal", "")
         rsi_12 = indicators.get("RSI", {}).get("RSI(12)", {}).get("signal", "")
 
         # M-04：价格预测比例与趋势强度挂钩
@@ -2746,7 +2934,7 @@ class StockAnalyzer:
                 # hybrid_predict在锁外执行，不涉及共享状态
                 if ml_prediction:
                     alpha = self._ml_alpha
-                    result = hybrid_predict(result, ml_prediction, alpha)
+                    result = hybrid_predict(result, ml_prediction, alpha, self.config)
                     analyzer_logger.info(
                         f"  ML混合预测: alpha={alpha}, "
                         f"ml_return={ml_prediction.get('next_day_return', 'N/A')}, "
@@ -2798,7 +2986,14 @@ class StockAnalyzer:
 
         stock_code = all_data.get("stock_code", "")
 
-        technical_analysis = self.analyze_technical(indicators, current_price)
+        # P2: 分析前优先加载个股 HMM，不存在则回退到全局 HMM
+        if self._hmm_detector is not None and stock_code:
+            hmm_config = self.config.get("hmm", {})
+            global_model_path = hmm_config.get("model_path", "")
+            models_dir = os.path.dirname(global_model_path) if global_model_path else "models"
+            self._hmm_detector.load_for_stock(stock_code, models_dir, global_model_path)
+
+        technical_analysis = self.analyze_technical(indicators, current_price, stock_code)
         fund_flow_analysis = self.analyze_fund_flow(
             all_data.get("fund_flow", {}), all_data.get("stock_info", {})
         )
@@ -2815,42 +3010,9 @@ class StockAnalyzer:
             "data_quality": all_data.get("data_quality", "normal"),
         }
 
-        trading_signal = self.generate_trading_signal(analysis, position_status, market_data)
-        price_prediction = self.predict_price_range(
-            all_data, indicators, stock_code, trading_signal
-        )
-        validation = self.cross_validate_analysis(
-            analysis,
-            price_prediction,
-            indicators,
-            trading_signal,
-            position_status,
-            current_price,
-            history_df=all_data.get("history_data"),
-        )
-        trading_signal["reason"] = validation.get("validation_note", "")
-        price_prediction["validation_confidence"] = validation.get("confidence", 0.5)
-        price_prediction["validation_note"] = validation.get("validation_note", "")
-
-        if position_status == "已持有":
-            position_strategy = self.generate_position_strategy(
-                all_data, indicators, current_price, cost_price, trading_signal, validation
-            )
-        else:
-            position_strategy = self.generate_buy_strategy(
-                all_data, indicators, current_price, trading_signal, validation
-            )
-
-        result = {
-            "analysis": analysis,
-            "trading_signal": trading_signal,
-            "price_prediction": price_prediction,
-            "validation": validation,
-            "indicators": indicators,
-            "position_strategy": position_strategy,
-            "position_status": position_status,
-        }
-
+        # 提前计算HMM/市场状态，避免cross_validate_analysis内部重复预测
+        hmm_state_override = None
+        hmm_state_result = None
         if self._hmm_detector is not None and self._hmm_detector.is_ready():
             history_df = all_data.get("history_data")
             if history_df is not None and not history_df.empty and "收盘" in history_df.columns:
@@ -2865,7 +3027,8 @@ class StockAnalyzer:
                     volumes = history_df["成交量"].values.astype(np.float64) if "成交量" in history_df.columns else np.ones(len(closes))
                     volume_changes = np.diff(volumes) / (volumes[:-1] + 1e-10)
                     hmm_result = self._hmm_detector.predict(returns, vols, volume_changes)
-                    result["hmm_state"] = {
+                    hmm_state_override = hmm_result.get("current_state", "")
+                    hmm_state_result = {
                         "current_state": hmm_result.get("current_state", "未知"),
                         "state_probabilities": hmm_result.get("state_probabilities", {}),
                         "transition_matrix": hmm_result.get("transition_matrix"),
@@ -2902,19 +3065,61 @@ class StockAnalyzer:
                             volatility_signal = "低波动"
                         elif bandwidth > 25:
                             volatility_signal = "高波动"
-                    market_data = {
+                    regime_market_data = {
                         "volatility_signal": volatility_signal,
                         "volume_ratio": volume_ratio,
                         "market_change_pct": market_change_pct,
                     }
-                    regime = self._regime_detector.detect_regime(market_data)
-                    result["hmm_state"] = {
+                    regime = self._regime_detector.detect_regime(regime_market_data)
+                    hmm_state_override = regime
+                    hmm_state_result = {
                         "current_state": regime,
                         "state_probabilities": {},
                         "transition_matrix": None,
                     }
                 except Exception as e:
                     analyzer_logger.warning(f"规则市场状态检测失败: {e}")
+
+        trading_signal = self.generate_trading_signal(analysis, position_status, market_data)
+        price_prediction = self.predict_price_range(
+            all_data, indicators, stock_code, trading_signal
+        )
+        validation = self.cross_validate_analysis(
+            analysis,
+            price_prediction,
+            indicators,
+            trading_signal,
+            position_status,
+            current_price,
+            history_df=all_data.get("history_data"),
+            hmm_state_override=hmm_state_override,
+        )
+        trading_signal["reason"] = validation.get("validation_note", "")
+        price_prediction["validation_confidence"] = validation.get("confidence", 0.5)
+        price_prediction["validation_note"] = validation.get("validation_note", "")
+
+        if position_status == "已持有":
+            position_strategy = self.generate_position_strategy(
+                all_data, indicators, current_price, cost_price, trading_signal, validation,
+                var_result=validation.get("var_result"),
+            )
+        else:
+            position_strategy = self.generate_buy_strategy(
+                all_data, indicators, current_price, trading_signal, validation
+            )
+
+        result = {
+            "analysis": analysis,
+            "trading_signal": trading_signal,
+            "price_prediction": price_prediction,
+            "validation": validation,
+            "indicators": indicators,
+            "position_strategy": position_strategy,
+            "position_status": position_status,
+        }
+
+        if hmm_state_result is not None:
+            result["hmm_state"] = hmm_state_result
 
         return result
 
@@ -2926,9 +3131,12 @@ class StockAnalyzer:
         cost_price: float = None,
         trading_signal: Dict = None,
         validation: Dict = None,
+        var_result: Dict = None,
     ) -> Dict:
         """生成持仓策略（已持有时使用）"""
         validation = validation or {}
+        cached_var = validation.get("var_value")
+        cached_regime = validation.get("regime_state")
         history_df = all_data.get("history_data")
 
         if cost_price:
@@ -2981,46 +3189,78 @@ class StockAnalyzer:
         # 动态止损: ATR止损 + VaR止损，取更严格者
         # ATR止损: 静态2倍ATR
         # VaR止损: 基于收益率分布的95%在险价值
-        var_info = self._compute_var_stop_loss(current_price, history_df)
+        if cached_var is not None:
+            var_info = cached_var
+        elif var_result is not None:
+            var_info = var_result
+        else:
+            var_info = self._compute_var_stop_loss(current_price, history_df)
+
+        regime_state = cached_regime
+        if not regime_state:
+            regime_state = self._resolve_hmm_state(history_df)
+        if regime_state:
+            analyzer_logger.info(f"持仓策略HMM状态: {regime_state}")
+
+        risk_cfg = self._risk_cfg
+        atr_stop_loss_multiplier = risk_cfg.get("atr_stop_loss_multiplier", 2.0)
+        atr_stop_profit_multiplier = risk_cfg.get("atr_stop_profit_multiplier", 2.5)
+        max_stop_loss_pct = risk_cfg.get("max_stop_loss_pct", 0.10)
+        fallback_profit = risk_cfg.get("fallback_stop_profit", {"gain_high": 15, "gain_medium": 8, "gain_low": 3})
+        fallback_loss = risk_cfg.get("fallback_stop_loss", {"loss_high": -8, "loss_medium": -5, "loss_low": -2})
 
         if atr_value and atr_value > 0:
-            atr_stop_loss_multiplier = 2.0
-            atr_stop_profit_multiplier = 2.5
             atr_based_stop_loss = current_price - atr_value * atr_stop_loss_multiplier
             atr_based_stop_profit = current_price + atr_value * atr_stop_profit_multiplier
             target_price = atr_based_stop_profit
 
             # 取ATR止损和VaR止损中更严格的（更高的止损价）
-            atr_stop_price = max(atr_based_stop_loss, current_price * (1 - 0.05))
+            atr_stop_price = max(atr_based_stop_loss, current_price * (1 - max_stop_loss_pct))
             var_stop_price = var_info.get("var_stop_price", atr_stop_price)
             stop_price = max(atr_stop_price, var_stop_price)
 
             stop_profit_pct = round((atr_based_stop_profit - current_price) / current_price * 100, 2)
             stop_loss_pct = round(((stop_price - current_price) / current_price) * 100, 2)
         else:
-            if price_change > 15:
+            if price_change > fallback_profit["gain_high"]:
                 stop_profit_pct = 10
-            elif price_change > 8:
+            elif price_change > fallback_profit["gain_medium"]:
                 stop_profit_pct = 5
             else:
-                stop_profit_pct = 3
+                stop_profit_pct = fallback_profit["gain_low"]
 
-            if price_change < -8:
+            if price_change < fallback_loss["loss_high"]:
                 stop_loss_pct = -5
-            elif price_change < -5:
+            elif price_change < fallback_loss["loss_medium"]:
                 stop_loss_pct = -3
             else:
-                stop_loss_pct = -2
+                stop_loss_pct = fallback_loss["loss_low"]
 
             target_price = current_price * (1 + stop_profit_pct / 100)
             stop_price = current_price * (1 + stop_loss_pct / 100)
 
+        # 波动率缩放：高波动时收紧止损距离
+        vol_scale = validation.get("vol_scale", 1.0)
+        if vol_scale and vol_scale > 1.0:
+            scale_factor = min(vol_scale, 1.5)
+            stop_distance = current_price - stop_price
+            stop_distance = stop_distance / scale_factor
+            stop_price = current_price - stop_distance
+            stop_loss_pct = round(((stop_price - current_price) / current_price) * 100, 2)
+
         signal_name = trading_signal.get("signal", "hold") if trading_signal else "hold"
         action_gate = validation.get("action_gate", "")
         direction_consensus = validation.get("direction_consensus", "")
+        confidence = validation.get("confidence", 0.5)
+
+        action_gate_cfg = self._action_gate_cfg
+        low_confidence_threshold = action_gate_cfg.get("low_confidence", 0.5)
+        very_low_confidence_threshold = action_gate_cfg.get("very_low_confidence", 0.4)
 
         if action_gate in ("reduce", "reduce_position") or signal_name == "sell":
             position_adjust = "建议减仓"
+        elif confidence < low_confidence_threshold:
+            position_adjust = "考虑减仓" if confidence < very_low_confidence_threshold else "继续持有观察"
         elif validation and direction_consensus != "bullish":
             position_adjust = "继续持有，等待趋势确认"
         elif signal_name in ("strong_buy", "buy") and direction_consensus and direction_consensus != "bullish":
@@ -3088,7 +3328,6 @@ class StockAnalyzer:
     ) -> Dict:
         """生成买入策略（未持有时使用）"""
         validation = validation or {}
-        history_df = all_data.get("history_data")
 
         macd = indicators.get("MACD", {})
         rsi = indicators.get("RSI", {})
@@ -3144,6 +3383,7 @@ class StockAnalyzer:
         signal_name = trading_signal.get("signal", "hold") if trading_signal else "hold"
         action_gate = validation.get("action_gate", "")
         validation_risk_level = validation.get("risk_level", "")
+        confidence = validation.get("confidence", 0.5)
         buy_timing = "不建议买入"
         total_score = trading_signal.get("score", 0) if trading_signal else 0
         if validation and action_gate != "allow_buy":
@@ -3151,7 +3391,7 @@ class StockAnalyzer:
                 buy_timing = "等待确认"
             else:
                 buy_timing = "不建议买入"
-        elif validation_risk_level == "high" or action_gate == "avoid_buy":
+        elif validation_risk_level == "high":
             if signal_name in ("strong_buy", "buy"):
                 buy_timing = "等待确认"
             else:
@@ -3174,10 +3414,18 @@ class StockAnalyzer:
             buy_timing = "RSI超卖，可以关注"
 
         # 基于ATR计算买入止损价
+        risk_cfg = self._risk_cfg
+        position_cfg = self._position_sizing_cfg
+        atr_stop_loss_multiplier = risk_cfg.get("atr_stop_loss_multiplier", 2.0)
+        max_stop_loss_pct = risk_cfg.get("max_stop_loss_pct", 0.10)
+        position_min = position_cfg.get("min_pct", 10)
+        position_max = position_cfg.get("max_pct", 30)
+        confidence_adjust_min = position_cfg.get("confidence_adjust_min", 0.6)
+        confidence_adjust_max = position_cfg.get("confidence_adjust_max", 1.0)
+
         if atr_value and atr_value > 0:
-            atr_stop_loss_multiplier = 2.0
             risk_price = current_price - atr_value * atr_stop_loss_multiplier
-            risk_price = max(risk_price, current_price * 0.90)  # 不超过10%止损
+            risk_price = max(risk_price, current_price * (1 - max_stop_loss_pct))
             risk_level = "中等（基于ATR）"
         elif upper and lower:
             if current_price < lower:
@@ -3194,15 +3442,15 @@ class StockAnalyzer:
             risk_level = "中等"
 
         # C-07: 仓位计算逻辑修正
-        # 公式: RSI=0时30%, RSI=50时20%, RSI=100时10%
+        # 公式: RSI=0时position_max, RSI=50时(position_max+position_min)/2, RSI=100时position_min
         rsi_for_position = rsi_value if rsi_value and 0 < rsi_value < 100 else 50
-        position_size = 10 + 20 * (1 - rsi_for_position / 100)
-        position_size = max(10, min(30, position_size))
+        position_size = position_min + (position_max - position_min) * (1 - rsi_for_position / 100)
+        position_size = max(position_min, min(position_max, position_size))
 
         # 下跌趋势中仓位减半
         is_downtrend = macd_signal in ("空头", "死叉") or kdj_signal in ("死叉", "超买")
         if is_downtrend:
-            position_size = max(10, position_size / 2)
+            position_size = max(position_min, position_size / 2)
 
         distribution = indicators.get("Distribution", {})
         dist_w20 = distribution.get("W20", {})
@@ -3215,7 +3463,7 @@ class StockAnalyzer:
         except (TypeError, ValueError):
             skewness_val = None
         if skewness_val is not None and skewness_val < -0.5:
-            position_size = max(10, position_size / 2)
+            position_size = max(position_min, position_size / 2)
 
         market_structure = indicators.get("MarketStructure", {})
         beta_data = market_structure.get("Beta", {})
@@ -3227,10 +3475,37 @@ class StockAnalyzer:
         if beta_latest is not None and beta_latest > 1.5:
             risk_price = current_price - (current_price - risk_price) * 0.7
 
+        # 波动率缩放：高波动时降低仓位
+        vol_scale = validation.get("vol_scale", 1.0)
+        if vol_scale and vol_scale > 1.0:
+            scale_factor = min(vol_scale, 1.5)
+            position_size = max(position_min, position_size / scale_factor)
+
+        # 根据 confidence 调整仓位，高 confidence 保留更多仓位
+        position_size = position_size * (confidence_adjust_min + (confidence_adjust_max - confidence_adjust_min) * confidence)
+        position_size = max(position_min, min(position_max, position_size))
+
+        if action_gate == "allow_buy":
+            if confidence >= 0.8:
+                position_size_label = "标准仓位"
+            elif confidence >= 0.6:
+                position_size_label = "半仓"
+            elif confidence >= 0.45:
+                position_size_label = "谨慎仓位"
+            else:
+                position_size_label = "小仓位试错"
+        elif action_gate == "cautious_buy":
+            position_size_label = "小仓位试错"
+        elif action_gate in ("watch", "avoid_buy"):
+            position_size_label = "建议观望"
+        else:
+            position_size_label = "轻仓试探"
+
         return {
             "current_price": current_price,
             "buy_timing": buy_timing,
             "position_size_pct": round(position_size, 1),
+            "position_size_label": position_size_label,
             "stop_loss_price": round(risk_price, 2),
             "validation_note": validation.get("validation_note", ""),
             "risk_level": risk_level,

@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict, Optional
+from typing import Dict
 
 from backend.logging.formatter import JsonFormatter, ConsoleFormatter
 from backend.logging.handler import SizeAndTimeRotatingFileHandler
@@ -36,6 +36,32 @@ _DEFAULT_MODULE_LEVELS: Dict[str, str] = {
 _LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'logs')
 
 
+def _create_level_handlers(
+    log_dir: str,
+    formatter: logging.Formatter,
+    max_bytes: int,
+    backup_count: int,
+) -> Dict[str, SizeAndTimeRotatingFileHandler]:
+    """创建按级别分文件的 handlers"""
+    level_configs = [
+        ('debug', logging.DEBUG, 'debug.log'),
+        ('info', logging.INFO, 'info.log'),
+        ('warning', logging.WARNING, 'warning.log'),
+        ('error', logging.ERROR, 'error.log'),
+    ]
+    handlers: Dict[str, SizeAndTimeRotatingFileHandler] = {}
+    for name, level, filename in level_configs:
+        handler = SizeAndTimeRotatingFileHandler(
+            filename=os.path.join(log_dir, filename),
+            max_bytes=max_bytes,
+            backup_count=backup_count,
+        )
+        handler.setLevel(level)
+        handler.setFormatter(formatter)
+        handlers[name] = handler
+    return handlers
+
+
 def setup_logging(
     service_name: str = 'stock-query',
     environment: str = None,
@@ -66,6 +92,12 @@ def setup_logging(
     console_handler.setFormatter(console_formatter)
     root_logger.addHandler(console_handler)
 
+    level_handlers = _create_level_handlers(
+        log_dir, json_formatter, max_bytes, backup_count
+    )
+    for handler in level_handlers.values():
+        root_logger.addHandler(handler)
+
     log_files = {
         'stock_query': os.path.join(log_dir, 'app.log'),
         'stock_query.request': os.path.join(log_dir, 'request.log'),
@@ -92,6 +124,12 @@ def setup_logging(
         module_logger.handlers.clear()
         module_logger.propagate = False
         module_logger.addHandler(file_handler)
+
+        # 添加按级别分文件的 handlers；error logger 已单独配置 error.log，避免重复
+        for level_name, level_handler in level_handlers.items():
+            if logger_name == 'stock_query.error' and level_name == 'error':
+                continue
+            module_logger.addHandler(level_handler)
 
         module_console = logging.StreamHandler()
         module_console.setLevel(LOG_LEVELS.get(console_level.upper(), logging.INFO))

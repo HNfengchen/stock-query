@@ -28,6 +28,14 @@ const confidenceColor = computed(() => {
   if (v >= 45) return 'var(--color-warn, #ffa726)'
   return 'var(--color-down, #ef5350)'
 })
+const positionAdvice = computed(() => {
+  const c = props.prediction.confidence
+  if (c === null) return null
+  if (c >= 0.8) return '标准仓位'
+  if (c >= 0.6) return '半仓'
+  if (c >= 0.45) return '小仓位试错'
+  return '建议观望'
+})
 const mlDirection = computed(() => {
   const d = props.prediction.mlPrediction?.direction
   if (d === null || d === undefined) return '-'
@@ -123,6 +131,9 @@ const trendMap: Record<string, { label: string; type: string }> = {
         <span class="confidence-val font-mono" :style="{ color: confidenceColor }">
           {{ confidencePct !== null ? confidencePct + '%' : '需更多数据' }}
         </span>
+      </div>
+      <div v-if="positionAdvice" class="position-advice">
+        仓位建议：{{ positionAdvice }}
       </div>
       <div v-if="prediction.alpha != null" class="alpha-row">
         <span class="alpha-label">hybrid_alpha</span>
@@ -252,6 +263,13 @@ const trendMap: Record<string, { label: string; type: string }> = {
   font-weight: 700;
   min-width: 40px;
   text-align: right;
+}
+
+.position-advice {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.60));
 }
 
 .alpha-row {

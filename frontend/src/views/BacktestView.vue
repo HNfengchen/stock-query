@@ -758,8 +758,8 @@ function exportCSV() {
                     <span class="stability-hint">越小越稳定</span>
                   </div>
                   <div class="stability-card">
-                    <span class="stability-label">Sharpe比率</span>
-                    <span class="stability-value font-mono" :class="store.wfResult.stability.sharpe_ratio >= 1 ? '' : 'loss'">{{ fmtPct(store.wfResult.stability.sharpe_ratio, 3) }}</span>
+                    <span class="stability-label">命中率稳定性比率</span>
+                    <span class="stability-value font-mono" :class="store.wfResult.stability.consistency_ratio >= 1 ? '' : 'loss'">{{ fmtPct(store.wfResult.stability.consistency_ratio, 3) }}</span>
                     <span class="stability-hint">命中率均值/标准差</span>
                   </div>
                 </div>

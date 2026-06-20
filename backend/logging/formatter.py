@@ -3,6 +3,8 @@ import traceback
 import logging
 from datetime import datetime, timezone
 
+from backend.logging.trace import get_stock_code
+
 
 class JsonFormatter(logging.Formatter):
     def __init__(self, service_name: str = 'stock-query', environment: str = 'production'):
@@ -11,6 +13,7 @@ class JsonFormatter(logging.Formatter):
         self.environment = environment
 
     def format(self, record: logging.LogRecord) -> str:
+        stock_code = getattr(record, 'stock_code', '') or get_stock_code()
         log_entry = {
             'timestamp': datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             'level': record.levelname,
@@ -18,6 +21,7 @@ class JsonFormatter(logging.Formatter):
             'module': record.name,
             'trace_id': getattr(record, 'trace_id', ''),
             'span_id': getattr(record, 'span_id', ''),
+            'stock_code': stock_code,
             'message': record.getMessage(),
             'environment': self.environment,
         }
@@ -66,13 +70,15 @@ class ConsoleFormatter(logging.Formatter):
         trace_str = f' [{trace_id[:8]}]' if trace_id else ''
         category = getattr(record, 'log_category', '')
         category_str = f' <{category}>' if category else ''
+        stock_code = getattr(record, 'stock_code', '') or get_stock_code()
+        stock_str = f' [{stock_code}]' if stock_code else ''
 
         msg = record.getMessage()
 
         formatted = (
             f'{color}{record.levelname:<8}{self.RESET} '
             f'{self.formatTime(record, "%Y-%m-%d %H:%M:%S.%f")[:-3]} '
-            f'{record.name}{trace_str}{category_str} '
+            f'{record.name}{trace_str}{category_str}{stock_str} '
             f'{msg}'
         )
 

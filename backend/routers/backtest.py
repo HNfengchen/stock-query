@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 import traceback
@@ -12,6 +14,8 @@ router = APIRouter()
 
 class BacktestRequest(BaseModel):
     stock_code: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
 
 
 class WalkForwardRequest(BaseModel):
@@ -25,7 +29,13 @@ class WalkForwardRequest(BaseModel):
 async def backtest(req: BacktestRequest):
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, run_prediction_validation, req.stock_code)
+        result = await loop.run_in_executor(
+            None,
+            run_prediction_validation,
+            req.stock_code,
+            req.start_date,
+            req.end_date,
+        )
         return sanitize_for_json(result)
     except BacktestTimeoutError as e:
         raise StockQueryException(str(e))

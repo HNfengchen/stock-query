@@ -4,6 +4,7 @@
 """
 
 import time
+import atexit
 import threading
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,12 +17,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.logger import get_logger
 from backend.logging import log_data
-
-fetcher_logger = get_logger("data_fetcher")
-
-# baostock 不支持并发 login/logout，用全局锁串行化
-_baostock_lock = threading.Lock()
-
+from scripts.core.circuit_breaker import CircuitBreaker
 from scripts.stock_query import (
     parse_stock_code,
     get_stock_info,
@@ -30,6 +26,15 @@ from scripts.stock_query import (
     get_minute_data,
 )
 import efinance as ef
+
+fetcher_logger = get_logger("data_fetcher")
+
+# 模块级线程池，供 fetch_all_data 复用，避免每次调用都创建新线程池
+_fetch_executor = ThreadPoolExecutor(max_workers=3)
+atexit.register(_fetch_executor.shutdown)
+
+# baostock 不支持并发 login/logout，用全局锁串行化
+_baostock_lock = threading.Lock()
 
 _db_module = None
 _get_or_fetch_stock_data = None
@@ -55,7 +60,7 @@ def is_database_available() -> bool:
         conn = _db_module.get_connection()
         conn.close()
         _database_available = True
-        print(f"[数据库] 连接测试成功!")
+        print("[数据库] 连接测试成功!")
     except Exception as e:
         _database_available = False
         print(f"[数据库] 连接失败: {e}")
@@ -94,6 +99,7 @@ def _call_with_timeout(func, *args, timeout=15, **kwargs):
             return None
         return future.result()
     except Exception:
+        # 超时执行器在任务取消/失败时统一返回None，由调用方决定重试
         return None
 
 
@@ -140,6 +146,28 @@ class DataFetcher:
             except Exception as e:
                 print(f"xtquant 初始化失败: {e}")
 
+        dv_config = config.get("data_validation", {})
+        self._circuit_breaker = CircuitBreaker(
+            timeout=dv_config.get("circuit_breaker_timeout", 300),
+            source_priority=["xtquant", "efinance", "baostock", "tencent"],
+            health_check_interval=dv_config.get("health_check_interval", 60),
+        )
+        self._circuit_breaker.set_health_check_callback(self.create_health_check_callback())
+        if dv_config.get("enabled", True):
+            self._circuit_breaker.start_health_check()
+            fetcher_logger.info(
+                "[熔断器] 已初始化: timeout=%d, health_check_interval=%d",
+                self._circuit_breaker._timeout,
+                self._circuit_breaker._health_check_interval,
+            )
+
+    def close(self):
+        """关闭数据获取器。
+
+        线程池已由模块级 _fetch_executor 复用，并通过 atexit 统一清理。
+        """
+        pass
+
     def _retry_wrapper(self, func, *args, **kwargs):
         """带重试和超时的函数包装器"""
         last_error = None
@@ -157,7 +185,41 @@ class DataFetcher:
         try:
             return func(*args, **kwargs)
         except Exception:
+            # 该辅助函数设计为静默 swallow，由外层熔断器/重试逻辑处理
             return None
+
+    def _fetch_with_circuit_breaker(self, source: str, func, *args, **kwargs):
+        """带熔断器保护的数据获取
+
+        先检查数据源健康状态，不健康则跳过；调用成功后恢复状态，
+        失败或返回空结果则标记为不健康。
+        """
+        if not self._circuit_breaker.is_healthy(source):
+            fetcher_logger.info("[熔断器] 数据源 %s 当前不健康，跳过调用", source)
+            return None
+
+        try:
+            result = func(*args, **kwargs)
+            is_empty = result is None
+            if isinstance(result, pd.DataFrame):
+                is_empty = result.empty
+            elif isinstance(result, dict):
+                is_empty = len(result) == 0
+
+            if is_empty:
+                self._circuit_breaker.mark_unhealthy(source, "返回空结果")
+                return None
+
+            self._circuit_breaker.mark_healthy(source)
+            return result
+        except Exception as e:
+            self._circuit_breaker.mark_unhealthy(source, str(e))
+            fetcher_logger.warning("[熔断器] 数据源 %s 调用失败并标记不健康: %s", source, e)
+            return None
+
+    def get_circuit_breaker_status(self) -> dict:
+        """获取熔断器当前状态（用于监控和测试）"""
+        return self._circuit_breaker.get_status()
 
     def resolve_stock_code(self, user_input: str) -> tuple:
         """
@@ -211,10 +273,10 @@ class DataFetcher:
                                 clean_name = cached_name
                                 break
             except Exception:
-                pass
+                fetcher_logger.debug(f"[{stock_code}] 从watchlist读取缓存名称失败", exc_info=True)
 
             # 回退：尝试get_base_info
-            if clean_name == raw_name:
+            if clean_name == raw_name and self._circuit_breaker.is_healthy("efinance"):
                 try:
                     base_info = self._retry_wrapper(ef.stock.get_base_info, stock_code)
                     if base_info is not None:
@@ -227,7 +289,7 @@ class DataFetcher:
                         if base_name and not pd.isna(base_name):
                             clean_name = str(base_name)
                 except Exception:
-                    pass
+                    fetcher_logger.debug(f"[{stock_code}] 从efinance获取基础信息失败", exc_info=True)
 
             # 最终回退：剥离前缀（可能少字符，但总比带前缀好）
             if clean_name == raw_name:
@@ -237,9 +299,13 @@ class DataFetcher:
 
     def fetch_stock_info(self, stock_code: str) -> Dict:
         """获取股票基本信息"""
-        info = self._retry_wrapper(get_stock_info, stock_code)
+        info = self._fetch_with_circuit_breaker(
+            "efinance", self._retry_wrapper, get_stock_info, stock_code
+        )
+        if info is None:
+            info = {}
 
-        if self._xtquant_adapter:
+        if self._xtquant_adapter and self._circuit_breaker.is_healthy("xtquant"):
             try:
                 xtquant_info = self._xtquant_adapter.get_instrument_detail(
                     f"{stock_code}.{'SH' if stock_code.startswith(('60', '68')) else 'SZ'}"
@@ -249,31 +315,42 @@ class DataFetcher:
                         if key in xtquant_info and key not in info:
                             info[key] = xtquant_info[key]
             except Exception as e:
+                self._circuit_breaker.mark_unhealthy("xtquant", str(e))
                 print(f"xtquant 补充信息失败: {e}")
 
         return info
 
     def fetch_fund_flow(self, stock_code: str) -> Dict:
         """获取资金流向数据"""
-        return self._retry_wrapper(get_fund_flow, stock_code)
+        result = self._fetch_with_circuit_breaker(
+            "efinance", self._retry_wrapper, get_fund_flow, stock_code
+        )
+        return result if result is not None else {}
 
     def fetch_history_data(self, stock_code: str, days: int = 60, klt: int = None) -> pd.DataFrame:
         """获取历史 K 线数据"""
-        return self._retry_wrapper(get_history_data, stock_code, days, klt=klt)
+        result = self._fetch_with_circuit_breaker(
+            "efinance", self._retry_wrapper, get_history_data, stock_code, days, klt=klt
+        )
+        return result if result is not None else pd.DataFrame()
 
     def fetch_minute_data(self, stock_code: str) -> Dict:
         """获取分钟级行情数据"""
-        return self._retry_wrapper(get_minute_data, stock_code)
+        result = self._fetch_with_circuit_breaker(
+            "efinance", self._retry_wrapper, get_minute_data, stock_code
+        )
+        return result if result is not None else {}
 
     def fetch_financial_data(self, stock_code: str) -> Dict:
         """获取财务数据"""
-        if self._xtquant_adapter:
-            try:
-                full_code = f"{stock_code}.{'SH' if stock_code.startswith(('60', '68')) else 'SZ'}"
-                return self._xtquant_adapter.get_financial_data([full_code])
-            except Exception as e:
-                print(f"获取财务数据失败: {e}")
-        return {}
+        def _xtquant_fetch():
+            if not self._xtquant_adapter:
+                return None
+            full_code = f"{stock_code}.{'SH' if stock_code.startswith(('60', '68')) else 'SZ'}"
+            return self._xtquant_adapter.get_financial_data([full_code])
+
+        result = self._fetch_with_circuit_breaker("xtquant", _xtquant_fetch)
+        return result if result is not None else {}
 
     def fetch_sector_momentum(self, stock_code: str, shared_sector_quotes: pd.DataFrame = None) -> Optional[Dict]:
         """获取个股所属板块的动量信息（板块涨幅、排名、资金方向）
@@ -290,6 +367,10 @@ class DataFetcher:
                 'sector_net_inflow_positive': bool,  # 板块资金净流入方向(涨幅>0视为净流入)
             } 或 None(获取失败时)
         """
+        if not self._circuit_breaker.is_healthy("efinance"):
+            fetcher_logger.info("[熔断器] efinance 当前不健康，跳过板块动量获取")
+            return None
+
         try:
             import efinance as ef
 
@@ -302,10 +383,12 @@ class DataFetcher:
                 return None
             except Exception as e:
                 fetcher_logger.warning(f"获取{stock_code}所属板块失败: {e}")
+                self._circuit_breaker.mark_unhealthy("efinance", str(e))
                 return None
 
             if belong_df is None or belong_df.empty:
                 fetcher_logger.warning(f"获取{stock_code}所属板块返回空")
+                self._circuit_breaker.mark_unhealthy("efinance", "返回空结果")
                 return None
 
             # 从所属板块中筛选行业板块（排除地域、指数、风格等非行业板块）
@@ -358,7 +441,7 @@ class DataFetcher:
                     # 涨幅从高到低排名
                     sector_rank = int((sector_changes > best["change"]).sum()) + 1
                 except Exception:
-                    pass
+                    fetcher_logger.debug(f"[{stock_code}] 从共享板块行情计算排名失败", exc_info=True)
             else:
                 # 尝试获取行业板块行情来计算排名
                 # 优先efinance，回退新浪财经
@@ -371,7 +454,7 @@ class DataFetcher:
                         sector_rank = int((sector_changes > best["change"]).sum()) + 1
                         sector_rank_found = True
                 except Exception:
-                    pass
+                    fetcher_logger.debug(f"[{stock_code}] 从efinance获取行业板块行情失败", exc_info=True)
 
                 if not sector_rank_found:
                     # 回退: 新浪财经行业板块行情
@@ -398,7 +481,7 @@ class DataFetcher:
                                 sector_rank = int(sum(1 for c in _industry_changes if c > best["change"])) + 1
                                 sector_rank_found = True
                     except Exception:
-                        pass
+                        fetcher_logger.debug(f"[{stock_code}] 从新浪获取行业板块行情失败", exc_info=True)
 
                 if not sector_rank_found:
                     # efinance和新浪均不可用时，不返回排名数据
@@ -421,30 +504,32 @@ class DataFetcher:
 
         except Exception as e:
             fetcher_logger.warning(f"获取板块动量数据失败[{stock_code}]: {e}")
+            self._circuit_breaker.mark_unhealthy("efinance", str(e))
             return None
 
     def fetch_sector_info(self, stock_code: str) -> Dict:
         """获取板块信息"""
         sector_info = {"所属行业": "N/A", "所属概念": []}
 
-        if self._xtquant_adapter:
-            try:
-                sectors = self._xtquant_adapter.get_sector_list()
-                for sector in sectors:
-                    stocks = self._xtquant_adapter.get_stock_list_in_sector(sector)
-                    if stock_code in stocks:
-                        if (
-                            "所属概念" not in sector_info
-                            or sector not in sector_info["所属概念"]
-                        ):
-                            sector_info["所属概念"].append(sector)
+        def _xtquant_fetch():
+            if not self._xtquant_adapter:
+                return None
+            sectors = self._xtquant_adapter.get_sector_list()
+            for sector in sectors:
+                stocks = self._xtquant_adapter.get_stock_list_in_sector(sector)
+                if stock_code in stocks:
+                    if (
+                        "所属概念" not in sector_info
+                        or sector not in sector_info["所属概念"]
+                    ):
+                        sector_info["所属概念"].append(sector)
 
-                if sector_info["所属概念"]:
-                    sector_info["所属行业"] = sector_info["所属概念"][0]
-            except Exception as e:
-                print(f"获取板块信息失败: {e}")
+            if sector_info["所属概念"]:
+                sector_info["所属行业"] = sector_info["所属概念"][0]
+            return sector_info
 
-        return sector_info
+        result = self._fetch_with_circuit_breaker("xtquant", _xtquant_fetch)
+        return result if result is not None else sector_info
 
     def fetch_market_data(self) -> Optional[Dict]:
         """获取大盘数据（上证指数涨跌幅）
@@ -452,41 +537,59 @@ class DataFetcher:
         数据源回退链: efinance(仅股票快照，不支持指数) -> baostock(支持指数历史数据)
         baostock 不支持并发，使用全局锁串行化。
         """
-        try:
+        # 优先尝试 efinance（无需登录）
+        def _efinance_fetch():
+            import efinance as ef
+
+            snapshot = _call_with_timeout(ef.stock.get_quote_snapshot, "000001")
+            if snapshot is not None and not snapshot.empty:
+                change = snapshot.get("涨跌幅")
+                if change is not None and not pd.isna(change):
+                    return {"涨跌幅": float(change), "名称": "上证指数"}
+            return None
+
+        result = self._fetch_with_circuit_breaker("efinance", _efinance_fetch)
+        if result:
+            log_data('fetch', 'efinance', 'market_data', 'success',
+                     change_pct=result.get("涨跌幅"))
+            return result
+
+        # 回退到 baostock
+        def _baostock_fetch():
             import baostock as bs
             from datetime import datetime, timedelta
 
-            def _baostock_fetch():
-                with _baostock_lock:
-                    lg = bs.login()
-                    try:
-                        today = datetime.now().strftime('%Y-%m-%d')
-                        start = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
-                        rs = bs.query_history_k_data_plus(
-                            'sh.000001',
-                            'date,pctChg',
-                            start_date=start, end_date=today,
-                            frequency='d'
-                        )
-                        rows = []
-                        while rs.error_code == '0' and rs.next():
-                            rows.append(rs.get_row_data())
-                        if rows:
-                            last = rows[-1]
-                            change_val = float(last[1]) if len(last) > 1 else 0
-                            return {"涨跌幅": change_val, "名称": "上证指数"}
-                    finally:
-                        bs.logout()
-                return None
+            with _baostock_lock:
+                lg = bs.login()
+                if lg.error_code != "0":
+                    raise DataFetchError(
+                        f"baostock login failed: {lg.error_code} {lg.error_msg}"
+                    )
+                try:
+                    today = datetime.now().strftime('%Y-%m-%d')
+                    start = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
+                    rs = bs.query_history_k_data_plus(
+                        'sh.000001',
+                        'date,pctChg',
+                        start_date=start, end_date=today,
+                        frequency='d'
+                    )
+                    rows = []
+                    while rs.error_code == '0' and rs.next():
+                        rows.append(rs.get_row_data())
+                    if rows:
+                        last = rows[-1]
+                        change_val = float(last[1]) if len(last) > 1 else 0
+                        return {"涨跌幅": change_val, "名称": "上证指数"}
+                finally:
+                    bs.logout()
+            return None
 
-            result = _call_with_timeout(_baostock_fetch, timeout=20)
-            if result:
-                log_data('fetch', 'baostock', 'market_data', 'success',
-                         change_pct=result.get("涨跌幅"))
-                return result
-        except Exception as e:
-            log_data('fetch', 'baostock', 'market_data', 'failure', error=str(e))
-            fetcher_logger.debug(f"[DataFetcher] baostock获取大盘数据失败: {e}")
+        result = self._fetch_with_circuit_breaker("baostock", _baostock_fetch)
+        if result:
+            log_data('fetch', 'baostock', 'market_data', 'success',
+                     change_pct=result.get("涨跌幅"))
+            return result
 
         return None
 
@@ -505,11 +608,12 @@ class DataFetcher:
                 info = self._safe_fetch(get_stock_info, "000001")
                 return info is not None and len(info) > 0
             except Exception:
+                fetcher_logger.warning("数据源健康检查异常", exc_info=True)
                 return False
         return callback
 
     def fetch_index_data(self, index_code: str = "000300") -> pd.DataFrame:
-        try:
+        def _efinance_fetch():
             import efinance as ef
 
             prefix = "sh" if index_code.startswith(("000", "9")) else "sz"
@@ -525,56 +629,77 @@ class DataFetcher:
                     df = df.rename(columns=col_map)
                 if "收盘" in df.columns:
                     return df
-        except Exception as e:
-            fetcher_logger.debug(f"[DataFetcher] efinance获取指数数据失败: {e}")
+            return None
 
-        try:
+        df = self._fetch_with_circuit_breaker("efinance", _efinance_fetch)
+        if df is not None:
+            return df
+
+        def _baostock_fetch():
             import baostock as bs
 
-            lg = bs.login()
-            prefix = "sh" if index_code.startswith(("000", "9")) else "sz"
-            bs_code = f"{prefix}.{index_code}"
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,close",
-                start_date="2024-01-01",
-                frequency="d",
-            )
-            rows = []
-            while rs.error_code == "0" and rs.next():
-                rows.append(rs.get_row_data())
-            bs.logout()
+            with _baostock_lock:
+                lg = bs.login()
+                if lg.error_code != "0":
+                    raise DataFetchError(
+                        f"baostock login failed: {lg.error_code} {lg.error_msg}"
+                    )
+                try:
+                    prefix = "sh" if index_code.startswith(("000", "9")) else "sz"
+                    bs_code = f"{prefix}.{index_code}"
+                    rs = bs.query_history_k_data_plus(
+                        bs_code,
+                        "date,close",
+                        start_date="2024-01-01",
+                        frequency="d",
+                    )
+                    rows = []
+                    while rs.error_code == "0" and rs.next():
+                        rows.append(rs.get_row_data())
+                finally:
+                    bs.logout()
             if rows:
                 df = pd.DataFrame(rows, columns=["日期", "收盘"])
                 df["收盘"] = df["收盘"].astype(float)
                 return df
-        except Exception as e:
-            fetcher_logger.debug(f"[DataFetcher] baostock获取指数数据失败: {e}")
+            return None
+
+        df = self._fetch_with_circuit_breaker("baostock", _baostock_fetch)
+        if df is not None:
+            return df
 
         return pd.DataFrame()
 
     def fetch_industry_data(self, stock_code: str) -> pd.DataFrame:
-        if self._xtquant_adapter:
-            try:
-                sectors = self._xtquant_adapter.get_sector_list()
-                for sector in sectors:
-                    stocks = self._xtquant_adapter.get_stock_list_in_sector(sector)
-                    if stock_code in stocks:
-                        industry_index_code = self._resolve_industry_index(sector)
-                        if industry_index_code:
-                            return self.fetch_index_data(industry_index_code)
-                        break
-            except Exception as e:
-                fetcher_logger.debug(f"[DataFetcher] xtquant获取行业数据失败: {e}")
+        def _xtquant_fetch():
+            if not self._xtquant_adapter:
+                return None
+            sectors = self._xtquant_adapter.get_sector_list()
+            for sector in sectors:
+                stocks = self._xtquant_adapter.get_stock_list_in_sector(sector)
+                if stock_code in stocks:
+                    industry_index_code = self._resolve_industry_index(sector)
+                    if industry_index_code:
+                        df = self.fetch_index_data(industry_index_code)
+                        if df is not None and not df.empty:
+                            return df
+                    break
+            return None
 
-        try:
+        df = self._fetch_with_circuit_breaker("xtquant", _xtquant_fetch)
+        if df is not None:
+            return df
+
+        def _efinance_fetch():
             import efinance as ef
 
             sector_df = _call_with_timeout(ef.stock.get_quote_snapshot, stock_code)
             if sector_df is not None and not sector_df.empty:
-                pass
-        except Exception:
-            pass
+                # efinance 板块快照不直接返回指数 K 线，当前仅作为健康探测
+                return pd.DataFrame({"探测": [True]})
+            return None
+
+        self._fetch_with_circuit_breaker("efinance", _efinance_fetch)
 
         return pd.DataFrame()
 
@@ -659,40 +784,39 @@ class DataFetcher:
             else:
                 info = None
         else:
-            fetcher_logger.warning(f"[DataFetcher] 数据库不可用，从API获取数据...")
+            fetcher_logger.warning("[DataFetcher] 数据库不可用，从API获取数据...")
             info = None
 
         if info is None:
-            fetcher_logger.info(f"[DataFetcher] 从API并发获取最新数据...")
+            fetcher_logger.info("[DataFetcher] 从API并发获取最新数据...")
             result = {}
-            executor = ThreadPoolExecutor(max_workers=3)
+            executor = _fetch_executor
+            futures = {
+                executor.submit(self._safe_fetch, self.fetch_stock_info, stock_code): 'stock_info',
+                executor.submit(self._safe_fetch, self.fetch_fund_flow, stock_code): 'fund_flow',
+                executor.submit(self._safe_fetch, self.fetch_history_data, stock_code, 60): 'history_data',
+            }
             try:
-                futures = {
-                    executor.submit(self._safe_fetch, self.fetch_stock_info, stock_code): 'stock_info',
-                    executor.submit(self._safe_fetch, self.fetch_fund_flow, stock_code): 'fund_flow',
-                    executor.submit(self._safe_fetch, self.fetch_history_data, stock_code, 60): 'history_data',
-                }
-                try:
-                    for future in as_completed(futures, timeout=20):
-                        key = futures[future]
-                        try:
-                            result[key] = future.result(timeout=15)
-                        except Exception:
-                            result[key] = None
-                except TimeoutError:
-                    fetcher_logger.warning("[DataFetcher] 并发获取数据超时，收集已完成的结果")
-                    for future, key in futures.items():
-                        if key not in result:
-                            if future.done():
-                                try:
-                                    result[key] = future.result()
-                                except Exception:
-                                    result[key] = None
-                            else:
-                                future.cancel()
+                for future in as_completed(futures, timeout=20):
+                    key = futures[future]
+                    try:
+                        result[key] = future.result(timeout=15)
+                    except Exception:
+                        fetcher_logger.warning(f"[DataFetcher] 获取{key}结果异常", exc_info=True)
+                        result[key] = None
+            except TimeoutError:
+                fetcher_logger.warning("[DataFetcher] 并发获取数据超时，收集已完成的结果")
+                for future, key in futures.items():
+                    if key not in result:
+                        if future.done():
+                            try:
+                                result[key] = future.result()
+                            except Exception:
+                                fetcher_logger.warning(f"[DataFetcher] 获取{key}结果异常", exc_info=True)
                                 result[key] = None
-            finally:
-                executor.shutdown(wait=False)
+                        else:
+                            future.cancel()
+                            result[key] = None
 
             info = result.get('stock_info')
             fund_flow = result.get('fund_flow')
@@ -719,10 +843,10 @@ class DataFetcher:
         info = info or {}
         fund_flow = fund_flow or {}
 
-        fetcher_logger.info(f"[DataFetcher] 获取分钟级数据...")
+        fetcher_logger.info("[DataFetcher] 获取分钟级数据...")
         minute_data = self.fetch_minute_data(stock_code)
 
-        fetcher_logger.info(f"[DataFetcher] 获取财务数据和板块信息...")
+        fetcher_logger.info("[DataFetcher] 获取财务数据和板块信息...")
         financial_data = self.fetch_financial_data(stock_code)
         sector_info = self.fetch_sector_info(stock_code)
 
@@ -739,7 +863,7 @@ class DataFetcher:
             log_data('fetch', 'baostock', 'market_data', 'failure', error=str(e))
             fetcher_logger.debug(f"[DataFetcher] 获取大盘数据失败: {e}")
 
-        fetcher_logger.info(f"[DataFetcher] 数据获取完成，返回结果")
+        fetcher_logger.info("[DataFetcher] 数据获取完成，返回结果")
 
         data_quality = "unknown"
         if is_database_available():

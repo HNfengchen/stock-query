@@ -3,7 +3,7 @@ import json
 import logging
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response, JSONResponse
+from starlette.responses import Response
 
 from backend.logging.trace import get_trace_id, get_span_id
 from backend.logging.sensitive import sanitize_data
@@ -48,6 +48,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         request_info['body'] = f'<binary {len(body)} bytes>'
             except Exception:
+                logger.warning("请求体读取失败", exc_info=True)
                 request_info['body'] = '<unreadable>'
 
         auth_header = request.headers.get('authorization', '')
@@ -59,7 +60,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             status_code = response.status_code
-        except Exception as exc:
+        except Exception:
             status_code = 500
             raise
         finally:

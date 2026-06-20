@@ -48,6 +48,7 @@ def _write_watchlist(data):
         try:
             os.unlink(tmp_path)
         except OSError:
+            # 临时文件清理失败时忽略，不影响原始异常抛出
             pass
         raise
 
