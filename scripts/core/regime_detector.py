@@ -83,7 +83,9 @@ class HMMRegimeDetector:
             tol=1e-4,
         )
 
+        rng_state = np.random.get_state()
         try:
+            np.random.seed(42)
             model.fit(obs)
         except (ValueError, RuntimeError):
             model = GaussianHMM(
@@ -94,10 +96,13 @@ class HMMRegimeDetector:
                 tol=1e-4,
             )
             try:
+                np.random.seed(42)
                 model.fit(obs)
             except Exception as e:
                 regime_logger.error(f"HMM训练失败: {e}")
                 return {"converged": False, "n_iter": 0, "state_mapping": {}, "error": str(e)}
+        finally:
+            np.random.set_state(rng_state)
 
         self._model = model
         self._state_mapping = self._build_state_mapping(model.means_)

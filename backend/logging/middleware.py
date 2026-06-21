@@ -5,7 +5,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from backend.logging.trace import get_trace_id, get_span_id
+from backend.logging.trace import get_trace_id, get_span_id, generate_trace_id, generate_span_id, set_trace_id, set_span_id
 from backend.logging.sensitive import sanitize_data
 
 
@@ -23,8 +23,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         start_time = time.monotonic()
-        trace_id = get_trace_id()
-        span_id = get_span_id()
+        # 优先从 request.state 读取（TraceMiddleware 写入），兼容 BaseHTTPMiddleware 中 contextvar 不自动传播
+        trace_id = getattr(request.state, 'trace_id', '') or get_trace_id() or generate_trace_id()
+        span_id = getattr(request.state, 'span_id', '') or get_span_id() or generate_span_id()
+        set_trace_id(trace_id)
+        set_span_id(span_id)
 
         request_info = {
             'method': request.method,

@@ -67,6 +67,7 @@ class StockAnalyzer:
         self._fund_flow_cfg = analyzer_config.get("fund_flow", {})
         self._sentiment_cfg = analyzer_config.get("sentiment", {})
         self._fund_ml_cfg = analyzer_config.get("fund_ml_divergence", {})
+        self._direction_consensus_cfg = analyzer_config.get("direction_consensus", {})
         self._action_gate_cfg = analyzer_config.get("action_gate", {})
         self._position_sizing_cfg = analyzer_config.get("position_sizing", {})
         self._risk_cfg = analyzer_config.get("risk_management", {})
@@ -1586,6 +1587,19 @@ class StockAnalyzer:
             hmm_state = self._dynamic_weight_manager.get_regime()
         return hmm_state
 
+    def _compute_direction_consensus(self, bull_ratio: float, bear_ratio: float) -> str:
+        """基于 bull/bear 加权比例计算方向共识，引入最小优势与差距阈值缓冲。"""
+        cfg = self._direction_consensus_cfg
+        min_majority = cfg.get("min_majority", 0.6)
+        min_margin = cfg.get("min_margin", 0.2)
+        margin = abs(bull_ratio - bear_ratio)
+        eps = 1e-9
+        if bull_ratio >= bear_ratio and bull_ratio + eps >= min_majority and margin + eps >= min_margin:
+            return "bullish"
+        if bear_ratio > bull_ratio and bear_ratio + eps >= min_majority and margin + eps >= min_margin:
+            return "bearish"
+        return "mixed"
+
     def cross_validate_analysis(
         self,
         analysis: Dict,
@@ -2090,12 +2104,7 @@ class StockAnalyzer:
             bull_ratio = 0.5
             bear_ratio = 0.5
 
-        if bull_ratio >= 0.6:
-            direction_consensus = "bullish"
-        elif bear_ratio >= 0.6:
-            direction_consensus = "bearish"
-        else:
-            direction_consensus = "mixed"
+        direction_consensus = self._compute_direction_consensus(bull_ratio, bear_ratio)
 
         # 独立检测：近3日价格变化率与资金评分背离
         surge_risk = False
@@ -2399,6 +2408,23 @@ class StockAnalyzer:
             f"行动门控: action_gate={action_gate}, risk_level={risk_level}, "
             f"position={position_status}, original_signal={signal}"
             + (f", {','.join(downgrade_reasons)}" if downgrade_reasons else "")
+        )
+
+        action_gate_text_map = {
+            "allow_buy": "建议买入",
+            "cautious_buy": "可考虑买入",
+            "avoid_buy": "回避",
+            "watch": "观望",
+            "reduce_position": "减仓",
+            "cautious_hold": "谨慎持有",
+            "hold_position": "持有",
+        }
+        raw_signal = trading_signal.get("signal", "hold")
+        raw_signal_text = trading_signal.get("signal_text", "观望")
+        action_gate_text = action_gate_text_map.get(action_gate, action_gate)
+        analyzer_logger.info(
+            f"最终信号: raw={raw_signal}/{raw_signal_text}, "
+            f"action_gate={action_gate}/{action_gate_text}"
         )
 
         missing_note = f"缺失维度：{'、'.join(missing_dimensions)}。" if missing_dimensions else ""

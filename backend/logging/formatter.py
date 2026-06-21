@@ -3,7 +3,7 @@ import traceback
 import logging
 from datetime import datetime, timezone
 
-from backend.logging.trace import get_stock_code
+from backend.logging.trace import get_stock_code, get_trace_id, get_span_id
 
 
 class JsonFormatter(logging.Formatter):
@@ -14,13 +14,15 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         stock_code = getattr(record, 'stock_code', '') or get_stock_code()
+        trace_id = getattr(record, 'trace_id', '') or get_trace_id()
+        span_id = getattr(record, 'span_id', '') or get_span_id()
         log_entry = {
             'timestamp': datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             'level': record.levelname,
             'service': self.service_name,
             'module': record.name,
-            'trace_id': getattr(record, 'trace_id', ''),
-            'span_id': getattr(record, 'span_id', ''),
+            'trace_id': trace_id,
+            'span_id': span_id,
             'stock_code': stock_code,
             'message': record.getMessage(),
             'environment': self.environment,
@@ -66,7 +68,7 @@ class ConsoleFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         color = self.COLORS.get(record.levelname, '')
-        trace_id = getattr(record, 'trace_id', '')
+        trace_id = getattr(record, 'trace_id', '') or get_trace_id()
         trace_str = f' [{trace_id[:8]}]' if trace_id else ''
         category = getattr(record, 'log_category', '')
         category_str = f' <{category}>' if category else ''

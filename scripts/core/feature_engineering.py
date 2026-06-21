@@ -352,6 +352,13 @@ def orthogonalize_features(
     n_components = min(n_components, n_features)
 
     selected_components = components[:n_components, :]
+
+    # 对主成分方向做符号归一化：保证每个主成分向量中绝对值最大元素为正
+    for i in range(selected_components.shape[0]):
+        max_idx = int(np.argmax(np.abs(selected_components[i])))
+        if selected_components[i, max_idx] < 0:
+            selected_components[i] *= -1
+
     orthogonal_features = np.dot(centered, selected_components.T)
 
     orthogonal_names = [f"PC{i+1}" for i in range(n_components)]

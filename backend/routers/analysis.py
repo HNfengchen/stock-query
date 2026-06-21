@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import traceback
@@ -35,13 +35,16 @@ class BatchAnalysisRequest(BaseModel):
 
 
 @router.post("/analysis")
-async def analyze(req: AnalysisRequest):
+async def analyze(req: AnalysisRequest, request: Request):
     try:
         set_stock_code(req.stock_input)
         loop = asyncio.get_running_loop()
 
-        trace_id = get_trace_id()
-        span_id = get_span_id()
+        # 从 request.state 读取 trace_id/span_id（兼容 BaseHTTPMiddleware contextvar 不自动传播）
+        trace_id = getattr(request.state, 'trace_id', '') or get_trace_id()
+        span_id = getattr(request.state, 'span_id', '') or get_span_id()
+        set_trace_id(trace_id)
+        set_span_id(span_id)
 
         def _run(stock_input, position_status, cost_price):
             set_trace_id(trace_id)
@@ -106,8 +109,14 @@ async def batch_analyze(req: BatchAnalysisRequest):
 
 
 @router.post("/analysis/batch-quick")
-async def batch_quick_analyze(req: BatchAnalysisRequest):
+async def batch_quick_analyze(req: BatchAnalysisRequest, request: Request):
     from sse_starlette.sse import EventSourceResponse
+
+    # 从 request.state 读取 trace_id/span_id（兼容 BaseHTTPMiddleware contextvar 不自动传播）
+    batch_trace_id = getattr(request.state, 'trace_id', '') or get_trace_id()
+    batch_span_id = getattr(request.state, 'span_id', '') or get_span_id()
+    set_trace_id(batch_trace_id)
+    set_span_id(batch_span_id)
 
     if not req.stocks:
         raise StockQueryException("股票列表不能为空")
@@ -178,8 +187,8 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 "index": i,
             })
 
-            trace_id = get_trace_id()
-            span_id = get_span_id()
+            trace_id = batch_trace_id or get_trace_id()
+            span_id = batch_span_id or get_span_id()
 
             def _run(sr=stock_req, smd=shared_market_data, ssq=shared_sector_quotes):
                 set_trace_id(trace_id)
@@ -206,11 +215,13 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
                 return
             signal = result.get("trading_signal", {})
             signal_text = signal.get("signal_text", "")
+            raw_signal_text = signal.get("raw_signal_text", "")
             validation = result.get("validation", {})
             summary = {
                 "stock_code": result.get("stock_code", stock_req.stock_input),
                 "stock_name": result.get("stock_name", ""),
                 "signal_text": signal_text,
+                "raw_signal_text": raw_signal_text,
                 "score": signal.get("score", 0),
                 "action_gate": signal.get("action_gate", ""),
                 "recommendation": result.get("analysis", {}).get("recommendation", ""),
@@ -335,8 +346,14 @@ async def batch_quick_analyze(req: BatchAnalysisRequest):
 
 
 @router.get("/analysis/stream")
-async def analysis_stream(stock_input: str, position_status: str = "未持有", cost_price: Optional[float] = None):
+async def analysis_stream(stock_input: str, request: Request, position_status: str = "未持有", cost_price: Optional[float] = None):
     from sse_starlette.sse import EventSourceResponse
+
+    # 从 request.state 读取 trace_id/span_id（兼容 BaseHTTPMiddleware contextvar 不自动传播）
+    stream_trace_id = getattr(request.state, 'trace_id', '') or get_trace_id()
+    stream_span_id = getattr(request.state, 'span_id', '') or get_span_id()
+    set_trace_id(stream_trace_id)
+    set_span_id(stream_span_id)
 
     logger.info(f"SSE流: 连接建立, stock_input={stock_input}")
 
@@ -360,8 +377,8 @@ async def analysis_stream(stock_input: str, position_status: str = "未持有", 
                 loop,
             )
 
-        trace_id = get_trace_id()
-        span_id = get_span_id()
+        trace_id = stream_trace_id or get_trace_id()
+        span_id = stream_span_id or get_span_id()
 
         def _run_staged():
             try:

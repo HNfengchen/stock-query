@@ -50,6 +50,10 @@ class TraceMiddleware(BaseHTTPMiddleware):
         trace_id = incoming_trace if incoming_trace else generate_trace_id()
         span_id = generate_span_id()
 
+        # 通过 request.state 传递，以兼容 Starlette BaseHTTPMiddleware 中 contextvar 不自动传播的问题
+        request.state.trace_id = trace_id
+        request.state.span_id = span_id
+
         set_trace_id(trace_id)
         set_span_id(span_id)
 

@@ -327,10 +327,20 @@ class DataFetcher:
         )
         return result if result is not None else {}
 
-    def fetch_history_data(self, stock_code: str, days: int = 60, klt: int = None) -> pd.DataFrame:
-        """获取历史 K 线数据"""
+    def fetch_history_data(
+        self, stock_code: str, bars: int = 60, klt: int = None, days: int = None
+    ) -> pd.DataFrame:
+        """获取历史 K 线数据
+
+        参数:
+            bars: 请求的 K 线条数（明确语义），默认 60
+            klt: K 线类型，None/1=日线, 101=周线, 102=月线
+            days: 已废弃，仅作为 bars 的别名保留向后兼容
+        """
+        if days is not None:
+            bars = days
         result = self._fetch_with_circuit_breaker(
-            "efinance", self._retry_wrapper, get_history_data, stock_code, days, klt=klt
+            "efinance", self._retry_wrapper, get_history_data, stock_code, bars, klt=klt
         )
         return result if result is not None else pd.DataFrame()
 

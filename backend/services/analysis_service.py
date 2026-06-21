@@ -294,14 +294,15 @@ def _fetch_analysis_data(stock_code, stock_name, market, market_tag, fetcher, lo
             logger.warn("历史数据获取失败")
 
     # 获取周线/月线数据用于多时间框架分析
+    # bars 表示请求的 K 线条数：周线约两年(104条)，月线约五年(60条)
     weekly_df = None
     monthly_df = None
     try:
-        weekly_df = fetcher.fetch_history_data(stock_code, days=240, klt=101)
+        weekly_df = fetcher.fetch_history_data(stock_code, bars=104, klt=101)
     except Exception as e:
         logger.warn(f"周线数据获取失败: {e}")
     try:
-        monthly_df = fetcher.fetch_history_data(stock_code, days=120, klt=102)
+        monthly_df = fetcher.fetch_history_data(stock_code, bars=60, klt=102)
     except Exception as e:
         logger.warn(f"月线数据获取失败: {e}")
 
@@ -640,6 +641,8 @@ def _persist_analysis_result(stock_code, all_data, analysis_outputs, logger):
             "signal_text": action_gate_text,
             "action_gate": action_gate,
             "reason": trading_signal.get('reason', ''),
+            "raw_signal": trading_signal.get('signal', 'hold'),
+            "raw_signal_text": trading_signal.get('signal_text', ''),
         },
         "price_prediction": {
             "current": clean_float(price_prediction.get('current')),
